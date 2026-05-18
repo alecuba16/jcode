@@ -853,3 +853,34 @@ fn test_render_tool_message_keeps_token_badge_when_intent_is_truncated() {
     assert!(rendered[0].contains('…'), "rendered={rendered:?}");
     assert!(rendered[0].contains("tok"), "rendered={rendered:?}");
 }
+
+#[test]
+fn test_render_tool_message_keeps_bash_command_visible_when_row_is_narrow() {
+    let msg = DisplayMessage {
+        role: "tool".to_string(),
+        content: "2\n".to_string(),
+        tool_calls: vec![],
+        duration_secs: None,
+        title: None,
+        tool_data: Some(ToolCall {
+            id: "call_narrow_bash".to_string(),
+            name: "bash".to_string(),
+            input: serde_json::json!({
+                "command": "grep -rn \"unwrap()\" src/ --include=\"*.rs\" | wc -l"
+            }),
+            intent: None,
+        }),
+    };
+
+    let lines = render_tool_message(&msg, 18, crate::config::DiffDisplayMode::Off);
+    let rendered: Vec<String> = lines.iter().map(extract_line_text).collect();
+
+    assert!(
+        rendered.iter().any(|line| line.contains("bash")),
+        "rendered={rendered:?}"
+    );
+    assert!(
+        rendered.iter().any(|line| line.contains('$')),
+        "narrow bash tool rows should include a command preview: {rendered:?}"
+    );
+}

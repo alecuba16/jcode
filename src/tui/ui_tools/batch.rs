@@ -174,12 +174,21 @@ mod tests {
         let parsed = parse_batch_sub_outputs_by_index(content);
 
         assert_eq!(parsed.len(), 2);
-        assert_eq!(parsed.get(&1).map(|result| result.content.as_str()), Some("first output"));
-        assert_eq!(parsed.get(&2).map(|result| result.content.as_str()), Some("second output"));
+        assert_eq!(
+            parsed.get(&1).map(|result| result.content.as_str()),
+            Some("first output")
+        );
+        assert_eq!(
+            parsed.get(&2).map(|result| result.content.as_str()),
+            Some("second output")
+        );
     }
 
     #[test]
     fn rejects_non_header_lines_containing_batch_marker() {
-        assert_eq!(batch_section_index("output mentions --- [1] bash --- inline"), None);
+        assert_eq!(
+            batch_section_index("output mentions --- [1] bash --- inline"),
+            None
+        );
     }
 }
