@@ -991,11 +991,12 @@ pub(crate) fn last_status_area() -> Option<Rect> {
 }
 
 use frame_metrics::{
-    ChatLayoutMetrics, FLICKER_NOTICE_COPY_KEY, ViewportMetrics, finalize_frame_metrics,
-    note_body_built, note_body_cache_hit, note_body_cache_miss, note_body_incremental_reuse,
-    note_body_request, note_chat_layout, note_full_prep_built, note_full_prep_cache_hit,
-    note_full_prep_cache_miss, note_full_prep_request, note_viewport_metrics,
-    reset_frame_perf_stats, viewport_stability_hash,
+    ChatLayoutMetrics, FLICKER_NOTICE_COPY_KEY, FullPrepPhaseMetrics, ViewportMetrics,
+    begin_frame_resource_sample, finalize_frame_metrics, note_body_built, note_body_cache_hit,
+    note_body_cache_lookup, note_body_cache_miss, note_body_incremental_reuse, note_body_request,
+    note_chat_layout, note_full_prep_built, note_full_prep_cache_hit, note_full_prep_cache_lookup,
+    note_full_prep_cache_miss, note_full_prep_phase_metrics, note_full_prep_request,
+    note_viewport_metrics, reset_frame_perf_stats, viewport_stability_hash,
 };
 pub(crate) use frame_metrics::{
     debug_flicker_frame_history, debug_slow_frame_history, recent_flicker_copy_target_for_key,
@@ -1613,6 +1614,7 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
 
     let total_start = Instant::now();
     reset_frame_perf_stats();
+    begin_frame_resource_sample();
 
     clear_copy_viewport_snapshot();
 

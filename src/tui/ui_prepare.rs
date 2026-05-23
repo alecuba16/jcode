@@ -366,6 +366,7 @@ pub(super) fn prepare_messages(
     };
 
     super::note_full_prep_request();
+    let cache_lookup_start = Instant::now();
 
     {
         let cache = match full_prep_cache().lock() {
@@ -378,15 +379,18 @@ pub(super) fn prepare_messages(
         };
         let mut cache = cache;
         if let Some((prepared, kind)) = cache.get_exact_with_kind(&key) {
+            super::note_full_prep_cache_lookup(cache_lookup_start.elapsed());
             super::note_full_prep_cache_hit(kind, prepared.as_ref());
             return prepared;
         }
     }
 
+    super::note_full_prep_cache_lookup(cache_lookup_start.elapsed());
     super::note_full_prep_cache_miss();
 
+    let build_start = Instant::now();
     let prepared = Arc::new(prepare_messages_inner(app, width, height));
-    super::note_full_prep_built(prepared.as_ref());
+    super::note_full_prep_built(prepared.as_ref(), build_start.elapsed());
 
     {
         if let Ok(mut cache) = full_prep_cache().lock() {
@@ -398,11 +402,17 @@ pub(super) fn prepare_messages(
 }
 
 fn prepare_messages_inner(app: &dyn TuiState, width: u16, height: u16) -> PreparedChatFrame {
+    let header_start = Instant::now();
     let mut all_header_lines = header::build_persistent_header(app, width);
     all_header_lines.extend(header::build_header_lines(app, width));
     let header_prepared = Arc::new(wrap_lines(all_header_lines, &[], &[], &[], width));
+    let header_ms = header_start.elapsed().as_secs_f64() * 1000.0;
 
+    let body_start = Instant::now();
     let body_prepared = prepare_body_cached(app, width);
+    let body_ms = body_start.elapsed().as_secs_f64() * 1000.0;
+
+    let batch_start = Instant::now();
     let has_batch_progress = active_batch_progress(app).is_some();
     let batch_prefix_blank = has_batch_progress && !body_prepared.wrapped_lines.is_empty();
     let batch_progress_prepared = if has_batch_progress {
@@ -414,6 +424,9 @@ fn prepare_messages_inner(app: &dyn TuiState, width: u16, height: u16) -> Prepar
     } else {
         Arc::new(empty_prepared_messages())
     };
+    let batch_ms = batch_start.elapsed().as_secs_f64() * 1000.0;
+
+    let streaming_start = Instant::now();
     let has_streaming = app.is_processing() && !app.streaming_text().is_empty();
     let stream_prefix_blank = has_streaming
         && (!body_prepared.wrapped_lines.is_empty()
@@ -423,12 +436,14 @@ fn prepare_messages_inner(app: &dyn TuiState, width: u16, height: u16) -> Prepar
     } else {
         Arc::new(empty_prepared_messages())
     };
+    let streaming_ms = streaming_start.elapsed().as_secs_f64() * 1000.0;
 
     let is_initial_empty = app.display_messages().is_empty()
         && !app.is_processing()
         && app.streaming_text().is_empty();
 
     if is_initial_empty {
+        let compose_start = Instant::now();
         let suggestions = app.suggestion_prompts();
         let is_centered = app.centered_mode();
         let suggestion_align = if is_centered {
@@ -509,15 +524,32 @@ fn prepare_messages_inner(app: &dyn TuiState, width: u16, height: u16) -> Prepar
             edit_tool_ranges: Vec::new(),
             copy_targets: Vec::new(),
         });
-        return PreparedChatFrame::from_single(prepared);
+        let frame = PreparedChatFrame::from_single(prepared);
+        super::note_full_prep_phase_metrics(super::FullPrepPhaseMetrics {
+            header_ms,
+            body_ms,
+            batch_ms,
+            streaming_ms,
+            compose_ms: compose_start.elapsed().as_secs_f64() * 1000.0,
+        });
+        return frame;
     }
 
-    PreparedChatFrame::from_sections(vec![
+    let compose_start = Instant::now();
+    let frame = PreparedChatFrame::from_sections(vec![
         (PreparedSectionKind::Header, header_prepared),
         (PreparedSectionKind::Body, body_prepared),
         (PreparedSectionKind::BatchProgress, batch_progress_prepared),
         (PreparedSectionKind::Streaming, streaming_prepared),
-    ])
+    ]);
+    super::note_full_prep_phase_metrics(super::FullPrepPhaseMetrics {
+        header_ms,
+        body_ms,
+        batch_ms,
+        streaming_ms,
+        compose_ms: compose_start.elapsed().as_secs_f64() * 1000.0,
+    });
+    frame
 }
 
 fn prepare_body_cached(app: &dyn TuiState, width: u16) -> Arc<PreparedMessages> {
@@ -535,6 +567,7 @@ fn prepare_body_cached(app: &dyn TuiState, width: u16) -> Arc<PreparedMessages> 
         centered: app.centered_mode(),
     };
     let msg_count = app.display_messages().len();
+    let cache_lookup_start = Instant::now();
 
     let cache = match body_cache().lock() {
         Ok(c) => c,
@@ -547,24 +580,30 @@ fn prepare_body_cached(app: &dyn TuiState, width: u16) -> Arc<PreparedMessages> 
 
     let mut cache = cache;
     if let Some((prepared, kind)) = cache.get_exact_with_kind(&key) {
+        super::note_body_cache_lookup(cache_lookup_start.elapsed());
         super::note_body_cache_hit(kind, prepared.as_ref());
         return prepared;
     }
 
+    super::note_body_cache_lookup(cache_lookup_start.elapsed());
     super::note_body_cache_miss();
 
     let incremental_base = cache.take_best_incremental_base(&key, msg_count);
 
     drop(cache);
 
-    let prepared = if let Some((prev, prev_count)) = incremental_base {
+    let build_start = Instant::now();
+    let (prepared, build_path) = if let Some((prev, prev_count)) = incremental_base {
         super::note_body_incremental_reuse(prev_count);
-        prepare_body_incremental(app, width, prev, prev_count)
+        (
+            prepare_body_incremental(app, width, prev, prev_count),
+            "incremental",
+        )
     } else {
-        Arc::new(prepare_body(app, width, false))
+        (Arc::new(prepare_body(app, width, false)), "full")
     };
 
-    super::note_body_built(prepared.as_ref());
+    super::note_body_built(prepared.as_ref(), build_start.elapsed(), build_path);
 
     let mut cache = match body_cache().lock() {
         Ok(c) => c,
