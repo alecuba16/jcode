@@ -193,6 +193,7 @@ pub(crate) enum DesktopWorkerToHostMessage {
     Ready(DesktopWorkerReady),
     Scene(DesktopSceneUpdate),
     Snapshot(DesktopSnapshotResponse),
+    ReloadRequested,
     Metrics(DesktopWorkerMetricBatch),
     Log(DesktopWorkerLog),
     Exited(DesktopWorkerExit),

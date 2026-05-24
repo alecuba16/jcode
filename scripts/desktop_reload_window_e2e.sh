@@ -1,37 +1,28 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# End-to-end smoke test for desktop stable-host hot reload behavior under niri.
+# End-to-end smoke test for desktop stable-host /reload behavior under niri.
 #
 # It launches jcode-desktop in stable-host mode, records the compositor window id
-# and layout, touches the desktop binary to trigger hot reload, then verifies the
-# same OS window is still present with the same niri layout and the app-worker
-# child process changed. This catches regressions where reload falls back to the
-# old full-process handoff path that closes/reopens the desktop window.
+# and layout, injects `/reload`, then verifies the same OS window is still present
+# with the same niri layout and the app-worker child process changed. This catches
+# regressions where slash reload falls back to the old full-process handoff path
+# that closes/reopens the desktop window.
 #
-# Requirements: niri, jq, a Wayland session, and a built jcode-desktop.
+# Requirements: niri, jq, wtype, a Wayland session, and a built jcode-desktop.
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BIN="${JCODE_DESKTOP_BIN:-$ROOT_DIR/target/debug/jcode-desktop}"
 TIMEOUT_SECS="${JCODE_DESKTOP_RELOAD_E2E_TIMEOUT_SECS:-15}"
 LOG_FILE="${JCODE_DESKTOP_RELOAD_E2E_LOG:-$(mktemp -t jcode-desktop-reload-e2e.XXXXXX.log)}"
-SELFDEV_BIN="$ROOT_DIR/target/selfdev/jcode-desktop"
-RELOAD_BIN="$BIN"
-if [[ -x "$SELFDEV_BIN" && "$SELFDEV_BIN" -nt "$BIN" ]]; then
-  RELOAD_BIN="$SELFDEV_BIN"
-fi
-RELOAD_BIN="${JCODE_DESKTOP_RELOAD_E2E_RELOAD_BIN:-$RELOAD_BIN}"
 
 if [[ ! -x "$BIN" ]]; then
   echo "desktop binary not found or not executable: $BIN" >&2
   echo "hint: cargo build -p jcode-desktop --bin jcode-desktop" >&2
   exit 2
 fi
-for tool in niri jq "$RELOAD_BIN"; do
-  if [[ ! -x "$tool" && "$tool" == */* ]]; then
-    echo "reload binary not found or not executable: $tool" >&2
-    exit 2
-  elif [[ "$tool" != */* ]] && ! command -v "$tool" >/dev/null 2>&1; then
+for tool in niri jq wtype; do
+  if ! command -v "$tool" >/dev/null 2>&1; then
     echo "required tool not found: $tool" >&2
     exit 2
   fi
@@ -95,9 +86,10 @@ fi
 
 niri msg action focus-window --id "$WINDOW_ID" >/dev/null
 sleep 0.2
-# Trigger the same hot-reload path used by self-dev builds: the stable host
-# observes the reload binary mtime changing and restarts only the app worker.
-touch "$RELOAD_BIN"
+# Trigger the user-visible slash command path. In stable-host mode this should
+# request a host-side app-worker restart, not a full desktop process handoff.
+wtype '/reload'
+wtype -k Return
 
 # Wait for the reload request to be processed. The stable-host path should keep
 # the same compositor window alive while restarting only the app worker.

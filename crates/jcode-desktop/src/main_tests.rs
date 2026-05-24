@@ -42,7 +42,7 @@ fn desktop_config_parses_positive_millisecond_durations_only() {
 fn desktop_process_role_parses_internal_flags() {
     assert_eq!(
         desktop_process_role_from_args(["jcode-desktop"].into_iter()),
-        DesktopProcessRole::Standalone
+        DesktopProcessRole::StableHost
     );
     assert_eq!(
         desktop_process_role_from_args(["jcode-desktop", "--desktop-host"].into_iter()),

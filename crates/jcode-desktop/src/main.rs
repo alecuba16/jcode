@@ -679,9 +679,14 @@ async fn run() -> Result<()> {
         ) {
             window.request_redraw();
         }
-        if let Some(scene) = hot_reloader.drain_app_worker_messages() {
+        let worker_drain = hot_reloader.drain_app_worker_messages();
+        if let Some(scene) = worker_drain.latest_scene {
             latest_worker_scene = Some(scene);
             window.request_redraw();
+        }
+        if worker_drain.reload_requested && hot_reloader.force_reload(&app, &window) {
+            target.exit();
+            return;
         }
 
         match event {
@@ -4676,8 +4681,19 @@ fn run_desktop_app_worker_process(desktop_mode: DesktopMode) -> Result<()> {
                         if key.pressed
                             && let Some(runtime) = runtime.as_mut()
                         {
-                            runtime.handle_key_input(desktop_key_event_to_key_input(&key));
-                            changed = true;
+                            let outcome =
+                                runtime.handle_key_input(desktop_key_event_to_key_input(&key));
+                            if matches!(outcome, KeyOutcome::ForceReload) {
+                                let reload_requested = DesktopProtocolEnvelope::new(
+                                    next_worker_sequence,
+                                    DesktopWorkerToHostMessage::ReloadRequested,
+                                );
+                                next_worker_sequence += 1;
+                                write_desktop_ipc_frame(&mut stdout, &reload_requested)
+                                    .context("failed to write worker reload request")?;
+                            } else {
+                                changed = true;
+                            }
                         }
                     }
                     DesktopInputEvent::Window(DesktopWindowEvent::Resized {
@@ -4893,7 +4909,7 @@ fn desktop_process_role_from_args<'a>(
             };
         }
     }
-    DesktopProcessRole::Standalone
+    DesktopProcessRole::StableHost
 }
 
 fn desktop_resume_session_id_from_args<'a>(
@@ -5174,6 +5190,12 @@ struct DesktopHotReloader {
     app_worker: Option<DesktopWorkerConnection>,
 }
 
+#[derive(Default)]
+struct DesktopWorkerDrain {
+    latest_scene: Option<DesktopScene>,
+    reload_requested: bool,
+}
+
 impl DesktopHotReloader {
     const CHECK_INTERVAL: Duration = Duration::from_millis(750);
 
@@ -5203,11 +5225,11 @@ impl DesktopHotReloader {
         Some(std::cmp::max(now, self.last_checked + Self::CHECK_INTERVAL))
     }
 
-    fn drain_app_worker_messages(&mut self) -> Option<DesktopScene> {
+    fn drain_app_worker_messages(&mut self) -> DesktopWorkerDrain {
         let Some(worker) = self.app_worker.as_ref() else {
-            return None;
+            return DesktopWorkerDrain::default();
         };
-        let mut latest_scene = None;
+        let mut drained = DesktopWorkerDrain::default();
         while let Some(message) = worker.try_recv() {
             match message {
                 Ok(DesktopWorkerToHostMessage::Ready(ready)) => {
@@ -5217,7 +5239,10 @@ impl DesktopHotReloader {
                     ));
                 }
                 Ok(DesktopWorkerToHostMessage::Scene(scene_update)) => {
-                    latest_scene = Some(scene_update.scene);
+                    drained.latest_scene = Some(scene_update.scene);
+                }
+                Ok(DesktopWorkerToHostMessage::ReloadRequested) => {
+                    drained.reload_requested = true;
                 }
                 Ok(DesktopWorkerToHostMessage::Snapshot(snapshot)) => {
                     desktop_log::info(format_args!(
@@ -5251,7 +5276,7 @@ impl DesktopHotReloader {
                 }
             }
         }
-        latest_scene
+        drained
     }
 
     fn has_app_worker(&self) -> bool {
