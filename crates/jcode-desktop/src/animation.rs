@@ -8,6 +8,7 @@ pub(crate) const STATUS_COLOR_TRANSITION_DURATION: Duration = Duration::from_mil
 const VIEWPORT_ANIMATION_EPSILON: f32 = 0.5;
 const SURFACE_TRANSITION_EPSILON: f32 = 0.5;
 const SURFACE_ENTRY_OFFSET_PIXELS: f32 = 24.0;
+const SURFACE_EXIT_OFFSET_PIXELS: f32 = 18.0;
 const SURFACE_ENTRY_SCALE: f32 = 0.965;
 
 #[derive(Clone, Copy)]
@@ -149,6 +150,7 @@ pub(crate) struct SurfaceVisualFrame {
     pub(crate) id: u64,
     pub(crate) rect: AnimatedRect,
     pub(crate) opacity: f32,
+    pub(crate) exiting: bool,
     scale: f32,
 }
 
@@ -181,6 +183,14 @@ impl SurfaceAnimationValues {
             scale: SURFACE_ENTRY_SCALE,
         }
     }
+
+    fn exiting_from(current: Self) -> Self {
+        Self {
+            rect: current.rect.shifted(0.0, -SURFACE_EXIT_OFFSET_PIXELS),
+            opacity: 0.0,
+            scale: SURFACE_ENTRY_SCALE,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -189,6 +199,7 @@ struct SurfaceAnimationState {
     current: SurfaceAnimationValues,
     target: SurfaceAnimationValues,
     started_at: Option<Instant>,
+    exiting: bool,
     last_seen_generation: u64,
 }
 
@@ -224,12 +235,18 @@ impl SurfaceTransitionAnimator {
                     current: start,
                     target: target_values,
                     started_at: animate_new_surfaces.then_some(now),
+                    exiting: false,
                     last_seen_generation: generation,
                 }
             });
 
             state.last_seen_generation = generation;
-            if surface_animation_target_changed(state.target, target_values) {
+            if state.exiting {
+                state.start = state.current;
+                state.target = target_values;
+                state.started_at = Some(now);
+                state.exiting = false;
+            } else if surface_animation_target_changed(state.target, target_values) {
                 if state.started_at.is_none() {
                     state.start = state.current;
                     state.started_at = Some(now);
@@ -238,13 +255,33 @@ impl SurfaceTransitionAnimator {
             }
 
             update_surface_animation_state(state, now);
-            frames.push(SurfaceVisualFrame {
-                id: target.id,
-                rect: state.current.rect,
-                opacity: state.current.opacity,
-                scale: state.current.scale,
-            });
+            frames.push(surface_visual_frame_from_state(target.id, state));
         }
+
+        let mut exiting_frames = Vec::new();
+        for (&id, state) in &mut self.states {
+            if state.last_seen_generation == generation {
+                continue;
+            }
+
+            if !state.exiting {
+                state.start = state.current;
+                state.target = SurfaceAnimationValues::exiting_from(state.current);
+                state.started_at = Some(now);
+                state.exiting = true;
+            }
+
+            update_surface_animation_state(state, now);
+            if state.exiting && state.started_at.is_none() && state.current.opacity <= 0.001 {
+                continue;
+            }
+
+            state.last_seen_generation = generation;
+            exiting_frames.push(surface_visual_frame_from_state(id, state));
+        }
+
+        exiting_frames.sort_by_key(|frame| frame.id);
+        frames.extend(exiting_frames);
 
         self.states
             .retain(|_, state| state.last_seen_generation == generation);
@@ -259,6 +296,16 @@ impl SurfaceTransitionAnimator {
 
     pub(crate) fn is_animating(&self) -> bool {
         self.states.values().any(|state| state.started_at.is_some())
+    }
+}
+
+fn surface_visual_frame_from_state(id: u64, state: &SurfaceAnimationState) -> SurfaceVisualFrame {
+    SurfaceVisualFrame {
+        id,
+        rect: state.current.rect,
+        opacity: state.current.opacity,
+        exiting: state.exiting,
+        scale: state.current.scale,
     }
 }
 

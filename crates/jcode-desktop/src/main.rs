@@ -77,7 +77,7 @@ use winit::window::{Fullscreen, Window, WindowBuilder};
 use workspace::{InputMode, KeyInput, KeyOutcome, PanelSizePreset, Workspace};
 
 use std::borrow::Cow;
-use std::collections::hash_map::DefaultHasher;
+use std::collections::{HashMap, hash_map::DefaultHasher};
 use std::ffi::OsString;
 use std::fs::{self, OpenOptions};
 use std::hash::{Hash, Hasher};
@@ -8235,6 +8235,7 @@ struct Canvas {
     surface_zero_sized: bool,
     viewport_animation: AnimatedViewport,
     surface_transitions: SurfaceTransitionAnimator,
+    workspace_surface_exit_cache: HashMap<u64, workspace::Surface>,
     focus_pulse: FocusPulse,
     status_color_transition: ColorTransition,
     tool_card_motion: ToolCardMotionRegistry,
@@ -8351,6 +8352,7 @@ impl Canvas {
             surface_zero_sized: !desktop_surface_size_is_renderable(initial_window_size),
             viewport_animation: AnimatedViewport::default(),
             surface_transitions: SurfaceTransitionAnimator::default(),
+            workspace_surface_exit_cache: HashMap::new(),
             focus_pulse: FocusPulse::default(),
             status_color_transition: ColorTransition::default(),
             tool_card_motion: ToolCardMotionRegistry::default(),
@@ -9174,6 +9176,11 @@ impl Canvas {
                 self.surface_transitions.frame(surface_targets, now),
                 self.surface_transitions.is_animating(),
             );
+            update_workspace_surface_exit_cache(
+                &mut self.workspace_surface_exit_cache,
+                workspace,
+                &surface_frames,
+            );
             let status_color = self
                 .status_color_transition
                 .frame(workspace_status_bar_target_color(workspace), now);
@@ -9184,6 +9191,7 @@ impl Canvas {
             )
         } else {
             self.surface_transitions.clear();
+            self.workspace_surface_exit_cache.clear();
             self.status_color_transition.clear();
             (None, None, None)
         };
@@ -9520,6 +9528,7 @@ impl Canvas {
                         focus_pulse,
                         space_hold_progress: workspace_space_hold_progress,
                         surface_frames: workspace_surface_frames_for_frame.as_ref(),
+                        exiting_surfaces: &self.workspace_surface_exit_cache,
                         status_color,
                     },
                     &mut self.primitive_workspace_vertices,
@@ -10551,6 +10560,7 @@ fn build_vertices(
             focus_pulse,
             space_hold_progress,
             surface_frames: None,
+            exiting_surfaces: &HashMap::new(),
             status_color: workspace_status_bar_target_color(workspace),
         },
         &mut vertices,
@@ -10597,6 +10607,28 @@ impl WorkspaceSurfaceTransitionFrames {
             .copied()
             .find(|frame| frame.id == surface_id)
     }
+
+    fn exiting_frames(&self) -> impl Iterator<Item = SurfaceVisualFrame> + '_ {
+        self.frames.iter().copied().filter(|frame| frame.exiting)
+    }
+}
+
+fn update_workspace_surface_exit_cache(
+    cache: &mut HashMap<u64, workspace::Surface>,
+    workspace: &Workspace,
+    surface_frames: &WorkspaceSurfaceTransitionFrames,
+) {
+    for surface in &workspace.surfaces {
+        cache.insert(surface.id, surface.clone());
+    }
+
+    cache.retain(|surface_id, _| {
+        workspace
+            .surfaces
+            .iter()
+            .any(|surface| surface.id == *surface_id)
+            || surface_frames.frame_for_surface(*surface_id).is_some()
+    });
 }
 
 fn workspace_transitioned_surface_rect(
@@ -10929,6 +10961,7 @@ struct WorkspaceVertexBuildParams<'a> {
     focus_pulse: f32,
     space_hold_progress: Option<f32>,
     surface_frames: Option<&'a WorkspaceSurfaceTransitionFrames>,
+    exiting_surfaces: &'a HashMap<u64, workspace::Surface>,
     status_color: [f32; 4],
 }
 
@@ -10940,6 +10973,7 @@ fn build_vertices_into(params: WorkspaceVertexBuildParams<'_>, vertices: &mut Ve
         focus_pulse,
         space_hold_progress,
         surface_frames,
+        exiting_surfaces,
         status_color,
     } = params;
     vertices.clear();
@@ -11022,6 +11056,7 @@ fn build_vertices_into(params: WorkspaceVertexBuildParams<'_>, vertices: &mut Ve
         if let Some(progress) = space_hold_progress {
             push_space_hold_progress(vertices, progress, size);
         }
+        push_workspace_exiting_surfaces(vertices, surface_frames, exiting_surfaces, size);
         return;
     }
 
@@ -11061,8 +11096,32 @@ fn build_vertices_into(params: WorkspaceVertexBuildParams<'_>, vertices: &mut Ve
         },
     );
 
+    push_workspace_exiting_surfaces(vertices, surface_frames, exiting_surfaces, size);
+
     if let Some(progress) = space_hold_progress {
         push_space_hold_progress(vertices, progress, size);
+    }
+}
+
+fn push_workspace_exiting_surfaces(
+    vertices: &mut Vec<Vertex>,
+    surface_frames: Option<&WorkspaceSurfaceTransitionFrames>,
+    exiting_surfaces: &HashMap<u64, workspace::Surface>,
+    size: PhysicalSize<u32>,
+) {
+    let Some(surface_frames) = surface_frames else {
+        return;
+    };
+
+    for frame in surface_frames.exiting_frames() {
+        let Some(surface) = exiting_surfaces.get(&frame.id) else {
+            continue;
+        };
+        let rect = rect_from_animated_rect(frame.visual_rect());
+        let start_index = vertices.len();
+        push_surface(vertices, rect, surface.color_index, false, 0.0, size);
+        push_panel_contents(vertices, surface, rect, size, false, 0, None);
+        multiply_vertex_alpha(&mut vertices[start_index..], frame.opacity);
     }
 }
 

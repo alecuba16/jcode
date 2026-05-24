@@ -914,6 +914,51 @@ fn surface_transition_animates_panel_reposition_and_entry() {
 }
 
 #[test]
+fn surface_transition_animates_panel_exit_before_removal() {
+    let mut transitions = SurfaceTransitionAnimator::default();
+    let now = Instant::now();
+    let original = SurfaceVisualTarget {
+        id: 1,
+        rect: AnimatedRect {
+            x: 16.0,
+            y: 24.0,
+            width: 140.0,
+            height: 180.0,
+        },
+    };
+
+    let first = transitions.frame([original], now);
+    let first = surface_visual_frame(&first, 1);
+    assert!(!first.exiting);
+    assert_eq!(first.opacity, 1.0);
+
+    let exit_start = transitions.frame([], now + Duration::from_millis(8));
+    let exit_start = surface_visual_frame(&exit_start, 1);
+    assert!(exit_start.exiting);
+    assert_eq!(exit_start.opacity, 1.0);
+    assert_eq!(exit_start.rect, original.rect);
+    assert!(transitions.is_animating());
+
+    let exit_middle = transitions.frame(
+        [],
+        now + Duration::from_millis(8) + SURFACE_TRANSITION_DURATION / 2,
+    );
+    let exit_middle = surface_visual_frame(&exit_middle, 1);
+    assert!(exit_middle.exiting);
+    assert!(exit_middle.opacity > 0.0);
+    assert!(exit_middle.opacity < 1.0);
+    assert!(exit_middle.rect.y < original.rect.y);
+    assert!(exit_middle.visual_rect().width < original.rect.width);
+
+    let finished = transitions.frame(
+        [],
+        now + Duration::from_millis(8) + SURFACE_TRANSITION_DURATION * 2,
+    );
+    assert!(finished.is_empty());
+    assert!(!transitions.is_animating());
+}
+
+#[test]
 fn color_transition_interpolates_status_bar_mode_changes() {
     let mut transition = ColorTransition::default();
     let now = Instant::now();
@@ -7829,6 +7874,7 @@ fn workspace_session_panel_composes_single_session_geometry() {
             focus_pulse: 0.0,
             space_hold_progress: None,
             surface_frames: None,
+            exiting_surfaces: &HashMap::new(),
             status_color: workspace_status_bar_target_color(&workspace),
         },
         &mut vertices,
@@ -7944,6 +7990,7 @@ fn workspace_session_panel_reuses_single_session_primitive_exactly() {
             focus_pulse: 0.0,
             space_hold_progress: None,
             surface_frames: None,
+            exiting_surfaces: &HashMap::new(),
             status_color: workspace_status_bar_target_color(&workspace),
         },
         &mut workspace_vertices,
