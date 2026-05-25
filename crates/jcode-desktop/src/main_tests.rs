@@ -2040,6 +2040,116 @@ fn single_session_active_work_uses_streaming_activity_cue_geometry() {
 }
 
 #[test]
+fn single_session_motion_geometry_survives_resize_and_text_scale_changes() {
+    fn apply_text_scale_steps(app: &mut SingleSessionApp, steps: i8) {
+        let direction = steps.signum();
+        for _ in 0..steps.unsigned_abs() {
+            app.handle_key(KeyInput::AdjustTextScale(direction));
+        }
+    }
+
+    fn assert_finite_vertices(label: &str, vertices: &[Vertex]) {
+        assert!(
+            !vertices.is_empty(),
+            "{label} should produce primitive vertices"
+        );
+        for (index, vertex) in vertices.iter().enumerate() {
+            assert!(
+                vertex
+                    .position
+                    .iter()
+                    .all(|component| component.is_finite()),
+                "{label} vertex {index} has non-finite position {:?}",
+                vertex.position
+            );
+            assert!(
+                vertex.color.iter().all(|component| component.is_finite()),
+                "{label} vertex {index} has non-finite color {:?}",
+                vertex.color
+            );
+        }
+    }
+
+    fn assert_case(label: &str, base_app: SingleSessionApp, expected_colors: &[[f32; 4]]) {
+        for text_scale_steps in [-2, 0, 3] {
+            let mut app = base_app.clone();
+            apply_text_scale_steps(&mut app, text_scale_steps);
+            for size in [
+                PhysicalSize::new(520, 420),
+                PhysicalSize::new(900, 700),
+                PhysicalSize::new(1320, 860),
+            ] {
+                let vertices = build_single_session_vertices(&app, size, 0.0, 7);
+                let case_label = format!("{label} scale_step={text_scale_steps} size={size:?}");
+                assert_finite_vertices(&case_label, &vertices);
+                for color in expected_colors {
+                    assert!(
+                        vertices_have_color(&vertices, *color),
+                        "{case_label} should retain color {color:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    let mut activity_app = SingleSessionApp::new(None);
+    activity_app.apply_session_event(session_launch::DesktopSessionEvent::TextDelta(
+        "streaming answer".to_string(),
+    ));
+    assert_case(
+        "activity cue",
+        activity_app,
+        &[STREAMING_ACTIVITY_PILL_COLOR],
+    );
+
+    let mut attachments_app = SingleSessionApp::new(None);
+    attachments_app
+        .pending_images
+        .push(("image/png".to_string(), "base64-data".to_string()));
+    attachments_app.handle_key(KeyInput::Character("caption for image".to_string()));
+    assert_case(
+        "composer attachments",
+        attachments_app,
+        &[
+            COMPOSER_CARD_BACKGROUND_COLOR,
+            ATTACHMENT_CHIP_BACKGROUND_COLOR,
+        ],
+    );
+
+    let mut stdin_app = SingleSessionApp::new(None);
+    stdin_app.apply_session_event(session_launch::DesktopSessionEvent::StdinRequest {
+        request_id: "stdin-resize".to_string(),
+        prompt: "multi-line code: ".to_string(),
+        is_password: false,
+        tool_call_id: "tool-resize".to_string(),
+    });
+    stdin_app.handle_key(KeyInput::Character("ready".to_string()));
+    assert_case(
+        "stdin overlay",
+        stdin_app,
+        &[STDIN_OVERLAY_BACKGROUND_COLOR, STDIN_OVERLAY_SUBMIT_COLOR],
+    );
+
+    let mut switcher_app = SingleSessionApp::new(None);
+    assert_eq!(
+        switcher_app.handle_key(KeyInput::OpenSessionSwitcher),
+        KeyOutcome::LoadSessionSwitcher
+    );
+    switcher_app.apply_session_switcher_cards(vec![
+        test_session_card("session-alpha", "alpha", "active"),
+        test_session_card("session-beta", "beta", "idle"),
+    ]);
+    assert_case(
+        "session switcher preview panes",
+        switcher_app,
+        &[
+            INLINE_WIDGET_CARD_BACKGROUND_COLOR,
+            INLINE_WIDGET_PREVIEW_PANE_BACKGROUND_COLOR,
+        ],
+    );
+}
+
+#[test]
 fn single_session_streaming_response_does_not_draw_line_reveal_shimmer() {
     let mut app = SingleSessionApp::new(None);
     let size = PhysicalSize::new(900, 700);
