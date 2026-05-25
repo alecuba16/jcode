@@ -2139,27 +2139,18 @@ pub(crate) fn push_streaming_activity_cue(
     viewport: Option<&SingleSessionBodyViewport>,
 ) {
     let typography = single_session_typography();
-    let line_height = typography.body_size * typography.body_line_height;
     let body_top = single_session_body_top_for_app(app, size);
     let viewport = viewport
         .cloned()
         .unwrap_or_else(|| single_session_body_viewport_for_tick(app, size, tick, 0.0));
-    let active_line_index = if app.streaming_response.is_empty() {
-        None
-    } else {
-        viewport.lines.len().checked_sub(1)
-    };
-
-    let cue_y = active_line_index
-        .map(|line_index| body_top + viewport.top_offset_pixels + line_index as f32 * line_height)
-        .filter(|y| *y >= PANEL_BODY_TOP_PADDING && *y <= single_session_body_bottom(size))
-        .unwrap_or_else(|| {
-            single_session_draft_top_for_app(app, size) - typography.body_size * 0.82
-        });
     let pill_width = (typography.body_size * 2.05).clamp(26.0, 34.0);
     let pill_height = (typography.body_size * 0.82).clamp(11.0, 15.0);
+    let body_bottom = single_session_body_bottom_for_total_lines(app, size, viewport.total_lines);
+    let draft_top = single_session_draft_top_for_total_lines(app, size, viewport.total_lines);
+    let activity_lane_top = body_bottom.max(body_top);
+    let activity_lane_bottom = draft_top.max(activity_lane_top + pill_height);
+    let cue_y = activity_lane_top + (activity_lane_bottom - activity_lane_top - pill_height) * 0.5;
     let cue_x = PANEL_TITLE_LEFT_PADDING;
-    let cue_y = cue_y + (line_height - pill_height) * 0.5;
     let cue_rect = Rect {
         x: cue_x,
         y: cue_y,
@@ -7496,8 +7487,10 @@ fn single_session_body_bottom_base_for_app(app: &SingleSessionApp, size: Physica
 }
 
 fn single_session_body_bottom_for_app(app: &SingleSessionApp, size: PhysicalSize<u32>) -> f32 {
-    (single_session_body_bottom_base_for_app(app, size) - inline_widget_reserved_height(app))
-        .max(single_session_body_top_for_app(app, size))
+    (single_session_body_bottom_base_for_app(app, size)
+        - inline_widget_reserved_height(app)
+        - streaming_activity_reserved_height(app))
+    .max(single_session_body_top_for_app(app, size))
 }
 
 fn single_session_body_bottom_base_for_total_lines(
@@ -7520,8 +7513,18 @@ pub(crate) fn single_session_body_bottom_for_total_lines(
     total_lines: usize,
 ) -> f32 {
     (single_session_body_bottom_base_for_total_lines(app, size, total_lines)
-        - inline_widget_reserved_height(app))
+        - inline_widget_reserved_height(app)
+        - streaming_activity_reserved_height(app))
     .max(single_session_body_top_for_app(app, size))
+}
+
+fn streaming_activity_reserved_height(app: &SingleSessionApp) -> f32 {
+    if !app.has_activity_indicator() {
+        return 0.0;
+    }
+
+    let typography = single_session_typography_for_scale(app.text_scale());
+    typography.body_size * typography.body_line_height
 }
 
 fn inline_widget_visible_text_height(app: &SingleSessionApp) -> f32 {

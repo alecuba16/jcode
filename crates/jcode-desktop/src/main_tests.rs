@@ -1651,7 +1651,21 @@ fn single_session_active_work_uses_streaming_activity_cue_geometry() {
     .expect("streaming activity cue should draw an inline pill");
     assert!(
         (pill_bounds.min_x - PANEL_TITLE_LEFT_PADDING).abs() <= 0.5,
-        "activity cue should align to transcript text, got {pill_bounds:?}"
+        "activity cue should align to the composer lane, got {pill_bounds:?}"
+    );
+    let body_bottom = single_session_body_bottom_for_total_lines(
+        &app,
+        PhysicalSize::new(900, 700),
+        single_session_rendered_body_lines_for_tick(&app, PhysicalSize::new(900, 700), 0).len(),
+    );
+    let draft_top = single_session_draft_top_for_app(&app, PhysicalSize::new(900, 700));
+    assert!(
+        pill_bounds.min_y >= body_bottom - 0.5,
+        "activity cue should be below transcript body, got {pill_bounds:?}, body_bottom={body_bottom}"
+    );
+    assert!(
+        pill_bounds.max_y <= draft_top + 0.5,
+        "activity cue should stay above composer, got {pill_bounds:?}, draft_top={draft_top}"
     );
     let pill_width = pill_bounds.max_x - pill_bounds.min_x;
     assert!(
