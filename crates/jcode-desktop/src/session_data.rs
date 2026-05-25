@@ -15,6 +15,9 @@ const SESSION_PREVIEW_LINE_LIMIT: usize = 5;
 const SESSION_PREVIEW_CHAR_LIMIT: usize = 72;
 const SESSION_DETAIL_LINE_LIMIT: usize = 28;
 const SESSION_DETAIL_CHAR_LIMIT: usize = 128;
+const SESSION_CARD_TRANSCRIPT_MESSAGE_LIMIT: usize = 64;
+const SESSION_CARD_TRANSCRIPT_CHAR_LIMIT: usize = 48_000;
+const SESSION_CARD_TRANSCRIPT_MESSAGE_CHAR_LIMIT: usize = 4_000;
 
 pub fn load_recent_session_cards() -> Result<Vec<SessionCard>> {
     load_recent_session_cards_with_limit(DEFAULT_SESSION_LIMIT)
@@ -296,6 +299,7 @@ fn load_session_card(path: &Path, modified: SystemTime) -> Result<Option<Session
         SESSION_DETAIL_LINE_LIMIT,
         SESSION_DETAIL_CHAR_LIMIT,
     );
+    let card_transcript_messages = session_card_transcript_messages(&transcript_messages);
 
     Ok(Some(SessionCard {
         session_id: id,
@@ -304,7 +308,7 @@ fn load_session_card(path: &Path, modified: SystemTime) -> Result<Option<Session
         detail,
         preview_lines,
         detail_lines,
-        transcript_messages,
+        transcript_messages: card_transcript_messages,
     }))
 }
 
@@ -369,6 +373,36 @@ fn session_transcript_messages(messages: &StoredSession) -> Vec<SessionTranscrip
             Some(SessionTranscriptMessage { role, content })
         })
         .collect()
+}
+
+fn session_card_transcript_messages(
+    messages: &[SessionTranscriptMessage],
+) -> Vec<SessionTranscriptMessage> {
+    let mut selected = Vec::new();
+    let mut total_chars = 0usize;
+
+    for message in messages.iter().rev() {
+        if selected.len() >= SESSION_CARD_TRANSCRIPT_MESSAGE_LIMIT {
+            break;
+        }
+
+        let content = truncate_chars(&message.content, SESSION_CARD_TRANSCRIPT_MESSAGE_CHAR_LIMIT);
+        let content_chars = content.chars().count();
+        if !selected.is_empty()
+            && total_chars.saturating_add(content_chars) > SESSION_CARD_TRANSCRIPT_CHAR_LIMIT
+        {
+            break;
+        }
+
+        total_chars = total_chars.saturating_add(content_chars);
+        selected.push(SessionTranscriptMessage {
+            role: message.role.clone(),
+            content,
+        });
+    }
+
+    selected.reverse();
+    selected
 }
 
 fn transcript_display_role(role: Option<&str>) -> String {
@@ -588,6 +622,64 @@ mod tests {
                 },
             ]
         );
+
+        let _ = fs::remove_dir_all(dir);
+        Ok(())
+    }
+
+    #[test]
+    fn session_card_transcript_messages_are_bounded_to_recent_visible_text() -> Result<()> {
+        let dir = std::env::temp_dir().join(format!(
+            "jcode-desktop-session-card-bound-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir)?;
+        let path = dir.join("session_large_123.json");
+        let messages = (0..80)
+            .map(|index| {
+                json!({
+                    "role": "user",
+                    "content": [{"type": "text", "text": format!("prompt {index}")}],
+                })
+            })
+            .chain(std::iter::once(json!({
+                "role": "assistant",
+                "content": [{"type": "text", "text": "x".repeat(SESSION_CARD_TRANSCRIPT_MESSAGE_CHAR_LIMIT + 12)}],
+            })))
+            .collect::<Vec<_>>();
+        fs::write(
+            &path,
+            serde_json::to_vec(&json!({
+                "status": "active",
+                "model": "test-model",
+                "messages": messages,
+            }))?,
+        )?;
+
+        let card = load_session_card(&path, SystemTime::UNIX_EPOCH)?.unwrap();
+
+        assert_eq!(
+            card.transcript_messages.len(),
+            SESSION_CARD_TRANSCRIPT_MESSAGE_LIMIT
+        );
+        assert_eq!(
+            card.transcript_messages
+                .first()
+                .map(|message| message.content.as_str()),
+            Some("prompt 17")
+        );
+        let last = card
+            .transcript_messages
+            .last()
+            .expect("last bounded message");
+        assert_eq!(last.role, "assistant");
+        assert_eq!(
+            last.content.chars().count(),
+            SESSION_CARD_TRANSCRIPT_MESSAGE_CHAR_LIMIT + 1,
+            "long card transcript message should be truncated with an ellipsis"
+        );
+        assert!(last.content.ends_with('…'));
 
         let _ = fs::remove_dir_all(dir);
         Ok(())
