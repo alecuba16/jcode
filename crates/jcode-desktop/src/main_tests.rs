@@ -6542,6 +6542,57 @@ fn single_session_model_picker_cold_start_benchmark() {
 }
 
 #[test]
+fn model_choice_dedupe_preserves_distinct_variants_and_first_occurrence() {
+    let choices = vec![
+        session_launch::DesktopModelChoice {
+            model: "gpt-5".to_string(),
+            provider: Some("openai".to_string()),
+            api_method: Some("responses".to_string()),
+            detail: Some("fast".to_string()),
+            available: true,
+        },
+        session_launch::DesktopModelChoice {
+            model: "gpt-5".to_string(),
+            provider: Some("openai".to_string()),
+            api_method: Some("responses".to_string()),
+            detail: Some("fast".to_string()),
+            available: false,
+        },
+        session_launch::DesktopModelChoice {
+            model: "gpt-5".to_string(),
+            provider: Some("openai".to_string()),
+            api_method: Some("chat".to_string()),
+            detail: Some("fast".to_string()),
+            available: true,
+        },
+        session_launch::DesktopModelChoice {
+            model: "gpt-5-mini".to_string(),
+            provider: Some("openai".to_string()),
+            api_method: Some("responses".to_string()),
+            detail: Some("fast".to_string()),
+            available: true,
+        },
+    ];
+
+    let mut app = SingleSessionApp::new(None);
+    app.apply_session_event(session_launch::DesktopSessionEvent::ModelCatalog {
+        current_model: None,
+        provider_name: Some("OpenAI".to_string()),
+        models: choices,
+        reasoning_effort: None,
+        service_tier: None,
+        compaction_mode: None,
+    });
+
+    let deduped = &app.model_picker.choices;
+
+    assert_eq!(deduped.len(), 3);
+    assert!(deduped[0].available, "first duplicate entry should win");
+    assert_eq!(deduped[1].api_method.as_deref(), Some("chat"));
+    assert_eq!(deduped[2].model, "gpt-5-mini");
+}
+
+#[test]
 fn single_session_session_switcher_loads_filters_and_resumes_session() {
     let mut app = SingleSessionApp::new(None);
     app.messages

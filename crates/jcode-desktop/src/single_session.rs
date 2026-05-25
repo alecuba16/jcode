@@ -10,7 +10,7 @@ use jcode_tui_messages::DisplayMessage;
 use pulldown_cmark::{
     Alignment, BlockQuoteKind, CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd,
 };
-use std::collections::hash_map::DefaultHasher;
+use std::collections::{HashSet, hash_map::DefaultHasher};
 use std::hash::{Hash, Hasher};
 use std::time::{Duration, Instant};
 use workspace::{KeyInput, KeyOutcome};
@@ -5934,14 +5934,16 @@ fn desktop_slash_fuzzy_score(needle: &str, haystack: &str) -> Option<usize> {
 }
 
 fn dedupe_model_choices(choices: Vec<DesktopModelChoice>) -> Vec<DesktopModelChoice> {
-    let mut deduped: Vec<DesktopModelChoice> = Vec::new();
+    let mut seen = HashSet::with_capacity(choices.len());
+    let mut deduped: Vec<DesktopModelChoice> = Vec::with_capacity(choices.len());
     for choice in choices {
-        if deduped.iter().any(|existing| {
-            existing.model == choice.model
-                && existing.provider == choice.provider
-                && existing.api_method == choice.api_method
-                && existing.detail == choice.detail
-        }) {
+        let key = (
+            choice.model.clone(),
+            choice.provider.clone(),
+            choice.api_method.clone(),
+            choice.detail.clone(),
+        );
+        if !seen.insert(key) {
             continue;
         }
         deduped.push(choice);
