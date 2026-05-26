@@ -2024,7 +2024,7 @@ impl App {
 
         for session_id in &recovered {
             let mut session_cwd = cwd.clone();
-            if let Ok(session) = crate::session::Session::load(session_id)
+            if let Ok(session) = crate::session::Session::load_startup_stub(session_id)
                 && let Some(dir) = session.working_dir.as_deref()
                 && std::path::Path::new(dir).is_dir()
             {
