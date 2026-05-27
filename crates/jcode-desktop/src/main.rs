@@ -123,6 +123,7 @@ const STATUS_PREVIEW_PANEL_WIDTH: f32 = 9.0;
 const STATUS_PREVIEW_PANEL_GAP: f32 = 2.0;
 const STATUS_PREVIEW_GROUP_GAP: f32 = 10.0;
 const STATUS_PREVIEW_SIDE_RESERVE: f32 = 74.0;
+const STATUS_PREVIEW_MAX_TICKS_PER_LANE: i32 = 32;
 const SPACE_HOLD_PROGRESS_HEIGHT: f32 = 7.0;
 const SPACE_HOLD_PROGRESS_WIDTH_FRACTION: f32 = 0.36;
 const SPACE_HOLD_PROGRESS_TRACK_COLOR: [f32; 4] = [0.055, 0.060, 0.075, 0.96];
@@ -4295,13 +4296,64 @@ fn run_scroll_render_benchmark(frames: usize) -> Result<()> {
     });
 
     let mut workspace_app = Workspace::from_session_cards(benchmark_workspace_session_cards(128));
+    let mut workspace_layout_ms = 0.0;
+    let mut workspace_vertices_ms = 0.0;
+    let mut workspace_visible_surfaces = 0usize;
     let (workspace_navigation_ms, workspace_navigation_checksum) =
         benchmark_phase(frames, |frame| {
             let key = if frame % 2 == 0 { "l" } else { "h" };
             let _ = workspace_app.handle_key(KeyInput::Character(key.to_string()));
+            let phase_started = Instant::now();
             let layout = workspace_render_layout(&workspace_app, size, Some(size));
+            workspace_layout_ms += phase_started.elapsed().as_secs_f64() * 1000.0;
+            let phase_started = Instant::now();
             let vertices = build_vertices(&workspace_app, size, layout, 0.0, None);
+            workspace_vertices_ms += phase_started.elapsed().as_secs_f64() * 1000.0;
+            workspace_visible_surfaces +=
+                workspace_visible_surface_count(&workspace_app, size, layout);
             vertices.len() ^ (workspace_app.focused_id as usize) ^ workspace_app.surfaces.len()
+        });
+
+    let mut workspace_full_app =
+        Workspace::from_session_cards(benchmark_workspace_session_cards(512));
+    let mut workspace_full_layout_ms = 0.0;
+    let mut workspace_full_vertices_ms = 0.0;
+    let mut workspace_full_text_panes_ms = 0.0;
+    let mut workspace_full_text_areas_ms = 0.0;
+    let mut workspace_full_visible_surfaces = 0usize;
+    let mut workspace_full_text_pane_count = 0usize;
+    let mut workspace_full_text_area_count = 0usize;
+    let mut workspace_full_font_system = benchmark_font_system();
+    let (workspace_full_frame_ms, workspace_full_frame_checksum) =
+        benchmark_phase(frames, |frame| {
+            let key = match frame % 4 {
+                0 | 1 => "j",
+                _ => "k",
+            };
+            let _ = workspace_full_app.handle_key(KeyInput::Character(key.to_string()));
+            let phase_started = Instant::now();
+            let layout = workspace_render_layout(&workspace_full_app, size, Some(size));
+            workspace_full_layout_ms += phase_started.elapsed().as_secs_f64() * 1000.0;
+            workspace_full_visible_surfaces +=
+                workspace_visible_surface_count(&workspace_full_app, size, layout);
+            let phase_started = Instant::now();
+            let vertices = build_vertices(&workspace_full_app, size, layout, 0.0, None);
+            workspace_full_vertices_ms += phase_started.elapsed().as_secs_f64() * 1000.0;
+            let phase_started = Instant::now();
+            let panes = build_workspace_single_session_text_panes(
+                &workspace_full_app,
+                size,
+                layout,
+                None,
+                &mut workspace_full_font_system,
+            );
+            workspace_full_text_panes_ms += phase_started.elapsed().as_secs_f64() * 1000.0;
+            workspace_full_text_pane_count += panes.len();
+            let phase_started = Instant::now();
+            let areas = workspace_single_session_text_areas(&panes);
+            workspace_full_text_areas_ms += phase_started.elapsed().as_secs_f64() * 1000.0;
+            workspace_full_text_area_count += areas.len();
+            vertices.len() ^ panes.len() ^ areas.len() ^ workspace_full_app.surfaces.len()
         });
 
     let mut large_app = desktop_large_transcript_benchmark_app();
@@ -4355,6 +4407,7 @@ fn run_scroll_render_benchmark(frames: usize) -> Result<()> {
         action_input_ms / frames as f64,
         action_visible_ms / frames as f64,
         workspace_navigation_ms / frames as f64,
+        workspace_full_frame_ms / frames as f64,
         large_scroll_ms / frames as f64,
         large_cache_key_ms / frames as f64,
     ];
@@ -4503,6 +4556,12 @@ fn run_scroll_render_benchmark(frames: usize) -> Result<()> {
                     workspace_navigation_checksum,
                 ),
                 benchmark_phase_json(
+                    "workspace_full_frame_scroll_attributed",
+                    workspace_full_frame_ms,
+                    frames,
+                    workspace_full_frame_checksum,
+                ),
+                benchmark_phase_json(
                     "large_transcript_scroll_visible_body_only",
                     large_scroll_ms,
                     frames,
@@ -4515,6 +4574,21 @@ fn run_scroll_render_benchmark(frames: usize) -> Result<()> {
                     large_cache_key_checksum,
                 ),
             ],
+            "workspace_navigation_subphases": {
+                "visible_surface_count_mean": workspace_visible_surfaces as f64 / frames as f64,
+                "layout": benchmark_phase_json("workspace_layout", workspace_layout_ms, frames, 0),
+                "vertices": benchmark_phase_json("workspace_vertices", workspace_vertices_ms, frames, 0),
+            },
+            "workspace_full_frame_subphases": {
+                "surfaces_total": workspace_full_app.surfaces.len(),
+                "visible_surface_count_mean": workspace_full_visible_surfaces as f64 / frames as f64,
+                "text_pane_count_mean": workspace_full_text_pane_count as f64 / frames as f64,
+                "text_area_count_mean": workspace_full_text_area_count as f64 / frames as f64,
+                "layout": benchmark_phase_json("workspace_full_layout", workspace_full_layout_ms, frames, 0),
+                "vertices": benchmark_phase_json("workspace_full_vertices", workspace_full_vertices_ms, frames, 0),
+                "text_panes": benchmark_phase_json("workspace_full_text_panes", workspace_full_text_panes_ms, frames, 0),
+                "text_areas": benchmark_phase_json("workspace_full_text_areas", workspace_full_text_areas_ms, frames, 0),
+            },
             "visible_whole_line_subphases": [
                 benchmark_phase_json("viewport", visible_viewport_ms, frames, 0),
                 benchmark_phase_json("window", visible_window_ms, frames, 0),
@@ -9791,6 +9865,7 @@ impl Canvas {
                         workspace_surface_frames_for_frame.as_ref(),
                         font_system,
                     );
+                    frame_profile.checkpoint("workspace_text_panes");
                     if !workspace_text_panes.is_empty() {
                         self.text_needs_prepare = true;
                     }
@@ -11564,6 +11639,18 @@ fn for_each_visible_workspace_surface(
     }
 }
 
+fn workspace_visible_surface_count(
+    workspace: &Workspace,
+    size: PhysicalSize<u32>,
+    render_layout: WorkspaceRenderLayout,
+) -> usize {
+    let mut count = 0;
+    for_each_visible_workspace_surface(workspace, size, render_layout, 0.0, |_, _, _, _| {
+        count += 1;
+    });
+    count
+}
+
 fn build_workspace_single_session_text_panes(
     workspace: &Workspace,
     size: PhysicalSize<u32>,
@@ -11606,39 +11693,12 @@ fn build_workspace_single_session_text_panes(
         return panes;
     }
 
-    for_each_visible_workspace_surface(
-        workspace,
-        size,
-        render_layout,
-        0.0,
-        |surface, target_rect, _, _| {
-            if surface.kind != workspace::SurfaceKind::Session {
-                return;
-            }
-            let Some(app) = workspace_single_session_app_for_surface(workspace, surface) else {
-                return;
-            };
-            let rect = workspace_transitioned_surface_rect(surface_frames, surface.id, target_rect);
-            let panel_size = workspace_panel_size(rect);
-            let rendered_body_lines =
-                single_session_rendered_body_lines_for_tick(&app, panel_size, 0);
-            let key = single_session_text_key_for_tick_with_rendered_body(
-                &app,
-                panel_size,
-                0,
-                0.0,
-                &rendered_body_lines,
-            );
-            let buffers = single_session_text_buffers_from_key(&key, panel_size, font_system);
-            panes.push(WorkspaceSingleSessionTextPane {
-                app,
-                rect,
-                size: panel_size,
-                rendered_body_lines,
-                buffers,
-            });
-        },
-    );
+    // In window-manager mode, scrolling/panning must stay geometry-only. Building
+    // full single-session transcript text buffers for every visible card makes a
+    // workspace scroll frame scale with transcript complexity and font shaping.
+    // Keep rich transcript rendering for the zoomed/focused surface, and render
+    // lightweight session-card previews for the spatial overview.
+    let _ = (size, render_layout, surface_frames, font_system);
     panes
 }
 
@@ -11815,19 +11875,6 @@ fn build_vertices_into(params: WorkspaceVertexBuildParams<'_>, vertices: &mut Ve
             let rect = workspace_transitioned_surface_rect(surface_frames, surface.id, target_rect);
             let opacity = workspace_transitioned_surface_opacity(surface_frames, surface.id);
             let start_index = vertices.len();
-            if surface.kind == workspace::SurfaceKind::Session
-                && let Some(app) = workspace_single_session_app_for_surface(workspace, surface)
-            {
-                push_workspace_single_session_panel(
-                    vertices,
-                    &app,
-                    rect,
-                    size,
-                    surface_pulse,
-                    opacity,
-                );
-                return;
-            }
             push_surface(
                 vertices,
                 rect,
