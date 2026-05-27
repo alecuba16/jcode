@@ -514,7 +514,10 @@ pub(super) async fn handle_refresh_models(
     tokio::spawn(async move {
         send_catalog_activity(
             &client_event_tx_clone,
-            "Refreshing model catalogs... querying configured providers in parallel.",
+            &crate::message::format_model_refresh_progress_markdown(
+                "Starting provider model catalog refresh",
+                Some(5),
+            ),
         );
 
         let refresh_started = Instant::now();
@@ -531,7 +534,10 @@ pub(super) async fn handle_refresh_models(
                     if elapsed_secs > 0 {
                         send_catalog_activity(
                             &client_event_tx_clone,
-                            &format!("Refreshing model catalogs... still waiting on provider APIs ({elapsed_secs}s elapsed)."),
+                            &crate::message::format_model_refresh_progress_markdown(
+                                &format!("Waiting on provider APIs ({elapsed_secs}s elapsed)"),
+                                None,
+                            ),
                         );
                     }
                 }
@@ -541,15 +547,30 @@ pub(super) async fn handle_refresh_models(
             Ok(_) => {
                 send_catalog_activity(
                     &client_event_tx_clone,
-                    "Model catalogs refreshed. Updating model picker...",
+                    &crate::message::format_model_refresh_progress_markdown(
+                        "Updating model picker",
+                        Some(95),
+                    ),
                 );
                 crate::bus::Bus::global().publish_models_updated();
                 let event = available_models_updated_event(&agent_clone).await;
                 let _ = client_event_tx_clone.send(event);
-                send_catalog_activity(&client_event_tx_clone, "Model list refresh complete.");
+                send_catalog_activity(
+                    &client_event_tx_clone,
+                    &crate::message::format_model_refresh_progress_markdown(
+                        "Model list refresh complete",
+                        Some(100),
+                    ),
+                );
             }
             Err(err) => {
-                send_catalog_activity(&client_event_tx_clone, "Model list refresh failed.");
+                send_catalog_activity(
+                    &client_event_tx_clone,
+                    &crate::message::format_model_refresh_progress_markdown(
+                        "Model list refresh failed",
+                        None,
+                    ),
+                );
                 let _ = client_event_tx_clone.send(ServerEvent::Error {
                     id,
                     message: format!("Failed to refresh models: {}", err),
