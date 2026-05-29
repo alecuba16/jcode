@@ -13,7 +13,7 @@ use anyhow::Result;
 use crate::{id, server};
 
 /// Compute the window/terminal title used when (re)launching a session.
-pub(crate) fn resumed_window_title(session_id: &str) -> String {
+pub fn resumed_window_title(session_id: &str) -> String {
     let session_name = crate::process_title::session_name(session_id);
     let icon = id::session_icon(&session_name);
     let session_label = crate::process_title::terminal_session_label_for_id(session_id);

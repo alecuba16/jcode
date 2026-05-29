@@ -12,13 +12,13 @@ use std::io::{self, IsTerminal, Write};
 
 use crate::auth;
 
-pub(crate) fn can_prompt_for_external_auth() -> bool {
+pub fn can_prompt_for_external_auth() -> bool {
     std::io::stdin().is_terminal()
         && std::io::stderr().is_terminal()
         && std::env::var("JCODE_NON_INTERACTIVE").is_err()
 }
 
-pub(crate) fn external_auth_blocked_message(
+pub fn external_auth_blocked_message(
     provider_name: &str,
     source_name: &str,
     path: &std::path::Path,
@@ -33,7 +33,7 @@ pub(crate) fn external_auth_blocked_message(
     )
 }
 
-pub(crate) fn prompt_to_trust_external_auth(
+pub fn prompt_to_trust_external_auth(
     provider_name: &str,
     source_name: &str,
     path: &std::path::Path,
@@ -69,7 +69,7 @@ enum ExternalAuthReviewAction {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ExternalAuthReviewCandidate {
+pub struct ExternalAuthReviewCandidate {
     pub(crate) provider_summary: String,
     pub(crate) source_name: String,
     pub(crate) path: std::path::PathBuf,
@@ -77,13 +77,13 @@ pub(crate) struct ExternalAuthReviewCandidate {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ExternalAuthAutoImportOutcome {
+pub struct ExternalAuthAutoImportOutcome {
     pub imported: usize,
     pub messages: Vec<String>,
 }
 
 impl ExternalAuthAutoImportOutcome {
-    pub(crate) fn render_markdown(&self) -> String {
+    pub fn render_markdown(&self) -> String {
         if self.messages.is_empty() {
             return "No external auth sources were imported.".to_string();
         }
@@ -96,7 +96,7 @@ impl ExternalAuthAutoImportOutcome {
     }
 }
 
-pub(crate) fn pending_external_auth_review_candidates() -> Result<Vec<ExternalAuthReviewCandidate>>
+pub fn pending_external_auth_review_candidates() -> Result<Vec<ExternalAuthReviewCandidate>>
 {
     let mut candidates = Vec::new();
 
@@ -169,7 +169,7 @@ pub(crate) fn pending_external_auth_review_candidates() -> Result<Vec<ExternalAu
     Ok(candidates)
 }
 
-pub(crate) fn parse_external_auth_review_selection(
+pub fn parse_external_auth_review_selection(
     input: &str,
     count: usize,
 ) -> Result<Vec<usize>> {
@@ -411,7 +411,7 @@ async fn validate_external_auth_review_candidate(
     }
 }
 
-pub(crate) async fn maybe_run_external_auth_auto_import_flow() -> Result<Option<usize>> {
+pub async fn maybe_run_external_auth_auto_import_flow() -> Result<Option<usize>> {
     if !can_prompt_for_external_auth() {
         return Ok(None);
     }
@@ -430,7 +430,7 @@ pub(crate) async fn maybe_run_external_auth_auto_import_flow() -> Result<Option<
     Ok(Some(outcome.imported))
 }
 
-pub(crate) fn format_external_auth_review_candidates_markdown(
+pub fn format_external_auth_review_candidates_markdown(
     candidates: &[ExternalAuthReviewCandidate],
 ) -> String {
     let mut message = String::from(
@@ -448,7 +448,7 @@ pub(crate) fn format_external_auth_review_candidates_markdown(
     message
 }
 
-pub(crate) async fn run_external_auth_auto_import_candidates(
+pub async fn run_external_auth_auto_import_candidates(
     candidates: &[ExternalAuthReviewCandidate],
     selected: &[usize],
 ) -> Result<ExternalAuthAutoImportOutcome> {

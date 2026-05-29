@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use std::sync::MutexGuard;
 use std::time::{Duration, Instant};
 const BRIGHT_PEARL_WRAPPED_TOOL_CALL_FIXTURE: &str =
-    include_str!("../../tests/fixtures/openai/bright_pearl_wrapped_tool_call.txt");
+    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/fixtures/openai/bright_pearl_wrapped_tool_call.txt"));
 
 struct EnvVarGuard {
     key: &'static str,

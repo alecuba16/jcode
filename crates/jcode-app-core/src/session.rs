@@ -33,7 +33,7 @@ pub use render::{
     has_rendered_images, render_images, render_messages, render_messages_and_images,
     render_messages_and_images_with_compacted_history, summarize_tool_calls,
 };
-pub(crate) use storage_paths::session_journal_path_from_snapshot;
+pub use storage_paths::session_journal_path_from_snapshot;
 #[cfg(test)]
 pub(crate) use storage_paths::session_path_in_dir;
 use storage_paths::{estimate_json_bytes, persist_vector_mode_label};

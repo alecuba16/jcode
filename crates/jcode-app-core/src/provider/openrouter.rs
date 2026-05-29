@@ -298,7 +298,7 @@ fn configured_allow_no_auth() -> bool {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum OpenRouterTransportState {
+pub enum OpenRouterTransportState {
     /// Real OpenRouter BYOK. The provider implementation is both the runtime identity
     /// and the HTTP transport.
     OpenRouterApiKey,
@@ -313,7 +313,7 @@ pub(crate) enum OpenRouterTransportState {
 }
 
 impl OpenRouterTransportState {
-    pub(crate) fn from_current_env(runtime_provider: Option<&str>) -> Self {
+    pub fn from_current_env(runtime_provider: Option<&str>) -> Self {
         if let Some(state) = Self::from_env_marker() {
             return state;
         }
@@ -377,11 +377,11 @@ impl OpenRouterTransportState {
                 .is_some()
     }
 
-    pub(crate) fn accrues_user_api_key_cost(self) -> bool {
+    pub fn accrues_user_api_key_cost(self) -> bool {
         matches!(self, Self::OpenRouterApiKey | Self::DirectApiKey)
     }
 
-    pub(crate) fn is_real_openrouter(self) -> bool {
+    pub fn is_real_openrouter(self) -> bool {
         matches!(self, Self::OpenRouterApiKey)
     }
 }

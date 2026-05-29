@@ -32,7 +32,7 @@ pub fn session_path(session_id: &str) -> Result<PathBuf> {
     Ok(session_path_in_dir(&base, session_id))
 }
 
-pub(crate) fn session_journal_path_from_snapshot(path: &Path) -> PathBuf {
+pub fn session_journal_path_from_snapshot(path: &Path) -> PathBuf {
     let mut name = path
         .file_stem()
         .map(|stem| stem.to_os_string())

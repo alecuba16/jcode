@@ -1,7 +1,7 @@
 const LINUX_PROCESS_TITLE_LIMIT: usize = 15;
 const KILLALL_PROCESS_NAME: &str = "jcode";
 
-pub(crate) fn compact_process_title(prefix: &str, name: Option<&str>) -> String {
+pub fn compact_process_title(prefix: &str, name: Option<&str>) -> String {
     let mut title = prefix.to_string();
     if let Some(name) = name.filter(|name| !name.is_empty()) {
         let remaining = LINUX_PROCESS_TITLE_LIMIT.saturating_sub(title.len());
@@ -12,7 +12,7 @@ pub(crate) fn compact_process_title(prefix: &str, name: Option<&str>) -> String 
     title
 }
 
-pub(crate) fn session_name(session_id: &str) -> String {
+pub fn session_name(session_id: &str) -> String {
     crate::id::extract_session_name(session_id)
         .map(|name| name.to_string())
         .unwrap_or_else(|| session_id.to_string())
@@ -41,7 +41,7 @@ fn truncate_chars(text: &str, max_chars: usize) -> String {
     }
 }
 
-pub(crate) fn terminal_session_label(session_name: &str, display_title: Option<&str>) -> String {
+pub fn terminal_session_label(session_name: &str, display_title: Option<&str>) -> String {
     let fallback = capitalize_ascii_label(session_name);
     let Some(title) = display_title.and_then(normalized_display_title) else {
         return fallback;
@@ -52,7 +52,7 @@ pub(crate) fn terminal_session_label(session_name: &str, display_title: Option<&
     format!("{} ({})", truncate_chars(&title, 48), session_name)
 }
 
-pub(crate) fn terminal_session_label_for_id(session_id: &str) -> String {
+pub fn terminal_session_label_for_id(session_id: &str) -> String {
     let session_name = session_name(session_id);
     let display_title = crate::session::Session::load_startup_stub(session_id)
         .ok()
@@ -63,7 +63,7 @@ pub(crate) fn terminal_session_label_for_id(session_id: &str) -> String {
     }
 }
 
-pub(crate) fn set_title(title: impl AsRef<str>) {
+pub fn set_title(title: impl AsRef<str>) {
     proctitle::set_title(title.as_ref());
     set_killall_process_name();
 }
@@ -83,7 +83,7 @@ pub(crate) fn set_server_title(server_name: &str) {
     set_title(compact_process_title("jcode:s:", Some(server_name)));
 }
 
-pub(crate) fn set_client_generic_title(is_selfdev: bool) {
+pub fn set_client_generic_title(is_selfdev: bool) {
     let prefix = if is_selfdev {
         "jcode:selfdev"
     } else {
@@ -92,16 +92,16 @@ pub(crate) fn set_client_generic_title(is_selfdev: bool) {
     set_title(compact_process_title(prefix, None));
 }
 
-pub(crate) fn set_client_session_title(session_id: &str, is_selfdev: bool) {
+pub fn set_client_session_title(session_id: &str, is_selfdev: bool) {
     set_client_display_title(&session_name(session_id), is_selfdev);
 }
 
-pub(crate) fn set_client_display_title(session_name: &str, is_selfdev: bool) {
+pub fn set_client_display_title(session_name: &str, is_selfdev: bool) {
     let prefix = if is_selfdev { "jcode:d:" } else { "jcode:c:" };
     set_title(compact_process_title(prefix, Some(session_name)));
 }
 
-pub(crate) fn set_client_remote_display_title(
+pub fn set_client_remote_display_title(
     server_name: &str,
     session_name: &str,
     is_selfdev: bool,

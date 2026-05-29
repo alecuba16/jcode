@@ -339,7 +339,7 @@ pub use self::reload_state::{
     wait_for_reload_ack, wait_for_reload_handoff_event, write_reload_marker, write_reload_state,
 };
 
-pub(crate) use self::lifecycle::configure_temporary_server;
+pub use self::lifecycle::configure_temporary_server;
 #[cfg(unix)]
 pub use self::socket::spawn_server_notify;
 #[cfg(unix)]

@@ -31,7 +31,7 @@ struct TemporaryServerMetadata {
     argv: Vec<String>,
 }
 
-pub(crate) fn configure_temporary_server(owner_pid: Option<u32>, idle_timeout_secs: Option<u64>) {
+pub fn configure_temporary_server(owner_pid: Option<u32>, idle_timeout_secs: Option<u64>) {
     crate::env::set_var(TEMP_SERVER_ENV, "1");
     crate::env::set_var(SERVER_SCOPE_ENV, "temporary");
     if let Some(owner_pid) = owner_pid {

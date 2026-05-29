@@ -228,7 +228,7 @@ impl MultiProvider {
         None
     }
 
-    pub(crate) fn session_provider_key_for_model_request(
+    pub fn session_provider_key_for_model_request(
         model_request: &str,
         provider_name: &str,
     ) -> Option<String> {
@@ -242,7 +242,7 @@ impl MultiProvider {
             .or_else(|| crate::session::derive_session_provider_key(provider_name))
     }
 
-    pub(crate) fn session_provider_key_after_model_switch(
+    pub fn session_provider_key_after_model_switch(
         model_request: &str,
         provider_name: &str,
         previous_provider_key: Option<&str>,
@@ -311,7 +311,7 @@ impl MultiProvider {
         }
     }
 
-    pub(crate) fn model_switch_request_for_session_model(
+    pub fn model_switch_request_for_session_model(
         model: &str,
         provider_key: Option<&str>,
     ) -> String {
