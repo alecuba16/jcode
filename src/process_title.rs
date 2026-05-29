@@ -186,7 +186,7 @@ mod tests {
     use crate::storage::lock_test_env;
     use clap::Parser;
 
-    const SELFDEV_ENV: &str = crate::cli::selfdev::CLIENT_SELFDEV_ENV;
+    const SELFDEV_ENV: &str = jcode_selfdev_types::CLIENT_SELFDEV_ENV;
 
     fn with_selfdev_env_removed<T>(f: impl FnOnce() -> T) -> T {
         let _guard = lock_test_env();
