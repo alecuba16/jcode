@@ -192,7 +192,9 @@ impl Provider for OpenRouterProvider {
                             ContentBlock::Reasoning { text } => {
                                 reasoning_content.push_str(text);
                             }
-                            ContentBlock::ToolUse { id, name, input, .. } => {
+                            ContentBlock::ToolUse {
+                                id, name, input, ..
+                            } => {
                                 let args = if input.is_object() {
                                     serde_json::to_string(input).unwrap_or_default()
                                 } else {
@@ -250,7 +252,35 @@ impl Provider for OpenRouterProvider {
                         assistant_msg["reasoning_content"] = serde_json::json!(reasoning_payload);
                     }
 
-                    if !text_content.is_empty() || !tool_calls.is_empty() || has_reasoning_content {
+                    let has_text_content = !text_content.is_empty();
+                    let has_tool_calls = !tool_calls.is_empty();
+
+                    // OpenAI-compatible providers require every assistant
+                    // message to carry `content` or `tool_calls`. An
+                    // interrupted turn can persist only a reasoning block; if
+                    // the provider does not accept a standalone
+                    // `reasoning_content` field (so it was not set above), this
+                    // would serialize to a bare `{"role":"assistant"}` and make
+                    // providers like DeepSeek reject the entire request with
+                    // 400 "Invalid assistant message: content or tool_calls
+                    // must be set", permanently wedging the session (issue
+                    // #321). Guarantee validity: when there is no text/tool
+                    // payload, only keep the turn if a provider-accepted
+                    // `reasoning_content` field is present, and in that case add
+                    // an explicit empty `content` so strict validators still
+                    // accept it. Otherwise drop the empty interrupted-thinking
+                    // artifact entirely (no tool outputs are possible without
+                    // tool calls).
+                    let keep_assistant_message = if has_text_content || has_tool_calls {
+                        true
+                    } else if assistant_msg.get("reasoning_content").is_some() {
+                        assistant_msg["content"] = serde_json::json!("");
+                        true
+                    } else {
+                        false
+                    };
+
+                    if keep_assistant_message {
                         api_messages.push(assistant_msg);
 
                         for (tool_call_id, output) in post_tool_outputs {

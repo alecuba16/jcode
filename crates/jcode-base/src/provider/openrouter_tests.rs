@@ -355,6 +355,198 @@ fn direct_deepseek_profile_omits_image_url_parts() {
     );
 }
 
+/// Extract the JSON request body from a captured raw HTTP request.
+fn parse_captured_request_body(request: &str) -> serde_json::Value {
+    let body = request
+        .split_once("\r\n\r\n")
+        .map(|(_, body)| body)
+        .unwrap_or(request);
+    serde_json::from_str(body)
+        .unwrap_or_else(|err| panic!("captured request body should be JSON ({err}): {body}"))
+}
+
+/// Regression for issue #321: when an assistant turn is interrupted mid-thinking
+/// on a direct OpenAI-compatible provider that does not support reasoning replay
+/// (e.g. DeepSeek), the persisted assistant message contains only a `Reasoning`
+/// block. The request builder must not emit an assistant message that has
+/// neither `content` nor `tool_calls`, otherwise the provider rejects the whole
+/// request with 400 "Invalid assistant message: content or tool_calls must be
+/// set" and the session can never recover.
+#[test]
+fn interrupted_reasoning_only_assistant_message_is_not_sent_empty() {
+    let _lock = ENV_LOCK.lock();
+    let (api_base, request_rx) = spawn_single_response_chat_server();
+    let provider = OpenRouterProvider {
+        api_base,
+        profile_id: Some("deepseek".to_string()),
+        supports_provider_features: false,
+        supports_model_catalog: false,
+        ..make_custom_compatible_provider()
+    };
+
+    let messages = vec![
+        Message {
+            role: Role::User,
+            content: vec![ContentBlock::Text {
+                text: "do a thing".to_string(),
+                cache_control: None,
+            }],
+            timestamp: None,
+            tool_duration_ms: None,
+        },
+        // Assistant turn that was interrupted while only reasoning had streamed,
+        // so it carries a Reasoning block but no text or tool calls.
+        Message {
+            role: Role::Assistant,
+            content: vec![ContentBlock::Reasoning {
+                text: "thinking about the request".to_string(),
+            }],
+            timestamp: None,
+            tool_duration_ms: None,
+        },
+        Message {
+            role: Role::User,
+            content: vec![ContentBlock::Text {
+                text: "actually do this instead".to_string(),
+                cache_control: None,
+            }],
+            timestamp: None,
+            tool_duration_ms: None,
+        },
+    ];
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+    rt.block_on(async {
+        let mut stream = provider
+            .complete(&messages, &[], "", None)
+            .await
+            .expect("fake chat request should start");
+        while let Some(event) = stream.next().await {
+            if event.is_err() {
+                break;
+            }
+        }
+    });
+
+    let request = request_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("capture fake provider request");
+    let body = parse_captured_request_body(&request);
+    let api_messages = body
+        .get("messages")
+        .and_then(|m| m.as_array())
+        .expect("request should contain messages array");
+
+    for msg in api_messages {
+        if msg.get("role").and_then(|v| v.as_str()) != Some("assistant") {
+            continue;
+        }
+        let has_content = msg
+            .get("content")
+            .map(|v| !v.is_null() && v.as_str().map(|s| !s.is_empty()).unwrap_or(true))
+            .unwrap_or(false);
+        let has_tool_calls = msg
+            .get("tool_calls")
+            .and_then(|v| v.as_array())
+            .map(|calls| !calls.is_empty())
+            .unwrap_or(false);
+        assert!(
+            has_content || has_tool_calls,
+            "assistant message must carry content or tool_calls (issue #321); got: {msg}"
+        );
+    }
+    eprintln!("DBG321 BODY = {}", serde_json::to_string_pretty(&body).unwrap());
+}
+
+/// Companion to issue #321: when the provider *does* support reasoning replay
+/// (e.g. a generic OpenRouter-style endpoint with provider features enabled and
+/// thinking on), an interrupted reasoning-only assistant turn should be sent
+/// with both a `reasoning_content` field and a valid (empty) `content`, so the
+/// turn is preserved without violating the "content or tool_calls" requirement.
+#[test]
+fn interrupted_reasoning_only_assistant_message_keeps_reasoning_with_content() {
+    let _lock = ENV_LOCK.lock();
+    let (api_base, request_rx) = spawn_single_response_chat_server();
+    let provider = OpenRouterProvider {
+        api_base,
+        profile_id: None,
+        supports_provider_features: true,
+        supports_model_catalog: false,
+        ..make_custom_compatible_provider()
+    };
+
+    let messages = vec![
+        Message {
+            role: Role::User,
+            content: vec![ContentBlock::Text {
+                text: "do a thing".to_string(),
+                cache_control: None,
+            }],
+            timestamp: None,
+            tool_duration_ms: None,
+        },
+        Message {
+            role: Role::Assistant,
+            content: vec![ContentBlock::Reasoning {
+                text: "thinking about the request".to_string(),
+            }],
+            timestamp: None,
+            tool_duration_ms: None,
+        },
+        Message {
+            role: Role::User,
+            content: vec![ContentBlock::Text {
+                text: "actually do this instead".to_string(),
+                cache_control: None,
+            }],
+            timestamp: None,
+            tool_duration_ms: None,
+        },
+    ];
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+    rt.block_on(async {
+        let mut stream = provider
+            .complete(&messages, &[], "", None)
+            .await
+            .expect("fake chat request should start");
+        while let Some(event) = stream.next().await {
+            if event.is_err() {
+                break;
+            }
+        }
+    });
+
+    let request = request_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("capture fake provider request");
+    let body = parse_captured_request_body(&request);
+    let api_messages = body
+        .get("messages")
+        .and_then(|m| m.as_array())
+        .expect("request should contain messages array");
+
+    let assistant = api_messages
+        .iter()
+        .find(|msg| msg.get("role").and_then(|v| v.as_str()) == Some("assistant"))
+        .expect("request should retain the interrupted assistant turn");
+
+    assert!(
+        assistant.get("reasoning_content").is_some(),
+        "reasoning-capable provider should keep reasoning_content; got: {assistant}"
+    );
+    assert!(
+        assistant.get("content").is_some(),
+        "interrupted reasoning-only assistant turn must still carry content (issue #321); got: {assistant}"
+    );
+}
+
 #[test]
 fn default_named_openai_compatible_provider_uses_direct_compatible_request_path() {
     let _lock = ENV_LOCK.lock();
@@ -453,12 +645,104 @@ model_catalog = false
     );
 }
 
+/// Regression for issue #304: a `default_provider` pointing at an
+/// `openai-compatible` profile must build requests with the direct
+/// OpenAI-compatible request shape, NOT the OpenRouter request builder, even
+/// when `model_catalog` is left enabled (the default). Using the OpenRouter
+/// builder leaks the `provider` routing object / OpenRouter-only headers and
+/// causes strict third-party gateways to reject the request with
+/// 400 "Unrecognized chat message".
+#[test]
+fn default_named_openai_compatible_with_catalog_uses_direct_compatible_request_path() {
+    let _lock = ENV_LOCK.lock();
+    let temp = TempDir::new().expect("create temp home");
+    let jcode_home = temp.path().join("jcode-home");
+    let _jcode_home = EnvVarGuard::set("JCODE_HOME", &jcode_home);
+    let _home = EnvVarGuard::set("HOME", temp.path());
+    let _appdata = EnvVarGuard::set("APPDATA", temp.path().join("AppData").join("Roaming"));
+    let _env = isolate_openrouter_autodetect_env();
+    let _key = EnvVarGuard::set("TEST_DEFAULT_COMPAT_KEY", "test-key");
+    let (api_base, request_rx) = spawn_single_response_chat_server();
+
+    std::fs::create_dir_all(&jcode_home).expect("create test config dir");
+    std::fs::write(
+        jcode_home.join("config.toml"),
+        format!(
+            r#"
+[provider]
+default_provider = "my-gateway"
+
+[providers.my-gateway]
+type = "openai-compatible"
+base_url = "{api_base}"
+api_key_env = "TEST_DEFAULT_COMPAT_KEY"
+default_model = "opaque/model@id"
+"#
+        ),
+    )
+    .expect("write test config");
+    crate::config::invalidate_config_cache();
+
+    let provider =
+        crate::provider::MultiProvider::new_with_auth_status(crate::auth::AuthStatus::default());
+    assert_eq!(
+        provider.active_provider(),
+        crate::provider::ActiveProvider::OpenRouter
+    );
+    let openrouter = provider
+        .openrouter_provider()
+        .expect("openrouter execution slot");
+    assert!(
+        !openrouter.supports_provider_routing_features(),
+        "named openai-compatible defaults must not use OpenRouter provider routing features even with catalog enabled"
+    );
+
+    let messages = vec![Message {
+        role: Role::User,
+        content: vec![ContentBlock::Text {
+            text: "hello".to_string(),
+            cache_control: None,
+        }],
+        timestamp: None,
+        tool_duration_ms: None,
+    }];
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+    rt.block_on(async {
+        let mut stream = openrouter
+            .complete(&messages, &[], "", None)
+            .await
+            .expect("fake chat request should start");
+        while let Some(event) = stream.next().await {
+            event.expect("stream event should parse");
+        }
+    });
+
+    let request = request_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("capture fake provider request");
+    assert!(
+        request.starts_with("POST /v1/chat/completions "),
+        "unexpected chat request: {request}"
+    );
+    assert!(
+        !request.contains(r#""provider":"#),
+        "direct OpenAI-compatible request must not include OpenRouter provider routing object: {request}"
+    );
+    assert!(
+        !request.contains("HTTP-Referer") && !request.contains("X-Title"),
+        "direct OpenAI-compatible request must not include OpenRouter-only headers: {request}"
+    );
+}
+
 #[test]
 fn minimax_profile_exposes_static_models_before_catalog_refresh() {
     let models = crate::provider_catalog::openai_compatible_profile_static_models(
         jcode_provider_metadata::MINIMAX_PROFILE,
     );
-
     assert!(models.iter().any(|model| model == "MiniMax-M2.7"));
     assert!(models.iter().any(|model| model == "MiniMax-M2.7-highspeed"));
     assert!(models.iter().any(|model| model == "MiniMax-M2"));
