@@ -272,30 +272,94 @@ async fn send_ntfy(
 }
 
 // ---------------------------------------------------------------------------
+// Desktop (cross-platform, fire-and-forget)
+// ---------------------------------------------------------------------------
+
+/// Send a local desktop notification without blocking.
+///
+/// Uses Notification Center via `osascript` on macOS and `notify-send` on
+/// Linux. The child process is spawned detached and never waited on; failures
+/// are ignored (a missing notifier is not an error).
+pub fn send_desktop_notification(title: &str, body: &str) {
+    #[cfg(target_os = "macos")]
+    {
+        fn applescript_escape(s: &str) -> String {
+            let mut out = String::with_capacity(s.len());
+            for ch in s.chars() {
+                match ch {
+                    '\\' => out.push_str("\\\\"),
+                    '"' => out.push_str("\\\""),
+                    '\n' => out.push_str("\\n"),
+                    '\r' => {}
+                    _ => out.push(ch),
+                }
+            }
+            out
+        }
+        let script = format!(
+            "display notification \"{}\" with title \"{}\"",
+            applescript_escape(body),
+            applescript_escape(title)
+        );
+        let _ = std::process::Command::new("osascript")
+            .arg("-e")
+            .arg(script)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn();
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let _ = std::process::Command::new("notify-send")
+            .arg("--app-name=jcode")
+            .arg(title)
+            .arg(body)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn();
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        let _ = (title, body);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Desktop (notify-send)
 // ---------------------------------------------------------------------------
 
 fn send_desktop(title: &str, body: &str, urgency: &str) {
-    let result = std::process::Command::new("notify-send")
-        .arg("--app-name=jcode")
-        .arg(format!("--urgency={}", urgency))
-        .arg("--icon=dialog-information")
-        .arg(title)
-        .arg(body)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status();
+    // On macOS notify-send does not exist; route through Notification Center.
+    #[cfg(target_os = "macos")]
+    {
+        let _ = urgency;
+        send_desktop_notification(title, body);
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let result = std::process::Command::new("notify-send")
+            .arg("--app-name=jcode")
+            .arg(format!("--urgency={}", urgency))
+            .arg("--icon=dialog-information")
+            .arg(title)
+            .arg(body)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
 
-    match result {
-        Ok(status) if status.success() => {
-            logging::info(&format!("Desktop notification sent: {}", title));
-        }
-        Ok(status) => {
-            logging::warn(&format!("notify-send exited with {}", status));
-        }
-        Err(e) => {
-            // notify-send not available - not an error, just skip
-            logging::info(&format!("notify-send unavailable: {}", e));
+        match result {
+            Ok(status) if status.success() => {
+                logging::info(&format!("Desktop notification sent: {}", title));
+            }
+            Ok(status) => {
+                logging::warn(&format!("notify-send exited with {}", status));
+            }
+            Err(e) => {
+                // notify-send not available - not an error, just skip
+                logging::info(&format!("notify-send unavailable: {}", e));
+            }
         }
     }
 }
