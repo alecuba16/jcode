@@ -846,7 +846,14 @@ fn cmd_metrics(args: &[String]) -> Result<()> {
     // top-N pool for every judged query (concurrently), cached qid -> ranked
     // ids, so the sync scoring loop just looks it up. Reuses the Sidecar judge
     // plumbing (Claude / OpenAI OAuth) + focused query.
-    let llm_rerank_map: HashMap<String, Vec<String>> = if config == "llm_rerank" {
+    let llm_rerank_map: HashMap<String, Vec<String>> = if config == "llm_rerank"
+        || config == "llm_rerank_padded"
+    {
+        // `llm_rerank` = precision mode (inject only model-kept ids).
+        // `llm_rerank_padded` = emulate the OLD buggy prod path: append the
+        //   model-omitted candidates in hybrid order then pad to top-k, so we can
+        //   quantify the precision the relevant-only fix recovers.
+        let padded = config == "llm_rerank_padded";
         let model = opts
             .get("model")
             .cloned()
@@ -911,10 +918,19 @@ fn cmd_metrics(args: &[String]) -> Result<()> {
                         for attempt in 0..2 {
                             match sidecar.complete(LLM_RERANK_SYSTEM, &prompt).await {
                                 Ok(resp) => {
-                                    ranked_ids = parse_rerank_response(&resp, n)
-                                        .into_iter()
-                                        .map(|i| cands[i].0.clone())
-                                        .collect();
+                                    let kept = parse_rerank_response(&resp, n);
+                                    let kept_set: std::collections::HashSet<usize> =
+                                        kept.iter().copied().collect();
+                                    ranked_ids = kept.iter().map(|&i| cands[i].0.clone()).collect();
+                                    if padded {
+                                        // Emulate old buggy prod: append the model-omitted
+                                        // candidates in hybrid order (then top-k pads to 5).
+                                        for (i, (id, _)) in cands.iter().enumerate() {
+                                            if !kept_set.contains(&i) {
+                                                ranked_ids.push(id.clone());
+                                            }
+                                        }
+                                    }
                                     break;
                                 }
                                 Err(e) => {
@@ -1044,10 +1060,11 @@ fn cmd_metrics(args: &[String]) -> Result<()> {
                 ids.sort_by_key(|id| !rel_set.contains(id));
                 ids.into_iter().take(EMBEDDING_MAX_HITS).collect()
             }
-            "llm_rerank" => {
+            "llm_rerank" | "llm_rerank_padded" => {
                 // recall-5 Mode-2: listwise LLM rerank of the hybrid top-N pool,
-                // precomputed into llm_rerank_map above. The empirical counterpart
-                // to oracle_rerank that an LLM can actually achieve.
+                // precomputed into llm_rerank_map above. `llm_rerank` is precision
+                // mode (relevant-only); `llm_rerank_padded` emulates the old buggy
+                // prod path (pad to 5 with model-omitted candidates).
                 llm_rerank_map
                     .get(&q.qid)
                     .cloned()
