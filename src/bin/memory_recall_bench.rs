@@ -65,6 +65,9 @@ struct CorpusMemory {
 
 struct Corpus {
     memories: Vec<CorpusMemory>,
+    /// 1-hop expansion adjacency: memory id -> related memory ids reachable via
+    /// recall-useful edges (relates_to / derived_from / supersedes).
+    expand_edges: HashMap<String, Vec<String>>,
 }
 
 impl Corpus {
@@ -93,7 +96,38 @@ impl Corpus {
                 age_days: (now - m.updated_at).num_seconds().max(0) as f32 / 86_400.0,
             })
             .collect();
-        Ok(Corpus { memories })
+
+        // Build 1-hop expansion adjacency from recall-useful edge kinds only
+        // (skip has_tag / in_cluster which fan out to huge sets).
+        let active_ids: HashSet<String> = graph
+            .memories
+            .values()
+            .filter(|m| m.active)
+            .map(|m| m.id.clone())
+            .collect();
+        let mut expand_edges: HashMap<String, Vec<String>> = HashMap::new();
+        for (src, edges) in &graph.edges {
+            if !active_ids.contains(src) {
+                continue;
+            }
+            for e in edges {
+                let kind = format!("{:?}", e.kind).to_lowercase();
+                let useful = kind.contains("relatesto")
+                    || kind.contains("derivedfrom")
+                    || kind.contains("supersedes");
+                if useful && active_ids.contains(&e.target) {
+                    expand_edges
+                        .entry(src.clone())
+                        .or_default()
+                        .push(e.target.clone());
+                }
+            }
+        }
+
+        Ok(Corpus {
+            memories,
+            expand_edges,
+        })
     }
 
     fn active(&self) -> impl Iterator<Item = &CorpusMemory> {
@@ -807,6 +841,29 @@ fn cmd_metrics(args: &[String]) -> Result<()> {
                 let dense = dense_retrieve(&q_emb_focused, &corpus, 0.0, 50, false);
                 let lex = bm25.search(&focused, 50);
                 rrf(&[dense, lex], 60.0, EMBEDDING_MAX_HITS).into_iter().map(|(id, _)| id).collect()
+            }
+            "hybrid_expand" => {
+                // Hybrid base ranking, then 1-hop graph expansion: each base hit
+                // contributes its graph neighbors with a decayed score, fused in.
+                let dense = dense_retrieve(&q_emb, &corpus, 0.0, 50, false);
+                let lex = bm25.search(&q.query, 50);
+                let base = rrf(&[dense, lex], 60.0, 50);
+                let mut scored: HashMap<String, f32> = base.iter().cloned().collect();
+                // Expansion: add neighbors of the top base hits with 0.5 decay.
+                for (id, score) in base.iter().take(10) {
+                    if let Some(neighbors) = corpus.expand_edges.get(id) {
+                        for nb in neighbors {
+                            let add = *score * 0.5;
+                            scored
+                                .entry(nb.clone())
+                                .and_modify(|s| *s = s.max(add))
+                                .or_insert(add);
+                        }
+                    }
+                }
+                let mut v: Vec<(String, f32)> = scored.into_iter().collect();
+                v.sort_by(|a, b| b.1.total_cmp(&a.1));
+                v.into_iter().take(EMBEDDING_MAX_HITS).map(|(id, _)| id).collect()
             }
             "prod_hybrid" => {
                 // Validate the ACTUAL shipped production method end-to-end.
