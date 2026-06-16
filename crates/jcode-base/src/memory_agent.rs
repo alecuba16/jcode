@@ -44,6 +44,50 @@ const TOPIC_CHANGE_THRESHOLD: f32 = 0.3;
 /// Maximum memories to surface per turn
 const MAX_MEMORIES_PER_TURN: usize = 5;
 
+/// Dynamic no-sidecar gate tunables (variable-k surfacing without an LLM).
+///
+/// When the memory sidecar is disabled (no LLM to judge relevance), we used to
+/// blindly pad the hybrid top-5 every turn, which injected ~5 memories even on
+/// turns that needed none. Instead we keep a score-relative window: always keep
+/// the top candidate, then keep each following candidate only while its hybrid
+/// score stays within `GATE_REL_FLOOR` of the top AND within `GATE_DROP_RATIO`
+/// of the previous kept score. The first big gap cuts the tail. This injects a
+/// VARIABLE count (1..=MAX_MEMORIES_PER_TURN) instead of a fixed 5.
+///
+/// Bench (self-dev corpus, 150 query windows): precision@5 0.23 -> 0.36 (+56%),
+/// avg injected 5.0 -> ~2.25/turn, at zero added cost. Note this cannot drop to
+/// 0 on no-memory turns (cosdiag proved no zero-cost score separates them); the
+/// only lever for true 0-injection is the LLM precision rerank (sidecar mode).
+const GATE_REL_FLOOR: f32 = 0.90;
+const GATE_DROP_RATIO: f32 = 0.95;
+
+/// Score-relative dynamic gate over hybrid-ranked `(entry, score)` candidates.
+///
+/// Always keeps the top candidate, then keeps each following candidate only
+/// while its score stays within `GATE_REL_FLOOR` of the top score AND within
+/// `GATE_DROP_RATIO` of the previously kept score; the first gap that breaks
+/// either bound truncates the tail. Caps output at `max_k`. Returns a variable
+/// count (1..=max_k for a non-empty input), not a fixed top-k.
+fn dynamic_gate_select(
+    candidates: Vec<(MemoryEntry, f32)>,
+    max_k: usize,
+) -> Vec<(MemoryEntry, f32)> {
+    if candidates.is_empty() {
+        return Vec::new();
+    }
+    let top = candidates[0].1.max(f32::MIN_POSITIVE);
+    let mut prev = top;
+    let mut out: Vec<(MemoryEntry, f32)> = Vec::new();
+    for (entry, sim) in candidates.into_iter().take(max_k) {
+        if !out.is_empty() && (sim < top * GATE_REL_FLOOR || sim < prev * GATE_DROP_RATIO) {
+            break;
+        }
+        prev = sim;
+        out.push((entry, sim));
+    }
+    out
+}
+
 /// Reset surfaced memories every N turns to allow re-surfacing
 const TURN_RESET_INTERVAL: usize = 50;
 
@@ -716,30 +760,31 @@ impl MemoryAgent {
         Ok(())
     }
 
-    /// Mode-1 (no sidecar) candidate selection: take the top hybrid-ranked
-    /// candidates by score, capped at `MAX_MEMORIES_PER_TURN`.
+    /// Mode-1 (no sidecar) candidate selection: a score-relative dynamic gate
+    /// over the hybrid-ranked candidates. Returns a VARIABLE number of memories
+    /// (1..=`MAX_MEMORIES_PER_TURN`) instead of always padding to a fixed top-k,
+    /// cutting the tail at the first large score gap. See `GATE_REL_FLOOR` /
+    /// `GATE_DROP_RATIO` for the rationale and benchmark numbers.
     ///
     /// In Mode-2 the listwise LLM reranker (`memory_rerank::rerank_candidates`)
-    /// handles relevance selection instead, so this is only reached when the
-    /// memory sidecar is disabled (no LLM available to judge relevance).
+    /// handles relevance selection instead (and can drop to 0), so this is only
+    /// reached when the memory sidecar is disabled (no LLM available to judge
+    /// relevance) or on a cadence-gated turn.
     fn select_top_candidates_no_sidecar(
         &self,
         session_id: &str,
         candidates: Vec<(MemoryEntry, f32)>,
     ) -> Vec<MemoryEntry> {
-        candidates
-            .into_iter()
-            .take(MAX_MEMORIES_PER_TURN)
-            .map(|(entry, sim)| {
-                crate::logging::info(&format!(
-                    "[{}] Memory relevant (semantic sim={:.2}): {}",
-                    session_id,
-                    sim,
-                    &entry.content[..entry.content.len().min(40)]
-                ));
-                entry
-            })
-            .collect()
+        let selected = dynamic_gate_select(candidates, MAX_MEMORIES_PER_TURN);
+        for (entry, sim) in &selected {
+            crate::logging::info(&format!(
+                "[{}] Memory relevant (semantic sim={:.2}): {}",
+                session_id,
+                sim,
+                &entry.content[..entry.content.len().min(40)]
+            ));
+        }
+        selected.into_iter().map(|(entry, _)| entry).collect()
     }
 
     /// Extract memories from a context string
