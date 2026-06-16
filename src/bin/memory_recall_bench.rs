@@ -376,10 +376,27 @@ fn dynamic_gate(
     drop_ratio: f32,
     max_k: usize,
 ) -> Vec<String> {
+    dynamic_gate_abs(ranked, rel_floor, drop_ratio, max_k, 0.0)
+}
+
+/// Like `dynamic_gate`, but with an absolute-score floor on the TOP candidate:
+/// if even the best hybrid score is below `abs_floor`, inject nothing. This is
+/// what lets the zero-cost (no-LLM) path return 0 memories on no-memory turns
+/// (the empty-gold queries), instead of always keeping top-1.
+fn dynamic_gate_abs(
+    ranked: &[(String, f32)],
+    rel_floor: f32,
+    drop_ratio: f32,
+    max_k: usize,
+    abs_floor: f32,
+) -> Vec<String> {
     if ranked.is_empty() {
         return Vec::new();
     }
     let top = ranked[0].1.max(f32::MIN_POSITIVE);
+    if top < abs_floor {
+        return Vec::new();
+    }
     let mut out = Vec::new();
     let mut prev = top;
     for (id, score) in ranked.iter().take(max_k) {
@@ -1001,6 +1018,10 @@ fn cmd_metrics(args: &[String]) -> Result<()> {
     let gate_floor: f32 = opts.get("gate_floor").and_then(|s| s.parse().ok()).unwrap_or(0.55);
     let gate_drop: f32 = opts.get("gate_drop").and_then(|s| s.parse().ok()).unwrap_or(0.80);
     let gate_max: usize = opts.get("gate_max").and_then(|s| s.parse().ok()).unwrap_or(5);
+    // Absolute floor on the TOP hybrid score: if even the best candidate scores
+    // below this, the no-LLM gate injects NOTHING. This is the zero-cost lever
+    // for cutting bloat on no-memory turns (empty-gold). 0.0 = disabled (legacy).
+    let gate_abs: f32 = opts.get("gate_abs").and_then(|s| s.parse().ok()).unwrap_or(0.0);
     let content_by_id: HashMap<String, String> = corpus
         .active()
         .map(|m| (m.id.clone(), m.content.clone()))
@@ -1460,7 +1481,7 @@ fn cmd_metrics(args: &[String]) -> Result<()> {
                     let dense = dense_retrieve(&q_emb, &corpus, 0.0, 50, false);
                     let lex = bm25.search(&q.query, 50);
                     let pool = rrf(&[dense, lex], 60.0, 50);
-                    dynamic_gate(&pool, gate_floor, gate_drop, gate_max)
+                    dynamic_gate_abs(&pool, gate_floor, gate_drop, gate_max, gate_abs)
                 }
                 "oracle_dyn" => Vec::new(), // gold is empty -> oracle injects nothing
                 "llm_scored" | "llm_scored_cached" | "llm_ensemble" => {
@@ -1606,7 +1627,7 @@ fn cmd_metrics(args: &[String]) -> Result<()> {
                 let dense = dense_retrieve(&q_emb, &corpus, 0.0, 50, false);
                 let lex = bm25.search(&q.query, 50);
                 let pool = rrf(&[dense, lex], 60.0, 50);
-                dynamic_gate(&pool, gate_floor, gate_drop, gate_max)
+                dynamic_gate_abs(&pool, gate_floor, gate_drop, gate_max, gate_abs)
             }
             "llm_rerank" | "llm_rerank_padded" | "llm_strict" | "llm_judge" | "llm_synth" | "llm_cached" => {
                 // recall-5 Mode-2: listwise LLM rerank of the hybrid top-N pool,
@@ -2180,6 +2201,74 @@ fn parse_kv(args: &[String]) -> HashMap<String, String> {
     m
 }
 
+/// Diagnostic: does the RAW top-1 dense cosine (NOT RRF, which normalizes away
+/// absolute magnitude) separate empty-gold queries (should inject nothing) from
+/// non-empty ones? If so, a zero-cost cosine floor can cut no-memory-turn bloat.
+/// Prints percentiles for each group so we can pick a floor.
+fn cmd_cosdiag(args: &[String]) -> Result<()> {
+    let opts = parse_kv(args);
+    let graph_file = opts.get("corpus").cloned().unwrap_or_else(|| {
+        bench_root()
+            .join("corpus/projects/7fe469b5e6e471c1.json")
+            .display()
+            .to_string()
+    });
+    let corpus = Corpus::load_graph_file(Path::new(&graph_file))?;
+    let queries = read_queries()?;
+    let gold = read_gold()?;
+
+    let mut empty_top: Vec<f32> = Vec::new();
+    let mut rel_top: Vec<f32> = Vec::new();
+    for q in &queries {
+        let Some(rel) = gold.get(&q.qid) else { continue };
+        let q_emb = embedding::embed(&q.query)?;
+        let dense = dense_retrieve(&q_emb, &corpus, 0.0, 5, false);
+        let top1 = dense.first().map(|(_, s)| *s).unwrap_or(0.0);
+        if rel.is_empty() {
+            empty_top.push(top1);
+        } else {
+            rel_top.push(top1);
+        }
+    }
+    let pct = |v: &mut Vec<f32>, p: f32| -> f32 {
+        if v.is_empty() {
+            return f32::NAN;
+        }
+        v.sort_by(|a, b| a.total_cmp(b));
+        let idx = ((v.len() as f32 - 1.0) * p).round() as usize;
+        v[idx]
+    };
+    println!(
+        "empty-gold (n={}) top1-cosine: p10={:.3} p25={:.3} p50={:.3} p75={:.3} p90={:.3} max={:.3}",
+        empty_top.len(),
+        pct(&mut empty_top, 0.10),
+        pct(&mut empty_top, 0.25),
+        pct(&mut empty_top, 0.50),
+        pct(&mut empty_top, 0.75),
+        pct(&mut empty_top, 0.90),
+        empty_top.iter().cloned().fold(0.0_f32, f32::max),
+    );
+    println!(
+        "relevant  (n={}) top1-cosine: p10={:.3} p25={:.3} p50={:.3} p75={:.3} p90={:.3} max={:.3}",
+        rel_top.len(),
+        pct(&mut rel_top, 0.10),
+        pct(&mut rel_top, 0.25),
+        pct(&mut rel_top, 0.50),
+        pct(&mut rel_top, 0.75),
+        pct(&mut rel_top, 0.90),
+        rel_top.iter().cloned().fold(0.0_f32, f32::max),
+    );
+    // For a sweep of floors, show how many empty-gold turns go clean vs how many
+    // relevant turns we would wrongly suppress (lose recall entirely).
+    println!("\nfloor  empty_clean%  rel_kept%");
+    for f in [0.30_f32, 0.35, 0.40, 0.45, 0.50, 0.55, 0.60, 0.65, 0.70] {
+        let ec = empty_top.iter().filter(|&&s| s < f).count() as f32 / empty_top.len().max(1) as f32;
+        let rk = rel_top.iter().filter(|&&s| s >= f).count() as f32 / rel_top.len().max(1) as f32;
+        println!("{:.2}   {:.3}         {:.3}", f, ec, rk);
+    }
+    Ok(())
+}
+
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let cmd = args.first().cloned().unwrap_or_default();
@@ -2191,6 +2280,7 @@ fn main() -> Result<()> {
         "metrics" => cmd_metrics(rest),
         "probe" => cmd_probe(rest),
         "gate" => cmd_gate(rest),
+        "cosdiag" => cmd_cosdiag(rest),
         _ => {
             eprintln!(
                 "usage: memory_recall_bench <queries|pool|metrics> [--key=value ...]\n\
