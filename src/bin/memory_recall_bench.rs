@@ -351,6 +351,49 @@ fn rrf(lists: &[Vec<(String, f32)>], k: f32, limit: usize) -> Vec<(String, f32)>
     out
 }
 
+/// Dynamic variable-k gate over a ranked, score-descending candidate list.
+///
+/// Produces a DYNAMIC number of items per query (including 0) instead of a fixed
+/// top-k. This is the precision lever the no-LLM path needs: most turns have only
+/// 0-2 relevant memories among hundreds, so a fixed top-5 injects mostly noise.
+///
+/// Rules (all relative to the top score, so scale-free across RRF/dense/bm25):
+///   - `rel_floor`: keep item i only while `score[i] >= score[0] * rel_floor`.
+///   - `drop_ratio`: stop as soon as an item is `< prev * drop_ratio` (a cliff in
+///     the score curve marks the relevant/irrelevant boundary).
+///   - `max_k`: hard upper bound (backstop).
+/// Returns at least 1 item when the input is non-empty (the top candidate always
+/// clears its own floor), so recall of a present top-1 is never lost.
+fn dynamic_gate(
+    ranked: &[(String, f32)],
+    rel_floor: f32,
+    drop_ratio: f32,
+    max_k: usize,
+) -> Vec<String> {
+    if ranked.is_empty() {
+        return Vec::new();
+    }
+    let top = ranked[0].1.max(f32::MIN_POSITIVE);
+    let mut out = Vec::new();
+    let mut prev = top;
+    for (id, score) in ranked.iter().take(max_k) {
+        if out.is_empty() {
+            out.push(id.clone());
+            prev = *score;
+            continue;
+        }
+        if *score < top * rel_floor {
+            break;
+        }
+        if *score < prev * drop_ratio {
+            break;
+        }
+        out.push(id.clone());
+        prev = *score;
+    }
+    out
+}
+
 // ---------------- Query generation (replay sessions) ----------------
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -899,6 +942,11 @@ fn cmd_metrics(args: &[String]) -> Result<()> {
         jcode::embedding::CrossEncoder::load_from_dir(Path::new(dir)).expect("load reranker")
     });
     let rerank_pool: usize = opts.get("rerank_pool").and_then(|s| s.parse().ok()).unwrap_or(50);
+    // Dynamic variable-k gate tunables (used by *_dyn configs). These control how
+    // many memories are injected PER QUERY instead of a fixed top-k.
+    let gate_floor: f32 = opts.get("gate_floor").and_then(|s| s.parse().ok()).unwrap_or(0.55);
+    let gate_drop: f32 = opts.get("gate_drop").and_then(|s| s.parse().ok()).unwrap_or(0.80);
+    let gate_max: usize = opts.get("gate_max").and_then(|s| s.parse().ok()).unwrap_or(5);
     let content_by_id: HashMap<String, String> = corpus
         .active()
         .map(|m| (m.id.clone(), m.content.clone()))
@@ -1102,6 +1150,7 @@ fn cmd_metrics(args: &[String]) -> Result<()> {
     let mut mrr = 0.0;
     let mut ndcg = 0.0;
     let mut judged = 0usize;
+    let mut total_injected = 0usize;
 
     for q in &queries {
         let Some(rel) = gold.get(&q.qid) else { continue };
@@ -1187,10 +1236,10 @@ fn cmd_metrics(args: &[String]) -> Result<()> {
                     .collect()
             }
             "oracle_rerank" => {
-                // CEILING: take the hybrid top-N candidate POOL, then perfectly
-                // reorder it using gold (oracle). Measures the maximum precision/
-                // recall a reranker could capture from hybrid's candidate set at
-                // depth N. The gap vs `hybrid` is the rerank headroom.
+                // CEILING (fixed-k): take the hybrid top-N candidate POOL, then
+                // perfectly reorder it using gold (oracle), padded to top-N. Kept
+                // for backwards comparison; precision is capped because it pads
+                // irrelevant filler up to N even when only 1-2 are relevant.
                 let dense = dense_retrieve(&q_emb, &corpus, 0.0, 50, false);
                 let lex = bm25.search(&q.query, 50);
                 let pool = rrf(&[dense, lex], 60.0, 50);
@@ -1199,6 +1248,33 @@ fn cmd_metrics(args: &[String]) -> Result<()> {
                 // Stable sort: relevant candidates first, original order otherwise.
                 ids.sort_by_key(|id| !rel_set.contains(id));
                 ids.into_iter().take(EMBEDDING_MAX_HITS).collect()
+            }
+            "oracle_dyn" => {
+                // TRUE CEILING (dynamic-k): inject EXACTLY the relevant memories
+                // present in the hybrid pool, nothing else. This is the oracle for
+                // DYNAMIC injection: a perfect system injects the relevant set and
+                // 0 irrelevant items, so precision == recall == 1.0 whenever the
+                // pool contains all gold (and the only loss is retrieval misses,
+                // not padding). Demonstrates the precision headroom that fixed
+                // top-k structurally throws away.
+                let dense = dense_retrieve(&q_emb, &corpus, 0.0, 50, false);
+                let lex = bm25.search(&q.query, 50);
+                let pool = rrf(&[dense, lex], 60.0, 50);
+                let rel_set: HashSet<&String> = rel.iter().collect();
+                pool.into_iter()
+                    .map(|(id, _)| id)
+                    .filter(|id| rel_set.contains(id))
+                    .collect()
+            }
+            "hybrid_dyn" => {
+                // Hybrid retrieval + DYNAMIC variable-k gate (no LLM). Injects a
+                // per-query count (incl. 0/1) by cutting the ranked list at a score
+                // floor / cliff relative to the top score. The shippable no-sidecar
+                // precision improvement. Tune via --gate_floor/--gate_drop/--gate_max.
+                let dense = dense_retrieve(&q_emb, &corpus, 0.0, 50, false);
+                let lex = bm25.search(&q.query, 50);
+                let pool = rrf(&[dense, lex], 60.0, 50);
+                dynamic_gate(&pool, gate_floor, gate_drop, gate_max)
             }
             "llm_rerank" | "llm_rerank_padded" | "llm_synth" => {
                 // recall-5 Mode-2: listwise LLM rerank of the hybrid top-N pool,
@@ -1292,6 +1368,7 @@ fn cmd_metrics(args: &[String]) -> Result<()> {
         };
         let ranked: Vec<String> = ranked.into_iter().filter(|id| !origin.contains(id)).collect();
         let rel_set: HashSet<&String> = rel.iter().collect();
+        total_injected += ranked.len();
 
         recall5 += recall_at(&ranked, &rel_set, 5);
         recall10 += recall_at(&ranked, &rel_set, 10);
@@ -1312,6 +1389,7 @@ fn cmd_metrics(args: &[String]) -> Result<()> {
         "precision@10": precision10 / n,
         "mrr": mrr / n,
         "ndcg@10": ndcg / n,
+        "avg_injected": total_injected as f32 / n,
     });
     let out_path = bench_root().join(format!("results/{}.json", config));
     std::fs::create_dir_all(out_path.parent().unwrap())?;
