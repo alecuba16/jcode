@@ -55,6 +55,7 @@ struct StatusPill: View {
             Circle()
                 .fill(color)
                 .frame(width: 8, height: 8)
+                .accessibilityHidden(true)
             Text(label)
                 .font(Theme.mono(12))
                 .foregroundStyle(Theme.textSecondary)
@@ -64,6 +65,9 @@ struct StatusPill: View {
         .background(Theme.surface)
         .clipShape(Capsule())
         .overlay(Capsule().stroke(Theme.border, lineWidth: 1))
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Connection")
+        .accessibilityValue(label)
     }
 
     private var color: Color {
@@ -94,6 +98,7 @@ struct ErrorBanner: View {
         HStack(spacing: 10) {
             Image(systemName: "exclamationmark.triangle.fill")
                 .foregroundStyle(Theme.error)
+                .accessibilityHidden(true)
             Text(message)
                 .font(.footnote)
                 .foregroundStyle(Theme.textPrimary)
@@ -106,15 +111,17 @@ struct ErrorBanner: View {
                     .frame(width: 44, height: 44)
             }
             .accessibilityLabel("Dismiss error")
+            .accessibilityHint("Hides this error message")
         }
         .padding(12)
         .background(Theme.error.opacity(0.12))
-        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .clipShape(RoundedRectangle(cornerRadius: 14))
         .overlay(
-            RoundedRectangle(cornerRadius: 12)
+            RoundedRectangle(cornerRadius: 14)
                 .stroke(Theme.error.opacity(0.35), lineWidth: 1)
         )
         .padding(.horizontal)
+        .accessibilityElement(children: .combine)
     }
 }
 
@@ -135,6 +142,7 @@ struct NoticeStack: View {
 }
 
 private struct NoticeRow: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let notice: Notice
     let dismiss: () -> Void
 
@@ -142,6 +150,7 @@ private struct NoticeRow: View {
         HStack(spacing: 10) {
             Image(systemName: icon)
                 .foregroundStyle(tint)
+                .accessibilityHidden(true)
             Text(notice.message)
                 .font(.footnote)
                 .foregroundStyle(Theme.textPrimary)
@@ -154,15 +163,20 @@ private struct NoticeRow: View {
                     .frame(width: 44, height: 44)
             }
             .accessibilityLabel("Dismiss notice")
+            .accessibilityHint("Hides this notice")
         }
         .padding(12)
         .background(tint.opacity(0.12))
-        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .clipShape(RoundedRectangle(cornerRadius: 14))
         .overlay(
-            RoundedRectangle(cornerRadius: 12)
+            RoundedRectangle(cornerRadius: 14)
                 .stroke(tint.opacity(0.35), lineWidth: 1)
         )
-        .transition(.move(edge: .top).combined(with: .opacity))
+        .accessibilityElement(children: .combine)
+        // Honor Reduce Motion: skip the slide/fade for motion-sensitive users.
+        .transition(reduceMotion
+            ? .opacity
+            : .move(edge: .top).combined(with: .opacity))
     }
 
     private var icon: String {

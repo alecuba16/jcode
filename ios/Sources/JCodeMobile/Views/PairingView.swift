@@ -4,6 +4,7 @@ import SwiftUI
 /// First-run pairing: scan QR or type host/port/code.
 struct PairingView: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     @State private var host = ""
     @State private var port = String(Gateway.defaultPort)
@@ -39,7 +40,7 @@ struct PairingView: View {
 
                 Button(action: pair) {
                     HStack {
-                        if isPairing {
+                        if isPairing && !reduceMotion {
                             ProgressView().tint(.black)
                         }
                         Text(isPairing ? "Pairing..." : "Pair")
@@ -52,6 +53,8 @@ struct PairingView: View {
                     .clipShape(RoundedRectangle(cornerRadius: 14))
                 }
                 .disabled(!canPair || isPairing)
+                .accessibilityLabel("Pair")
+                .accessibilityHint("Connects using the host, port, and code above")
 
                 Button {
                     showScanner = true
@@ -68,6 +71,8 @@ struct PairingView: View {
                                 .stroke(Theme.border, lineWidth: 1)
                         )
                 }
+                .accessibilityLabel("Scan QR code")
+                .accessibilityHint("Opens the camera to scan a pairing code")
 
                 Text("Run `jcode pair` on your machine, then scan the QR code or enter the code manually. Traffic stays on your tailnet.")
                     .font(.footnote)
@@ -76,6 +81,7 @@ struct PairingView: View {
             .padding(16)
         }
         .scrollDismissesKeyboard(.interactively)
+        .dynamicTypeSize(.large ... .accessibility3)
         .sheet(isPresented: $showScanner) {
             QRScannerView { scanned in
                 showScanner = false
@@ -119,6 +125,7 @@ struct PairingView: View {
                 .padding(10)
                 .background(Theme.surfaceElevated)
                 .clipShape(RoundedRectangle(cornerRadius: 10))
+                .accessibilityLabel(label)
         }
     }
 
