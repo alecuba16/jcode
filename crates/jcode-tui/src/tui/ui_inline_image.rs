@@ -63,17 +63,14 @@ pub enum ImageExpandLevel {
     Fit,
     /// Roughly 2.5x taller, for a closer look without leaving the transcript.
     Large,
-    /// Maximum inline size before the user should use the side panel.
-    Huge,
 }
 
 impl ImageExpandLevel {
-    /// Next level in the click cycle (Fit -> Large -> Huge -> Fit).
+    /// Next level in the click cycle (Fit -> Large -> Fit), a two-click toggle.
     pub(crate) fn next(self) -> Self {
         match self {
             ImageExpandLevel::Fit => ImageExpandLevel::Large,
-            ImageExpandLevel::Large => ImageExpandLevel::Huge,
-            ImageExpandLevel::Huge => ImageExpandLevel::Fit,
+            ImageExpandLevel::Large => ImageExpandLevel::Fit,
         }
     }
 
@@ -83,7 +80,6 @@ impl ImageExpandLevel {
         match self {
             ImageExpandLevel::Fit => ANCHORED_MAX_ROWS,
             ImageExpandLevel::Large => 40,
-            ImageExpandLevel::Huge => 80,
         }
     }
 
@@ -92,7 +88,6 @@ impl ImageExpandLevel {
         match self {
             ImageExpandLevel::Fit => 0,
             ImageExpandLevel::Large => 1,
-            ImageExpandLevel::Huge => 2,
         }
     }
 }
@@ -527,8 +522,8 @@ fn fit_rows(width: u32, height: u32, chat_width: u16, viewport_height: u16) -> u
 /// (`[Alt] [⇧] [I] hide` / `[Alt] [⇧] [I] show image`) so the toggle is
 /// discoverable right where the image renders, plus a clickable `expand` badge
 /// that cycles the per-image size. The expand badge renders a three-dot
-/// progress indicator (`○○○` -> `●○○` -> `●●○`) reflecting the current level so
-/// clicking it feels like a multi-step zoom.
+/// progress indicator (`○○` -> `●○`) reflecting the current level so the
+/// badge reads as a two-click expand/reset toggle.
 /// Click/cursor icon that prefixes the clickable expand badge. Doubles as the
 /// anchor cell for badge hit detection (see `expand_badge_start_col`), so any
 /// change here must stay in sync with that scanner.
@@ -574,10 +569,10 @@ pub(crate) fn image_label_line(
     Line::from(spans)
 }
 
-/// Three-dot progress indicator for the expand badge, filled to the current
-/// level (`○○○` at Fit, `●○○` at Large, `●●○` at Huge).
+/// Two-dot progress indicator for the expand badge, filled to the current
+/// level (`○○` at Fit, `●○` at Large).
 fn expand_dots(level: ImageExpandLevel) -> String {
-    const SLOTS: usize = 3;
+    const SLOTS: usize = 2;
     let filled = level.filled_dots();
     let mut out = String::with_capacity(SLOTS * 3);
     for slot in 0..SLOTS {
@@ -589,8 +584,8 @@ fn expand_dots(level: ImageExpandLevel) -> String {
 /// Verb describing what the next expand-badge click does.
 fn expand_verb(level: ImageExpandLevel) -> &'static str {
     match level {
-        ImageExpandLevel::Fit | ImageExpandLevel::Large => "expand",
-        ImageExpandLevel::Huge => "reset",
+        ImageExpandLevel::Fit => "expand",
+        ImageExpandLevel::Large => "reset",
     }
 }
 
@@ -906,25 +901,23 @@ mod tests {
 
     #[test]
     fn expand_badge_dots_track_level() {
-        // Fit shows no filled dots; each level fills one more.
-        assert_eq!(expand_dots(ImageExpandLevel::Fit), "○○○");
-        assert_eq!(expand_dots(ImageExpandLevel::Large), "●○○");
-        assert_eq!(expand_dots(ImageExpandLevel::Huge), "●●○");
+        // Fit shows no filled dots; the expanded level fills one.
+        assert_eq!(expand_dots(ImageExpandLevel::Fit), "○○");
+        assert_eq!(expand_dots(ImageExpandLevel::Large), "●○");
     }
 
     #[test]
     fn expand_badge_verb_resets_at_max() {
         assert_eq!(expand_verb(ImageExpandLevel::Fit), "expand");
-        assert_eq!(expand_verb(ImageExpandLevel::Large), "expand");
-        assert_eq!(expand_verb(ImageExpandLevel::Huge), "reset");
+        assert_eq!(expand_verb(ImageExpandLevel::Large), "reset");
     }
 
     #[test]
     fn visible_label_line_shows_expand_badge() {
-        let line = image_label_line(&item(600, 400), true, ImageExpandLevel::Large);
+        let line = image_label_line(&item(600, 400), true, ImageExpandLevel::Fit);
         let text = jcode_tui_render::line_plain_text(&line);
         assert!(text.contains("expand"), "expand badge missing: {text:?}");
-        assert!(text.contains("●○○"), "expand dots missing: {text:?}");
+        assert!(text.contains("○○"), "expand dots missing: {text:?}");
     }
 
     #[test]
@@ -939,19 +932,16 @@ mod tests {
     }
 
     #[test]
-    fn expand_level_cycles_fit_large_huge() {
+    fn expand_level_cycles_fit_large() {
         assert_eq!(ImageExpandLevel::Fit.next(), ImageExpandLevel::Large);
-        assert_eq!(ImageExpandLevel::Large.next(), ImageExpandLevel::Huge);
-        assert_eq!(ImageExpandLevel::Huge.next(), ImageExpandLevel::Fit);
+        assert_eq!(ImageExpandLevel::Large.next(), ImageExpandLevel::Fit);
     }
 
     #[test]
     fn expanded_level_makes_anchored_image_taller() {
         let fit = fit_geometry_anchored(1000, 4000, 100, ImageExpandLevel::Fit).0;
         let large = fit_geometry_anchored(1000, 4000, 100, ImageExpandLevel::Large).0;
-        let huge = fit_geometry_anchored(1000, 4000, 100, ImageExpandLevel::Huge).0;
         assert!(large > fit, "Large ({large}) should exceed Fit ({fit})");
-        assert!(huge > large, "Huge ({huge}) should exceed Large ({large})");
     }
 
     #[test]
