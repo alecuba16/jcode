@@ -17,6 +17,11 @@ enum Theme {
     static func mono(_ size: CGFloat, weight: Font.Weight = .regular) -> Font {
         .system(size: size, weight: weight, design: .monospaced)
     }
+
+    /// Decorative icon font (SF Symbols) at a fixed point size.
+    static func icon(_ size: CGFloat, weight: Font.Weight = .regular) -> Font {
+        .system(size: size, weight: weight)
+    }
 }
 
 extension Color {
