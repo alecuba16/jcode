@@ -57,11 +57,12 @@ pub fn set_theme(name: &str, themes_dir: Option<&Path>) -> anyhow::Result<()> {
 }
 
 pub fn load_theme(name: &str, themes_dir: Option<&Path>) -> anyhow::Result<Theme> {
-    match name.trim().to_ascii_lowercase().as_str() {
+    let name = name.trim();
+    match name.to_ascii_lowercase().as_str() {
         "" | "light" => Ok(light_theme()),
         "dark" => Ok(dark_theme()),
         "system" => Ok(system_theme()),
-        custom => load_custom_theme(custom, themes_dir),
+        _ => load_custom_theme(name, themes_dir),
     }
 }
 
@@ -436,6 +437,20 @@ pub fn animated_tool_color(elapsed: f32, enable_decorative_animations: bool) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_theme_dir() -> std::path::PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "jcode-tui-style-theme-test-{}-{unique}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).expect("create theme dir");
+        dir
+    }
 
     #[test]
     fn spinner_frames_are_circular_braille_sequence() {
@@ -497,5 +512,62 @@ mod tests {
         let theme = load_theme("system", None).expect("system theme");
         assert_eq!(theme.color(ThemeColor::User), Color::Reset);
         assert_eq!(theme.color(ThemeColor::UserBg), Color::Reset);
+    }
+
+    #[test]
+    fn custom_theme_load_preserves_file_stem_case() {
+        let dir = temp_theme_dir();
+        std::fs::write(
+            dir.join("Solarized.toml"),
+            r##"
+[colors]
+user = "#123456"
+user_bg = "#abcdef"
+system_message = "default"
+"##,
+        )
+        .expect("write theme");
+
+        let names = available_theme_names(Some(&dir));
+        assert!(names.iter().any(|name| name == "Solarized"));
+
+        let theme = load_theme("Solarized", Some(&dir)).expect("custom theme");
+        assert_eq!(theme.color(ThemeColor::User), rgb(0x12, 0x34, 0x56));
+        assert_eq!(theme.color(ThemeColor::UserBg), rgb(0xab, 0xcd, 0xef));
+        assert_eq!(theme.color(ThemeColor::SystemMessage), Color::Reset);
+
+        std::fs::remove_dir_all(dir).expect("remove theme dir");
+    }
+
+    #[test]
+    fn set_theme_applies_custom_theme() {
+        let dir = temp_theme_dir();
+        std::fs::write(
+            dir.join("Custom.toml"),
+            r##"
+[colors]
+user = "#010203"
+"##,
+        )
+        .expect("write theme");
+
+        set_theme("Custom", Some(&dir)).expect("set custom theme");
+        assert_eq!(user_color(), rgb(1, 2, 3));
+        set_theme("light", None).expect("reset theme");
+
+        std::fs::remove_dir_all(dir).expect("remove theme dir");
+    }
+
+    #[test]
+    fn custom_theme_rejects_traversal_names() {
+        let dir = temp_theme_dir();
+        for name in ["../x", "nested/theme", "nested\\theme"] {
+            let error = load_theme(name, Some(&dir)).expect_err("theme name should be rejected");
+            assert!(
+                error.to_string().contains("Invalid theme name"),
+                "unexpected error for {name}: {error}"
+            );
+        }
+        std::fs::remove_dir_all(dir).expect("remove theme dir");
     }
 }
