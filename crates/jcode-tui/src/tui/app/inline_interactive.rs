@@ -2724,12 +2724,6 @@ impl App {
                         let registry = self.registry.clone();
                         let server_for_task = server.clone();
                         tokio::spawn(async move {
-                            if !target_enabled {
-                                registry
-                                    .unregister_prefix(&format!("mcp__{}__", server_for_task))
-                                    .await;
-                            }
-
                             let result = {
                                 let mut manager = manager.write().await;
                                 manager.set_enabled(&server_for_task, target_enabled).await
@@ -2745,7 +2739,11 @@ impl App {
                                         }
                                     }
                                 }
-                                Ok(()) => {}
+                                Ok(()) => {
+                                    registry
+                                        .unregister_prefix(&format!("mcp__{}__", server_for_task))
+                                        .await;
+                                }
                                 Err(error) => crate::logging::error(&format!(
                                     "MCP: failed to toggle '{}': {}",
                                     server_for_task, error

@@ -140,6 +140,93 @@ fn kv_cache_signature_ignores_non_transmitted_message_metadata() {
     );
 }
 
+struct McpToggleTestTool;
+
+#[async_trait::async_trait]
+impl crate::tool::Tool for McpToggleTestTool {
+    fn name(&self) -> &str {
+        "mcp__adhoc_tui__ping"
+    }
+
+    fn description(&self) -> &str {
+        "test MCP tool"
+    }
+
+    fn parameters_schema(&self) -> serde_json::Value {
+        serde_json::json!({"type": "object", "properties": {}})
+    }
+
+    async fn execute(
+        &self,
+        _input: serde_json::Value,
+        _ctx: crate::tool::ToolContext,
+    ) -> anyhow::Result<crate::tool::ToolOutput> {
+        Ok(crate::tool::ToolOutput::new("pong"))
+    }
+}
+
+#[test]
+fn mcp_picker_disable_keeps_tools_when_set_enabled_fails() {
+    let mut app = create_test_app();
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+
+    runtime.block_on(async {
+        app.registry
+            .register(
+                "mcp__adhoc_tui__ping".to_string(),
+                std::sync::Arc::new(McpToggleTestTool),
+            )
+            .await;
+
+        app.inline_interactive_state = Some(crate::tui::InlineInteractiveState {
+            kind: crate::tui::PickerKind::Mcp,
+            entries: vec![crate::tui::PickerEntry {
+                name: "adhoc_tui".to_string(),
+                options: vec![crate::tui::PickerOption {
+                    provider: "connected".to_string(),
+                    api_method: String::new(),
+                    available: true,
+                    detail: String::new(),
+                    estimated_reference_cost_micros: None,
+                }],
+                action: crate::tui::PickerAction::Mcp {
+                    server: "adhoc_tui".to_string(),
+                    enabled: true,
+                },
+                selected_option: 0,
+                is_current: false,
+                is_default: false,
+                is_favorite: false,
+                recommended: false,
+                recommendation_rank: 0,
+                usage_score: 0,
+                old: false,
+                created_date: None,
+                effort: None,
+            }],
+            filtered: vec![0],
+            selected: 0,
+            column: 0,
+            filter: String::new(),
+            preview: false,
+        });
+
+        app.handle_inline_interactive_key(
+            crossterm::event::KeyCode::Enter,
+            crossterm::event::KeyModifiers::NONE,
+        )
+        .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        assert!(
+            app.registry
+                .tool_names()
+                .await
+                .contains(&"mcp__adhoc_tui__ping".to_string())
+        );
+    });
+}
+
 #[test]
 fn cold_cache_warning_is_persisted_when_starting_next_request() {
     let mut app = create_test_app();
