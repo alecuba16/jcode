@@ -188,6 +188,46 @@ def main():
     mc = next((e for e in evs if e["type"] == "model_changed"), None)
     check("set_model -> model_changed", mc is not None and mc.get("model") == "openai:gpt-5")
 
+    # 7. history carries display_title + reasoning_effort (session titles UI)
+    if hist:
+        check("history display_title", bool(hist.get("display_title")))
+        check("history reasoning_effort", bool(hist.get("reasoning_effort")))
+
+    # 8. soft_interrupt -> injection ack precedes the streamed response
+    ws_send(s, json.dumps({"id": 5, "type": "soft_interrupt",
+                           "content": "queued mid-run", "urgent": False}))
+    evs = collect_events(s, until_type="done")
+    types = [e["type"] for e in evs]
+    check("soft_interrupt -> soft_interrupt_injected", "soft_interrupt_injected" in types)
+    inj = next((e for e in evs if e["type"] == "soft_interrupt_injected"), None)
+    check("injected content echoes request",
+          inj is not None and inj.get("content") == "queued mid-run")
+    if "soft_interrupt_injected" in types and "text_delta" in types:
+        check("injected before stream",
+              types.index("soft_interrupt_injected") < types.index("text_delta"))
+
+    # 9. set_reasoning_effort
+    ws_send(s, json.dumps({"id": 6, "type": "set_reasoning_effort", "effort": "low"}))
+    evs = collect_events(s, until_type="reasoning_effort_changed")
+    rc = next((e for e in evs if e["type"] == "reasoning_effort_changed"), None)
+    check("set_reasoning_effort -> reasoning_effort_changed",
+          rc is not None and rc.get("effort") == "low" and rc.get("error") is None)
+
+    # 10. compact
+    ws_send(s, json.dumps({"id": 7, "type": "compact"}))
+    evs = collect_events(s, until_type="compact_result")
+    cr = next((e for e in evs if e["type"] == "compact_result"), None)
+    check("compact -> compact_result success",
+          cr is not None and cr.get("success") is True and bool(cr.get("message")))
+
+    # 11. rename_session -> session_renamed broadcast (titles map)
+    ws_send(s, json.dumps({"id": 8, "type": "rename_session", "title": "Renamed by smoke"}))
+    evs = collect_events(s, until_type="session_renamed")
+    rn = next((e for e in evs if e["type"] == "session_renamed"), None)
+    check("rename_session -> session_renamed",
+          rn is not None and rn.get("display_title") == "Renamed by smoke"
+          and bool(rn.get("session_id")))
+
     s.close()
 
     print()

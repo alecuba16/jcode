@@ -47,6 +47,7 @@ class GatewayState:
         self.messages = []
         self.token_input = 0
         self.token_output = 0
+        self.reasoning_effort = "high"
         self.push_demo = False
 
 
@@ -255,6 +256,7 @@ def history_payload(state, req_id):
         "all_sessions": [state.session_id, "mock-session-0002"],
         "server_version": SERVER_VERSION,
         "display_title": state.title,
+        "reasoning_effort": state.reasoning_effort,
     }
 
 
@@ -280,6 +282,15 @@ async def handle_request(ws, state, raw):
         await stream_response(ws, state, msg.get("content", ""), req_id)
     elif req_type == "soft_interrupt":
         await send_event(ws, {"type": "ack", "id": req_id})
+        # Mirror the real server: confirm the queued message was injected
+        # before streaming the (echoed) response it participates in.
+        await send_event(ws, {
+            "type": "soft_interrupt_injected",
+            "content": msg.get("content", ""),
+            "display_role": "user",
+            "point": "immediate",
+            "tools_skipped": 0,
+        })
         await stream_response(ws, state, msg.get("content", ""), req_id)
     elif req_type == "cancel":
         await send_event(ws, {"type": "interrupted"})
@@ -290,6 +301,11 @@ async def handle_request(ws, state, raw):
         state.model = msg.get("model", state.model)
         await send_event(ws, {"type": "model_changed", "id": req_id, "model": state.model, "error": None})
         await send_event(ws, {"type": "available_models_updated", "available_models": DEFAULT_MODELS, "provider_model": state.model})
+    elif req_type == "set_reasoning_effort":
+        state.reasoning_effort = msg.get("effort", state.reasoning_effort)
+        await send_event(ws, {"type": "reasoning_effort_changed", "id": req_id, "effort": state.reasoning_effort, "error": None})
+    elif req_type == "compact":
+        await send_event(ws, {"type": "compact_result", "id": req_id, "message": "Compacted context (2048 tokens saved)", "success": True})
     elif req_type == "rename_session":
         state.title = msg.get("title") or "Untitled"
         await send_event(ws, {"type": "session_renamed", "session_id": state.session_id, "display_title": state.title})
