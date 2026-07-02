@@ -4,6 +4,7 @@ import SwiftUI
 /// Main conversation screen.
 struct ChatView: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.compactEdgePads) private var edgePads
     @State private var showSettings = false
     @State private var sendCount = 0
 
@@ -119,6 +120,6 @@ struct ChatView: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 8)
-        .padding(.top, SafeArea.compactTopPad)
+        .padding(.top, edgePads.top)
     }
 }

@@ -7,13 +7,16 @@ struct RootView: View {
     @State private var deepLinkError: String?
 
     var body: some View {
-        ZStack {
-            Theme.background.ignoresSafeArea()
-            if model.activeServer == nil {
-                PairingView()
-            } else {
-                ChatView()
+        GeometryReader { proxy in
+            ZStack {
+                Theme.background.ignoresSafeArea()
+                if model.activeServer == nil {
+                    PairingView()
+                } else {
+                    ChatView()
+                }
             }
+            .environment(\.compactEdgePads, CompactEdgePads(safeArea: proxy.safeAreaInsets))
         }
         .task {
             // Auto-connect to the most recent server on launch.

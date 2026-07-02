@@ -2,6 +2,7 @@ import SwiftUI
 
 /// Message composer with send/interrupt.
 struct Composer: View {
+    @Environment(\.compactEdgePads) private var edgePads
     @Binding var draft: String
     let isProcessing: Bool
     let isConnected: Bool
@@ -53,7 +54,7 @@ struct Composer: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 8)
-        .padding(.bottom, SafeArea.compactBottomPad)
+        .padding(.bottom, edgePads.bottom)
         .background(Theme.background)
     }
 

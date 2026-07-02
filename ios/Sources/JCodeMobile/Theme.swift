@@ -34,25 +34,29 @@ extension Color {
     }
 }
 
-/// Runtime safe-area insets of the key window (zero when unavailable).
+/// Extra edge padding for chrome pinned to an edge with no system inset.
 ///
-/// Home-button devices (iPhone SE class) report a zero bottom inset, so
-/// edge-pinned chrome needs explicit breathing room there; Dynamic Island
-/// devices already get it from the system insets.
-@MainActor
-enum SafeArea {
-    static var top: CGFloat { insets.top }
-    static var bottom: CGFloat { insets.bottom }
+/// Home-button devices (iPhone SE class) report a zero bottom safe-area inset,
+/// so edge-pinned chrome needs explicit breathing room there; Dynamic Island
+/// devices already get it from the system insets. Derived from the root
+/// GeometryReader in RootView and injected via the environment: reading
+/// UIKit window insets during a SwiftUI body evaluation creates an
+/// AttributeGraph cycle that corrupts view-hierarchy updates.
+struct CompactEdgePads: Equatable {
+    var top: CGFloat = 0
+    var bottom: CGFloat = 0
 
-    /// Extra padding for chrome pinned to an edge with no system inset.
-    static var compactTopPad: CGFloat { top < 24 ? 12 : 0 }
-    static var compactBottomPad: CGFloat { bottom > 0 ? 0 : 12 }
-
-    private static var insets: UIEdgeInsets {
-        UIApplication.shared.connectedScenes
-            .compactMap { ($0 as? UIWindowScene)?.keyWindow?.safeAreaInsets }
-            .first ?? .zero
+    /// Derives the pads from the container's safe-area insets.
+    init(safeArea: EdgeInsets) {
+        top = safeArea.top < 24 ? 12 : 0
+        bottom = safeArea.bottom > 0 ? 0 : 12
     }
+
+    init() {}
+}
+
+extension EnvironmentValues {
+    @Entry var compactEdgePads = CompactEdgePads()
 }
 
 /// Card container used across screens.
