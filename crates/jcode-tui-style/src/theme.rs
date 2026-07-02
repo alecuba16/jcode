@@ -276,6 +276,9 @@ pub fn user_text() -> Color {
 pub fn user_bg() -> Color {
     themed_color(ThemeColor::UserBg)
 }
+pub fn frame_bg() -> Color {
+    user_bg()
+}
 pub fn ai_text() -> Color {
     themed_color(ThemeColor::AiText)
 }

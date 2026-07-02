@@ -2,9 +2,11 @@ use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, Paragraph};
 
 pub fn clear_area(frame: &mut Frame, area: Rect) {
+    let bg = jcode_tui_style::theme::frame_bg();
     for x in area.left()..area.right() {
         for y in area.top()..area.bottom() {
             frame.buffer_mut()[(x, y)].reset();
+            frame.buffer_mut()[(x, y)].set_bg(bg);
         }
     }
 }
@@ -87,5 +89,40 @@ pub fn align_if_unset(line: Line<'static>, align: Alignment) -> Line<'static> {
         line
     } else {
         line.alignment(align)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::{Terminal, backend::TestBackend};
+
+    #[test]
+    fn clear_area_uses_active_theme_frame_background() {
+        jcode_tui_style::theme::set_theme("light", None).expect("set light theme");
+        let bg = jcode_tui_style::theme::frame_bg();
+        let backend = TestBackend::new(3, 2);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+
+        terminal
+            .draw(|frame| clear_area(frame, frame.area()))
+            .expect("draw");
+
+        for cell in terminal.backend().buffer().content() {
+            assert_eq!(cell.bg, bg);
+        }
+
+        jcode_tui_style::theme::set_theme("system", None).expect("set system theme");
+        let backend = TestBackend::new(2, 2);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+
+        terminal
+            .draw(|frame| clear_area(frame, frame.area()))
+            .expect("draw");
+
+        for cell in terminal.backend().buffer().content() {
+            assert_eq!(cell.bg, Color::Reset);
+        }
+        jcode_tui_style::theme::set_theme("light", None).expect("reset theme");
     }
 }
