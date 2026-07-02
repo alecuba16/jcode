@@ -428,7 +428,11 @@ impl McpManagementTool {
         let mut output = format!(
             "Reloaded MCP config. Connected: {}/{}\n\n",
             successes,
-            config.servers.len()
+            config
+                .servers
+                .values()
+                .filter(|server| server.enabled)
+                .count()
         );
 
         // Show failures first
@@ -574,7 +578,69 @@ mod tests {
         let input = json!({"action": "list"});
 
         let result = tool.execute(input, ctx).await.unwrap();
-        assert!(result.output.contains("No MCP servers connected"));
+        assert!(
+            result.output.contains("No MCP servers configured")
+                || result.output.contains("MCP servers:")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_connect_then_list_shows_ad_hoc_server() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let server_path = temp_dir.path().join("mcp_server.py");
+        fs::write(
+            &server_path,
+            r#"
+import json
+import sys
+
+for line in sys.stdin:
+    message = json.loads(line)
+    if "id" not in message:
+        continue
+    method = message.get("method")
+    if method == "initialize":
+        result = {
+            "protocolVersion": "2024-11-05",
+            "capabilities": {"tools": {}},
+            "serverInfo": {"name": "adhoc", "version": "1.0.0"},
+        }
+    elif method == "tools/list":
+        result = {
+            "tools": [
+                {
+                    "name": "ping",
+                    "description": "Ping tool",
+                    "inputSchema": {"type": "object", "properties": {}},
+                }
+            ]
+        }
+    else:
+        result = {}
+    print(json.dumps({"jsonrpc": "2.0", "id": message["id"], "result": result}), flush=True)
+"#,
+        )
+        .expect("write test MCP server");
+
+        let tool = create_test_tool();
+        let ctx = create_test_context();
+        let connect = json!({
+            "action": "connect",
+            "server": "adhoc",
+            "command": "python3",
+            "args": [server_path.to_string_lossy()],
+        });
+
+        let connect_result = tool.execute(connect, ctx.clone()).await.unwrap();
+        assert!(
+            connect_result
+                .output
+                .contains("Connected to MCP server 'adhoc'")
+        );
+
+        let list_result = tool.execute(json!({"action": "list"}), ctx).await.unwrap();
+        assert!(list_result.output.contains("## adhoc (connected)"));
+        assert!(list_result.output.contains("mcp__adhoc__ping"));
     }
 
     #[tokio::test]

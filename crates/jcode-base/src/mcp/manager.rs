@@ -413,6 +413,18 @@ impl McpManager {
                 tool_count: tools.iter().filter(|(server, _)| server == name).count(),
             })
             .collect();
+        statuses.extend(
+            connected
+                .iter()
+                .filter(|name| !self.config.servers.contains_key(*name))
+                .map(|name| McpServerStatus {
+                    name: name.clone(),
+                    enabled: true,
+                    connected: true,
+                    shared: true,
+                    tool_count: tools.iter().filter(|(server, _)| server == name).count(),
+                }),
+        );
         statuses.sort_by(|a, b| a.name.cmp(&b.name));
         statuses
     }
