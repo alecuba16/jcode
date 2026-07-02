@@ -63,23 +63,30 @@ pub enum ImageExpandLevel {
     Fit,
     /// Roughly 2.5x taller, for a closer look without leaving the transcript.
     Large,
+    /// Effectively uncapped height: tall enough that virtually every image is
+    /// width-bound, i.e. rendered at the largest size the chat pane allows.
+    Full,
 }
 
 impl ImageExpandLevel {
-    /// Next level in the click cycle (Fit -> Large -> Fit), a two-click toggle.
+    /// Next level in the click cycle (Fit -> Large -> Full -> Fit).
     pub(crate) fn next(self) -> Self {
         match self {
             ImageExpandLevel::Fit => ImageExpandLevel::Large,
-            ImageExpandLevel::Large => ImageExpandLevel::Fit,
+            ImageExpandLevel::Large => ImageExpandLevel::Full,
+            ImageExpandLevel::Full => ImageExpandLevel::Fit,
         }
     }
 
     /// Anchored row cap for this level. Stays viewport independent so the
-    /// width-keyed body cache remains valid across resizes.
+    /// width-keyed body cache remains valid across resizes. The `Full` cap is
+    /// bounded by kitty's virtual-placement row limit (296 diacritic slots),
+    /// with margin, so stable fit rendering keeps working at every level.
     fn anchored_cap_rows(self) -> u16 {
         match self {
             ImageExpandLevel::Fit => ANCHORED_MAX_ROWS,
             ImageExpandLevel::Large => 40,
+            ImageExpandLevel::Full => 200,
         }
     }
 
@@ -88,6 +95,7 @@ impl ImageExpandLevel {
         match self {
             ImageExpandLevel::Fit => 0,
             ImageExpandLevel::Large => 1,
+            ImageExpandLevel::Full => 2,
         }
     }
 }
@@ -652,10 +660,10 @@ pub(crate) fn image_label_line(
 }
 
 /// Two-dot progress indicator for the expand badge, filled to the current
-/// level (`○○` at Fit, `●○` at Large).
+/// level (`○○` at Fit, `●○` at Large, `●●` at Full).
 fn expand_dots(level: ImageExpandLevel) -> String {
     const SLOTS: usize = 2;
-    let filled = level.filled_dots();
+    let filled = level.filled_dots().min(SLOTS);
     let mut out = String::with_capacity(SLOTS * 3);
     for slot in 0..SLOTS {
         out.push(if slot < filled { '●' } else { '○' });
@@ -666,8 +674,8 @@ fn expand_dots(level: ImageExpandLevel) -> String {
 /// Verb describing what the next expand-badge click does.
 fn expand_verb(level: ImageExpandLevel) -> &'static str {
     match level {
-        ImageExpandLevel::Fit => "expand",
-        ImageExpandLevel::Large => "reset",
+        ImageExpandLevel::Fit | ImageExpandLevel::Large => "expand",
+        ImageExpandLevel::Full => "reset",
     }
 }
 
@@ -983,15 +991,39 @@ mod tests {
 
     #[test]
     fn expand_badge_dots_track_level() {
-        // Fit shows no filled dots; the expanded level fills one.
+        // Fit shows no filled dots; each expand level fills one more.
         assert_eq!(expand_dots(ImageExpandLevel::Fit), "○○");
         assert_eq!(expand_dots(ImageExpandLevel::Large), "●○");
+        assert_eq!(expand_dots(ImageExpandLevel::Full), "●●");
     }
 
     #[test]
     fn expand_badge_verb_resets_at_max() {
         assert_eq!(expand_verb(ImageExpandLevel::Fit), "expand");
-        assert_eq!(expand_verb(ImageExpandLevel::Large), "reset");
+        assert_eq!(expand_verb(ImageExpandLevel::Large), "expand");
+        assert_eq!(expand_verb(ImageExpandLevel::Full), "reset");
+    }
+
+    #[test]
+    fn expand_level_cycle_visits_every_level_and_wraps() {
+        assert_eq!(ImageExpandLevel::Fit.next(), ImageExpandLevel::Large);
+        assert_eq!(ImageExpandLevel::Large.next(), ImageExpandLevel::Full);
+        assert_eq!(ImageExpandLevel::Full.next(), ImageExpandLevel::Fit);
+    }
+
+    #[test]
+    fn expand_level_caps_grow_monotonically() {
+        assert!(
+            ImageExpandLevel::Fit.anchored_cap_rows()
+                < ImageExpandLevel::Large.anchored_cap_rows()
+        );
+        assert!(
+            ImageExpandLevel::Large.anchored_cap_rows()
+                < ImageExpandLevel::Full.anchored_cap_rows()
+        );
+        // Full must stay under kitty's virtual-placement row limit (296) so
+        // stable fit rendering keeps working at every level.
+        assert!(ImageExpandLevel::Full.anchored_cap_rows() < 296);
     }
 
     #[test]
@@ -1014,16 +1046,12 @@ mod tests {
     }
 
     #[test]
-    fn expand_level_cycles_fit_large() {
-        assert_eq!(ImageExpandLevel::Fit.next(), ImageExpandLevel::Large);
-        assert_eq!(ImageExpandLevel::Large.next(), ImageExpandLevel::Fit);
-    }
-
-    #[test]
     fn expanded_level_makes_anchored_image_taller() {
         let fit = fit_geometry_anchored(1000, 4000, 100, ImageExpandLevel::Fit).0;
         let large = fit_geometry_anchored(1000, 4000, 100, ImageExpandLevel::Large).0;
+        let full = fit_geometry_anchored(1000, 4000, 100, ImageExpandLevel::Full).0;
         assert!(large > fit, "Large ({large}) should exceed Fit ({fit})");
+        assert!(full > large, "Full ({full}) should exceed Large ({large})");
     }
 
     #[test]
