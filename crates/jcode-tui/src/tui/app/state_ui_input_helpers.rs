@@ -42,6 +42,8 @@ const REGISTERED_COMMANDS: &[RegisteredCommand] = &[
     RegisteredCommand::public("/commands", "Alias for /help"),
     RegisteredCommand::public("/model", "List or switch models"),
     RegisteredCommand::public("/models", "Alias for /model"),
+    RegisteredCommand::public("/mcp", "Toggle MCP servers"),
+    RegisteredCommand::public("/mcps", "Alias for /mcp"),
     RegisteredCommand::public(
         "/provider-test-coverage",
         "Show live-test evidence for the current provider/model",

@@ -182,6 +182,9 @@ pub struct McpServerConfig {
     /// Stateful servers (Playwright browser) should not be shared.
     #[serde(default = "default_shared")]
     pub shared: bool,
+    /// Whether this server should start/connect (default: true).
+    #[serde(default = "default_enabled")]
+    pub enabled: bool,
     /// Transport type from Claude Code configs ("stdio", "http", "sse"). Used
     /// only to recognize and skip non-stdio servers; defaults to stdio.
     #[serde(rename = "type", default, skip_serializing_if = "Option::is_none")]
@@ -207,6 +210,10 @@ impl McpServerConfig {
 }
 
 fn default_shared() -> bool {
+    true
+}
+
+fn default_enabled() -> bool {
     true
 }
 
@@ -356,6 +363,7 @@ impl McpConfig {
                             args,
                             env,
                             shared,
+                            enabled: true,
                             transport: None,
                             url: None,
                         },

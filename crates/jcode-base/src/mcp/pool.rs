@@ -69,6 +69,9 @@ impl SharedMcpPool {
         let mut connect_futures = Vec::new();
 
         for (name, server_config) in &config.servers {
+            if !server_config.enabled {
+                continue;
+            }
             let name = name.clone();
             let server_config = server_config.clone();
             connect_futures.push(async move {

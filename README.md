@@ -509,6 +509,8 @@ Claude Code compatibility:
 
 Both the canonical `mcpServers` key and jcode's historical `servers` key are accepted. jcode currently supports stdio (command-based) servers only; HTTP/SSE entries (`"type": "http"`/`"sse"`) are recognized and skipped with a log line.
 
+Each server accepts `enabled` (default `true`). Set `enabled: false` to keep a configured server from connecting or spawning. In the TUI, run `/mcp` to view MCP server state and toggle servers on/off for the current app run.
+
 Example MCP config:
 
 ```json
@@ -518,6 +520,7 @@ Example MCP config:
       "command": "/path/to/mcp-server",
       "args": ["--root", "/workspace"],
       "env": {},
+      "enabled": true,
       "shared": true
     }
   }

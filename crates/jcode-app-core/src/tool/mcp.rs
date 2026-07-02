@@ -59,7 +59,7 @@ impl Tool for McpManagementTool {
                 "intent": super::intent_schema_property(),
                 "action": {
                     "type": "string",
-                    "enum": ["list", "connect", "disconnect", "reload"],
+                    "enum": ["list", "connect", "disconnect", "enable", "disable", "toggle", "reload"],
                     "description": "Action."
                 },
                 "server": {
@@ -105,9 +105,12 @@ impl Tool for McpManagementTool {
             "list" => self.list_servers().await,
             "connect" => self.connect_server(params, &ctx.session_id).await,
             "disconnect" => self.disconnect_server(params).await,
+            "enable" => self.set_server_enabled(params, true).await,
+            "disable" => self.set_server_enabled(params, false).await,
+            "toggle" => self.toggle_server_enabled(params).await,
             "reload" => self.reload_config(&ctx.session_id).await,
             _ => Ok(ToolOutput::new(format!(
-                "Unknown action: {}. Use 'list', 'connect', 'disconnect', or 'reload'.",
+                "Unknown action: {}. Use 'list', 'connect', 'disconnect', 'enable', 'disable', 'toggle', or 'reload'.",
                 params.action
             ))),
         };
@@ -154,12 +157,12 @@ impl McpManagementTool {
 impl McpManagementTool {
     async fn list_servers(&self) -> Result<ToolOutput> {
         let manager = self.manager.read().await;
-        let servers = manager.connected_servers().await;
+        let statuses = manager.server_statuses().await;
         let all_tools = manager.all_tools().await;
 
-        if servers.is_empty() {
+        if statuses.is_empty() {
             return Ok(ToolOutput::new(
-                "No MCP servers connected.\n\n\
+                "No MCP servers configured.\n\n\
                 To connect a server, use:\n\
                 {\"action\": \"connect\", \"server\": \"name\", \"command\": \"/path/to/server\", \"args\": []}\n\n\
                 Or add servers to ~/.jcode/mcp.json or .jcode/mcp.json and use {\"action\": \"reload\"}.\n\
@@ -168,11 +171,26 @@ impl McpManagementTool {
         }
 
         let mut output = String::new();
-        output.push_str(&format!("Connected MCP servers: {}\n\n", servers.len()));
+        let connected_count = statuses.iter().filter(|status| status.connected).count();
+        output.push_str(&format!(
+            "MCP servers: {} configured, {} connected\n\n",
+            statuses.len(),
+            connected_count
+        ));
 
-        for server in &servers {
-            output.push_str(&format!("## {}\n", server));
-            let server_tools: Vec<_> = all_tools.iter().filter(|(s, _)| s == server).collect();
+        for status in &statuses {
+            let state = if !status.enabled {
+                "disabled"
+            } else if status.connected {
+                "connected"
+            } else {
+                "enabled"
+            };
+            output.push_str(&format!("## {} ({})\n", status.name, state));
+            let server_tools: Vec<_> = all_tools
+                .iter()
+                .filter(|(s, _)| s == &status.name)
+                .collect();
 
             if server_tools.is_empty() {
                 output.push_str("  (no tools)\n");
@@ -180,7 +198,7 @@ impl McpManagementTool {
                 for (_, tool) in server_tools {
                     output.push_str(&format!(
                         "  - mcp__{}__{}: {}\n",
-                        server,
+                        status.name,
                         tool.name,
                         tool.description.as_deref().unwrap_or("(no description)")
                     ));
@@ -205,6 +223,7 @@ impl McpManagementTool {
             args: params.args.unwrap_or_default(),
             env: params.env.unwrap_or_default(),
             shared: true,
+            enabled: true,
             transport: None,
             url: None,
         };
@@ -320,6 +339,53 @@ impl McpManagementTool {
             ToolOutput::new(format!("Disconnected from MCP server '{}'", server_name))
                 .with_title(format!("MCP: Disconnected {}", server_name)),
         )
+    }
+
+    async fn set_server_enabled(&self, params: McpToolInput, enabled: bool) -> Result<ToolOutput> {
+        let server_name = params
+            .server
+            .ok_or_else(|| anyhow::anyhow!("'server' is required for enable/disable action"))?;
+
+        if !enabled && let Some(ref registry) = self.registry {
+            registry
+                .unregister_prefix(&format!("mcp__{}__", server_name))
+                .await;
+        }
+
+        let mut manager = self.manager.write().await;
+        manager.set_enabled(&server_name, enabled).await?;
+        drop(manager);
+
+        if enabled && let Some(ref registry) = self.registry {
+            let mcp_tools = crate::mcp::create_mcp_tools(Arc::clone(&self.manager)).await;
+            for (name, tool) in mcp_tools {
+                if name.starts_with(&format!("mcp__{}__", server_name)) {
+                    registry.register(name, tool).await;
+                }
+            }
+        }
+
+        let state = if enabled { "enabled" } else { "disabled" };
+        Ok(
+            ToolOutput::new(format!("MCP server '{}' {}", server_name, state))
+                .with_title(format!("MCP: {} {}", state, server_name)),
+        )
+    }
+
+    async fn toggle_server_enabled(&self, params: McpToolInput) -> Result<ToolOutput> {
+        let server_name = params
+            .server
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("'server' is required for toggle action"))?;
+        let enabled = {
+            let manager = self.manager.read().await;
+            let config =
+                manager.config().servers.get(&server_name).ok_or_else(|| {
+                    anyhow::anyhow!("MCP server '{}' is not configured", server_name)
+                })?;
+            !config.enabled
+        };
+        self.set_server_enabled(params, enabled).await
     }
 
     async fn reload_config(&self, session_id: &str) -> Result<ToolOutput> {

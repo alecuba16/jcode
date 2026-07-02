@@ -760,7 +760,12 @@ impl Registry {
         // Check if we have servers to connect to
         let server_count = {
             let manager = mcp_manager.read().await;
-            manager.config().servers.len()
+            manager
+                .config()
+                .servers
+                .values()
+                .filter(|cfg| cfg.enabled)
+                .count()
         };
 
         if server_count > 0 {
@@ -774,8 +779,9 @@ impl Registry {
                     manager
                         .config()
                         .servers
-                        .keys()
-                        .map(|name| format!("{}:0", name))
+                        .iter()
+                        .filter(|(_, cfg)| cfg.enabled)
+                        .map(|(name, _)| format!("{}:0", name))
                         .collect()
                 };
                 let _ = tx.send(crate::protocol::ServerEvent::McpStatus {
@@ -800,6 +806,7 @@ impl Registry {
                         .config()
                         .servers
                         .iter()
+                        .filter(|(_, cfg)| cfg.enabled)
                         .map(|(name, cfg)| (name.clone(), cfg.clone()))
                         .collect()
                 };

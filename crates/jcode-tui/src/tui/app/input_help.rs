@@ -25,6 +25,9 @@ impl App {
             "model" => {
                 "/model\nOpen model picker.\n\n/model <name>\nSwitch model.\n\n/model <name>@<provider>\nPin OpenRouter routing (@auto clears pin)."
             }
+            "mcp" | "mcps" => {
+                "/mcp\nOpen MCP server picker.\n\nEnter toggles a server enabled/disabled. Disabled servers do not connect or spawn."
+            }
             "provider-test-coverage"
             | "provider test coverage"
             | "model-status"

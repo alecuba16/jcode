@@ -741,6 +741,7 @@ pub enum PickerKind {
     Account,
     Login,
     Usage,
+    Mcp,
 }
 
 /// What the first-run onboarding welcome screen should render in its body,
@@ -913,6 +914,17 @@ impl PickerKind {
                 shows_default_shortcut_hint: false,
                 preview_activation_column: 2,
             },
+            Self::Mcp => InlineInteractiveSchema {
+                layout: InlineInteractiveLayout::ThreeColumn,
+                primary_label: "SERVER",
+                secondary_label: "STATE",
+                secondary_preview_label: "STATE",
+                tertiary_label: "TOOLS",
+                preview_submit_hint: "  ↵ toggle",
+                active_submit_hint: "  ↑↓ ↵ Esc",
+                shows_default_shortcut_hint: false,
+                preview_activation_column: 2,
+            },
         }
     }
 
@@ -967,6 +979,13 @@ impl PickerKind {
                 let detail = route.map(|option| option.detail.as_str()).unwrap_or("");
                 format!("{} {} {} {}", entry.name, provider, method, detail)
             }
+            Self::Mcp => {
+                let route = entry.active_option();
+                let state = route.map(|option| option.provider.as_str()).unwrap_or("");
+                let tools = route.map(|option| option.api_method.as_str()).unwrap_or("");
+                let detail = route.map(|option| option.detail.as_str()).unwrap_or("");
+                format!("{} {} {} {}", entry.name, state, tools, detail)
+            }
         }
     }
 }
@@ -1001,6 +1020,10 @@ pub enum PickerAction {
         subtitle: String,
         status: crate::tui::usage_overlay::UsageOverlayStatus,
         detail_lines: Vec<String>,
+    },
+    Mcp {
+        server: String,
+        enabled: bool,
     },
     AgentTarget(AgentModelTarget),
     AgentModelChoice {
@@ -1088,6 +1111,7 @@ fn estimate_picker_action_bytes(action: &PickerAction) -> usize {
                     .map(|value| value.capacity())
                     .sum::<usize>()
         }
+        PickerAction::Mcp { server, .. } => server.capacity(),
     }
 }
 
