@@ -1798,6 +1798,12 @@ pub(super) fn handle_modal_key(
     code: KeyCode,
     modifiers: KeyModifiers,
 ) -> Result<bool> {
+    if modifiers.contains(KeyModifiers::CONTROL)
+        && matches!(code, KeyCode::Char('c') | KeyCode::Char('d'))
+    {
+        return Ok(false);
+    }
+
     if app.changelog_scroll.is_some() {
         app.handle_changelog_key(code)?;
         return Ok(true);
@@ -1831,12 +1837,6 @@ pub(super) fn handle_modal_key(
     }
 
     if app.copy_selection_mode {
-        if modifiers.contains(KeyModifiers::CONTROL)
-            && matches!(code, KeyCode::Char('c') | KeyCode::Char('d'))
-        {
-            return Ok(false);
-        }
-
         let _ = app.handle_copy_selection_key(code, modifiers)
             || handle_navigation_shortcuts(app, code, modifiers);
         return Ok(true);

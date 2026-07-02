@@ -57,6 +57,59 @@ async fn test_tool_definitions_are_sorted() {
     );
 }
 
+#[tokio::test]
+async fn register_mcp_tools_waits_for_resolved_startup_status() {
+    let _guard = crate::storage::lock_test_env();
+    let temp = tempfile::TempDir::new().expect("temp dir");
+    std::fs::write(
+        temp.path().join("mcp.json"),
+        serde_json::json!({
+            "servers": {
+                "broken_startup": {
+                    "command": "definitely-not-a-real-mcp-binary",
+                    "args": [],
+                    "enabled": true
+                }
+            }
+        })
+        .to_string(),
+    )
+    .expect("write mcp config");
+    let prev_home = std::env::var_os("JCODE_HOME");
+    crate::env::set_var("JCODE_HOME", temp.path().to_string_lossy().to_string());
+
+    let provider: Arc<dyn Provider> = Arc::new(MockProvider);
+    let registry = Registry::new(provider).await;
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+
+    registry
+        .register_mcp_tools(Some(tx), None, Some("startup-test".to_string()))
+        .await;
+
+    match prev_home {
+        Some(value) => crate::env::set_var("JCODE_HOME", value),
+        None => crate::env::remove_var("JCODE_HOME"),
+    }
+
+    let mut statuses = Vec::new();
+    while let Ok(event) = rx.try_recv() {
+        if let crate::protocol::ServerEvent::McpStatus { servers } = event {
+            statuses.push(servers);
+        }
+    }
+
+    assert!(
+        statuses
+            .iter()
+            .any(|servers| servers == &vec!["broken_startup:0".to_string()]),
+        "expected immediate connecting MCP status, got {statuses:?}"
+    );
+    assert!(
+        statuses.iter().any(|servers| servers.is_empty()),
+        "expected resolved final MCP status before return, got {statuses:?}"
+    );
+}
+
 #[test]
 fn test_resolve_skill_aliases_to_skill_manage() {
     assert_eq!(Registry::resolve_tool_name("skill"), "skill_manage");

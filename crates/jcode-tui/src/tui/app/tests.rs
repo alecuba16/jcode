@@ -228,6 +228,50 @@ fn mcp_picker_disable_keeps_tools_when_set_enabled_fails() {
 }
 
 #[test]
+fn ctrl_c_exits_while_mcp_picker_is_open() {
+    let mut app = create_test_app();
+    app.inline_interactive_state = Some(crate::tui::InlineInteractiveState {
+        kind: crate::tui::PickerKind::Mcp,
+        entries: vec![crate::tui::PickerEntry {
+            name: "adhoc_tui".to_string(),
+            options: vec![crate::tui::PickerOption {
+                provider: "connected".to_string(),
+                api_method: String::new(),
+                available: true,
+                detail: String::new(),
+                estimated_reference_cost_micros: None,
+            }],
+            action: crate::tui::PickerAction::Mcp {
+                server: "adhoc_tui".to_string(),
+                enabled: true,
+            },
+            selected_option: 0,
+            is_current: false,
+            is_default: false,
+            is_favorite: false,
+            recommended: false,
+            recommendation_rank: 0,
+            usage_score: 0,
+            old: false,
+            created_date: None,
+            effort: None,
+        }],
+        filtered: vec![0],
+        selected: 0,
+        column: 0,
+        filter: String::new(),
+        preview: false,
+    });
+
+    app.handle_key_event(crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Char('c'),
+        crossterm::event::KeyModifiers::CONTROL,
+    ));
+
+    assert!(app.quit_pending.is_some());
+}
+
+#[test]
 fn cold_cache_warning_is_persisted_when_starting_next_request() {
     let mut app = create_test_app();
     crate::provider::anthropic::set_cache_ttl_1h(true);

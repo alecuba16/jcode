@@ -851,9 +851,10 @@ impl Registry {
                 }
             }
 
-            // Spawn connection and tool registration in background
+            // Connect and register before returning so launch-time MCP status
+            // reflects resolved live tool counts, not only cached advertising.
             let registry = self.clone();
-            tokio::spawn(async move {
+            async move {
                 let (successes, failures) = {
                     let manager = mcp_manager.write().await;
                     manager.connect_all().await.unwrap_or((0, Vec::new()))
@@ -950,7 +951,8 @@ impl Registry {
                         .collect();
                     let _ = tx.send(crate::protocol::ServerEvent::McpStatus { servers });
                 }
-            });
+            }
+            .await;
         }
     }
 
