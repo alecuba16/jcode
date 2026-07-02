@@ -78,6 +78,9 @@ pub fn available_theme_names(themes_dir: Option<&Path>) -> Vec<String> {
                 let path = entry.path();
                 if path.extension().and_then(|ext| ext.to_str()) == Some("toml") {
                     if let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) {
+                        if !is_safe_custom_theme_name(stem) {
+                            continue;
+                        }
                         let stem = stem.to_string();
                         if !names.iter().any(|name| name == &stem) {
                             names.push(stem);
@@ -98,9 +101,9 @@ fn themed_color(key: ThemeColor) -> Color {
 }
 
 fn load_custom_theme(name: &str, themes_dir: Option<&Path>) -> anyhow::Result<Theme> {
-    if name.contains('/') || name.contains('\\') || name == "." || name == ".." {
+    if !is_safe_custom_theme_name(name) {
         anyhow::bail!(
-            "Invalid theme name '{}': use a file stem from the themes directory",
+            "Invalid theme name '{}': use only ASCII letters, numbers, '-' or '_'",
             name
         );
     }
@@ -122,6 +125,13 @@ fn load_custom_theme(name: &str, themes_dir: Option<&Path>) -> anyhow::Result<Th
         theme.colors.insert(key, value);
     }
     Ok(theme)
+}
+
+fn is_safe_custom_theme_name(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
 fn parse_theme_color(raw: &str) -> Option<ThemeColor> {
@@ -561,7 +571,13 @@ user = "#010203"
     #[test]
     fn custom_theme_rejects_traversal_names() {
         let dir = temp_theme_dir();
-        for name in ["../x", "nested/theme", "nested\\theme"] {
+        for name in [
+            "../x",
+            "nested/theme",
+            "nested\\theme",
+            "C:foo",
+            "theme:name",
+        ] {
             let error = load_theme(name, Some(&dir)).expect_err("theme name should be rejected");
             assert!(
                 error.to_string().contains("Invalid theme name"),
