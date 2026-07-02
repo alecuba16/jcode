@@ -637,6 +637,78 @@ impl App {
         self.open_model_picker_inner(false);
     }
 
+    pub(super) fn open_mcp_picker(&mut self) {
+        let mcp_manager = std::sync::Arc::clone(&self.mcp_manager);
+        let statuses = match mcp_manager.try_read() {
+            Ok(manager) => manager.server_statuses_now(),
+            Err(_) => {
+                self.set_status_notice("MCP: manager busy");
+                return;
+            }
+        };
+
+        let entries: Vec<PickerEntry> = statuses
+            .into_iter()
+            .map(|status| {
+                let state = if !status.enabled {
+                    "disabled"
+                } else if status.connected {
+                    "connected"
+                } else {
+                    "enabled"
+                };
+                PickerEntry {
+                    name: status.name.clone(),
+                    options: vec![PickerOption {
+                        provider: state.to_string(),
+                        api_method: format!("{} tools", status.tool_count),
+                        available: true,
+                        detail: if status.shared { "shared" } else { "session" }.to_string(),
+                        estimated_reference_cost_micros: None,
+                    }],
+                    action: PickerAction::Mcp {
+                        server: status.name,
+                        enabled: status.enabled,
+                    },
+                    selected_option: 0,
+                    is_current: status.connected,
+                    is_default: false,
+                    is_favorite: false,
+                    recommended: status.enabled,
+                    recommendation_rank: 0,
+                    usage_score: 0,
+                    old: !status.enabled,
+                    created_date: None,
+                    effort: None,
+                }
+            })
+            .collect();
+
+        if entries.is_empty() {
+            self.inline_interactive_state = None;
+            self.push_display_message(DisplayMessage::system(
+                "No MCP servers configured. Add servers to ~/.jcode/mcp.json or .jcode/mcp.json."
+                    .to_string(),
+            ));
+            self.set_status_notice("MCP: no servers configured");
+            return;
+        }
+
+        self.inline_interactive_state = Some(InlineInteractiveState {
+            kind: PickerKind::Mcp,
+            filtered: (0..entries.len()).collect(),
+            entries,
+            selected: 0,
+            column: 0,
+            filter: String::new(),
+            preview: false,
+        });
+        self.inline_view_state = None;
+        self.input.clear();
+        self.cursor_pos = 0;
+        self.set_status_notice("MCP: Enter toggles server enabled state");
+    }
+
     fn open_model_picker_preserving_input(&mut self) {
         self.open_model_picker_inner(true);
     }
@@ -2644,6 +2716,49 @@ impl App {
                         content.extend(detail_lines);
                         self.push_display_message(DisplayMessage::usage(content.join("\n")));
                         self.set_status_notice(format!("Usage → {}", title));
+                    }
+                    PickerAction::Mcp { server, enabled } => {
+                        self.inline_interactive_state = None;
+                        let target_enabled = !enabled;
+                        let manager = std::sync::Arc::clone(&self.mcp_manager);
+                        let registry = self.registry.clone();
+                        let server_for_task = server.clone();
+                        tokio::spawn(async move {
+                            let result = {
+                                let mut manager = manager.write().await;
+                                manager.set_enabled(&server_for_task, target_enabled).await
+                            };
+
+                            match result {
+                                Ok(()) if target_enabled => {
+                                    let mcp_tools = crate::mcp::create_mcp_tools(manager).await;
+                                    for (name, tool) in mcp_tools {
+                                        if name.starts_with(&format!("mcp__{}__", server_for_task))
+                                        {
+                                            registry.register(name, tool).await;
+                                        }
+                                    }
+                                }
+                                Ok(()) => {
+                                    registry
+                                        .unregister_prefix(&format!("mcp__{}__", server_for_task))
+                                        .await;
+                                }
+                                Err(error) => crate::logging::error(&format!(
+                                    "MCP: failed to toggle '{}': {}",
+                                    server_for_task, error
+                                )),
+                            }
+                        });
+                        self.set_status_notice(format!(
+                            "MCP: {} {}",
+                            if target_enabled {
+                                "enabling"
+                            } else {
+                                "disabling"
+                            },
+                            server
+                        ));
                     }
                     PickerAction::AgentTarget(target) => {
                         self.open_agent_model_picker(target);

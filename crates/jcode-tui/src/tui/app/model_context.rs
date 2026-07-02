@@ -1263,6 +1263,11 @@ pub(super) fn handle_model_command(app: &mut App, trimmed: &str) -> bool {
         return true;
     }
 
+    if trimmed == "/mcp" || trimmed == "/mcps" {
+        app.open_mcp_picker();
+        return true;
+    }
+
     if let Some(model_name) = trimmed.strip_prefix("/model ") {
         app.record_keybinding_slow(crate::tui::app::shortcut_hints::LearnableAction::ModelSwitch);
         let model_name = model_name.trim();

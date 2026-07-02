@@ -44,6 +44,15 @@ pub struct McpManager {
     session_id: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct McpServerStatus {
+    pub name: String,
+    pub enabled: bool,
+    pub connected: bool,
+    pub shared: bool,
+    pub tool_count: usize,
+}
+
 impl McpManager {
     /// Create a new manager in owned in-process mode (used by tests and local harnesses).
     pub fn new() -> Self {
@@ -98,6 +107,7 @@ impl McpManager {
             .config
             .servers
             .iter()
+            .filter(|(_, config)| config.enabled)
             .partition(|(_, config)| config.shared && self.pool.is_some());
 
         // Connect shared servers via pool
@@ -170,6 +180,10 @@ impl McpManager {
         reason = "MCP connect flow keeps shared-pool and owned-server paths explicit"
     )]
     pub async fn connect(&self, name: &str, config: &McpServerConfig) -> Result<()> {
+        if !config.enabled {
+            anyhow::bail!("MCP server '{}' is disabled", name);
+        }
+
         if config.shared {
             if let Some(pool) = &self.pool {
                 pool.connect_server(name, config).await?;
@@ -297,6 +311,9 @@ impl McpManager {
 
         // Not connected yet. If the server is configured, connect-on-first-call.
         if let Some(config) = self.config.servers.get(server).cloned() {
+            if !config.enabled {
+                anyhow::bail!("MCP server '{server}' is disabled");
+            }
             crate::logging::info(&format!(
                 "MCP: connecting to '{server}' on first tool call (connect-on-first-call)"
             ));
@@ -347,6 +364,9 @@ impl McpManager {
         let Some(config) = self.config.servers.get(server).cloned() else {
             anyhow::bail!("MCP server '{server}' is not configured");
         };
+        if !config.enabled {
+            anyhow::bail!("MCP server '{server}' is disabled");
+        }
         match tokio::time::timeout(timeout, self.connect(server, &config)).await {
             Ok(result) => result,
             Err(_) => anyhow::bail!(
@@ -376,6 +396,125 @@ impl McpManager {
     /// Get config
     pub fn config(&self) -> &McpConfig {
         &self.config
+    }
+
+    pub async fn server_statuses(&self) -> Vec<McpServerStatus> {
+        let connected = self.connected_servers().await;
+        let tools = self.all_tools().await;
+        let mut statuses: Vec<_> = self
+            .config
+            .servers
+            .iter()
+            .map(|(name, config)| McpServerStatus {
+                name: name.clone(),
+                enabled: config.enabled,
+                connected: connected.iter().any(|server| server == name),
+                shared: config.shared,
+                tool_count: tools.iter().filter(|(server, _)| server == name).count(),
+            })
+            .collect();
+        statuses.extend(
+            connected
+                .iter()
+                .filter(|name| !self.config.servers.contains_key(*name))
+                .map(|name| McpServerStatus {
+                    name: name.clone(),
+                    enabled: true,
+                    connected: true,
+                    shared: true,
+                    tool_count: tools.iter().filter(|(server, _)| server == name).count(),
+                }),
+        );
+        statuses.sort_by(|a, b| a.name.cmp(&b.name));
+        statuses
+    }
+
+    pub fn server_statuses_now(&self) -> Vec<McpServerStatus> {
+        let pool_handles = self.pool_handles.try_read().ok();
+        let owned_clients = self.owned_clients.try_read().ok();
+        let mut statuses: Vec<_> = self
+            .config
+            .servers
+            .iter()
+            .map(|(name, config)| {
+                let pool_tools = pool_handles
+                    .as_ref()
+                    .and_then(|handles| handles.get(name))
+                    .map(|handle| handle.tools().len())
+                    .unwrap_or(0);
+                let owned_tools = owned_clients
+                    .as_ref()
+                    .and_then(|clients| clients.get(name))
+                    .map(|client| client.tools().len())
+                    .unwrap_or(0);
+                McpServerStatus {
+                    name: name.clone(),
+                    enabled: config.enabled,
+                    connected: pool_tools > 0
+                        || owned_tools > 0
+                        || pool_handles
+                            .as_ref()
+                            .map(|handles| handles.contains_key(name))
+                            .unwrap_or(false)
+                        || owned_clients
+                            .as_ref()
+                            .map(|clients| clients.contains_key(name))
+                            .unwrap_or(false),
+                    shared: config.shared,
+                    tool_count: pool_tools + owned_tools,
+                }
+            })
+            .collect();
+        if let Some(handles) = pool_handles.as_ref() {
+            for (name, handle) in handles.iter() {
+                if !self.config.servers.contains_key(name)
+                    && !statuses.iter().any(|status| status.name == *name)
+                {
+                    statuses.push(McpServerStatus {
+                        name: name.clone(),
+                        enabled: true,
+                        connected: true,
+                        shared: true,
+                        tool_count: handle.tools().len(),
+                    });
+                }
+            }
+        }
+        if let Some(clients) = owned_clients.as_ref() {
+            for (name, client) in clients.iter() {
+                if !self.config.servers.contains_key(name)
+                    && !statuses.iter().any(|status| status.name == *name)
+                {
+                    statuses.push(McpServerStatus {
+                        name: name.clone(),
+                        enabled: true,
+                        connected: true,
+                        shared: true,
+                        tool_count: client.tools().len(),
+                    });
+                }
+            }
+        }
+        statuses.sort_by(|a, b| a.name.cmp(&b.name));
+        statuses
+    }
+
+    pub async fn set_enabled(&mut self, name: &str, enabled: bool) -> Result<()> {
+        let Some(config) = self.config.servers.get_mut(name) else {
+            anyhow::bail!("MCP server '{name}' is not configured");
+        };
+
+        if config.enabled == enabled {
+            return Ok(());
+        }
+
+        config.enabled = enabled;
+        let config = config.clone();
+        if enabled {
+            self.connect(name, &config).await
+        } else {
+            self.disconnect(name).await
+        }
     }
 
     pub fn debug_memory_profile(&self) -> McpManagerMemoryProfile {
@@ -492,6 +631,7 @@ mod tests {
                 args: vec![],
                 env: HashMap::new(),
                 shared: false,
+                enabled: true,
                 transport: None,
                 url: None,
             },
@@ -515,5 +655,29 @@ mod tests {
             started.elapsed() < Duration::from_secs(35),
             "connect-on-first-call must be bounded"
         );
+    }
+
+    #[tokio::test]
+    async fn disabled_server_is_not_connected_by_connect_all() {
+        let mut config = McpConfig::default();
+        config.servers.insert(
+            "disabled".to_string(),
+            McpServerConfig {
+                command: "definitely-not-a-real-mcp-binary".to_string(),
+                args: vec![],
+                env: HashMap::new(),
+                shared: false,
+                enabled: false,
+                transport: None,
+                url: None,
+            },
+        );
+        let manager = McpManager::with_config(config);
+
+        let (successes, failures) = manager.connect_all().await.unwrap();
+
+        assert_eq!(successes, 0);
+        assert!(failures.is_empty());
+        assert!(manager.connected_servers().await.is_empty());
     }
 }

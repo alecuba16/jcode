@@ -45,6 +45,22 @@ fn test_mcp_config_deserialization() {
     assert_eq!(server.command, "/usr/bin/test-mcp");
     assert_eq!(server.args, vec!["--port", "8080"]);
     assert_eq!(server.env.get("API_KEY"), Some(&"secret".to_string()));
+    assert!(server.enabled);
+}
+
+#[test]
+fn test_mcp_config_enabled_flag_deserialization() {
+    let json = r#"{
+            "servers": {
+                "off-server": {
+                    "command": "/usr/bin/test-mcp",
+                    "enabled": false
+                }
+            }
+        }"#;
+    let config: McpConfig = serde_json::from_str(json).unwrap();
+    let server = config.servers.get("off-server").unwrap();
+    assert!(!server.enabled);
 }
 
 #[test]

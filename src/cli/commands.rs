@@ -2512,6 +2512,7 @@ fn cold_cache_mcp_servers() -> Vec<String> {
     config
         .servers
         .iter()
+        .filter(|(_, cfg)| cfg.enabled)
         .filter(|(name, cfg)| cache.tools_for(name, cfg).is_none())
         .map(|(name, _)| name.clone())
         .collect()

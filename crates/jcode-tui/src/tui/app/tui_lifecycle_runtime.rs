@@ -232,7 +232,12 @@ impl App {
             .await;
 
         let manager = self.mcp_manager.read().await;
-        let server_count = manager.config().servers.len();
+        let server_count = manager
+            .config()
+            .servers
+            .values()
+            .filter(|cfg| cfg.enabled)
+            .count();
         if server_count > 0 {
             drop(manager);
 
