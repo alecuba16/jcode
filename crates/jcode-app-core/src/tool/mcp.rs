@@ -346,15 +346,15 @@ impl McpManagementTool {
             .server
             .ok_or_else(|| anyhow::anyhow!("'server' is required for enable/disable action"))?;
 
+        let mut manager = self.manager.write().await;
+        manager.set_enabled(&server_name, enabled).await?;
+        drop(manager);
+
         if !enabled && let Some(ref registry) = self.registry {
             registry
                 .unregister_prefix(&format!("mcp__{}__", server_name))
                 .await;
         }
-
-        let mut manager = self.manager.write().await;
-        manager.set_enabled(&server_name, enabled).await?;
-        drop(manager);
 
         if enabled && let Some(ref registry) = self.registry {
             let mcp_tools = crate::mcp::create_mcp_tools(Arc::clone(&self.manager)).await;
@@ -641,6 +641,94 @@ for line in sys.stdin:
         let list_result = tool.execute(json!({"action": "list"}), ctx).await.unwrap();
         assert!(list_result.output.contains("## adhoc (connected)"));
         assert!(list_result.output.contains("mcp__adhoc__ping"));
+    }
+
+    #[tokio::test]
+    async fn test_disable_ad_hoc_server_keeps_registered_tools_on_error() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let server_path = temp_dir.path().join("mcp_server.py");
+        fs::write(
+            &server_path,
+            r#"
+import json
+import sys
+
+for line in sys.stdin:
+    message = json.loads(line)
+    if "id" not in message:
+        continue
+    method = message.get("method")
+    if method == "initialize":
+        result = {
+            "protocolVersion": "2024-11-05",
+            "capabilities": {"tools": {}},
+            "serverInfo": {"name": "adhoc", "version": "1.0.0"},
+        }
+    elif method == "tools/list":
+        result = {
+            "tools": [
+                {
+                    "name": "ping",
+                    "description": "Ping tool",
+                    "inputSchema": {"type": "object", "properties": {}},
+                }
+            ]
+        }
+    else:
+        result = {}
+    print(json.dumps({"jsonrpc": "2.0", "id": message["id"], "result": result}), flush=True)
+"#,
+        )
+        .expect("write test MCP server");
+
+        let server_name = format!("adhoc_disable_{}", std::process::id());
+        let tool_name = format!("mcp__{}__ping", server_name);
+        let registry = crate::tool::Registry::empty();
+        let tool = create_test_tool().with_registry(registry.clone());
+        let ctx = create_test_context();
+        let connect = json!({
+            "action": "connect",
+            "server": server_name.clone(),
+            "command": "python3",
+            "args": [server_path.to_string_lossy()],
+        });
+
+        tool.execute(connect, ctx.clone()).await.unwrap();
+        assert!(registry.tool_names().await.contains(&tool_name));
+        {
+            let manager = tool.manager().read().await;
+            assert!(
+                manager
+                    .server_statuses_now()
+                    .iter()
+                    .any(|status| status.name == server_name && status.connected)
+            );
+        }
+
+        let result = tool
+            .execute(
+                json!({"action": "disable", "server": server_name.clone()}),
+                ctx,
+            )
+            .await;
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains(&format!("MCP server '{}' is not configured", server_name))
+        );
+        assert!(registry.tool_names().await.contains(&tool_name));
+
+        let manager = tool.manager().read().await;
+        assert!(manager.connected_servers().await.contains(&server_name));
+        assert!(
+            manager
+                .all_tools()
+                .await
+                .iter()
+                .any(|(server, tool)| server == &server_name && tool.name == "ping")
+        );
     }
 
     #[tokio::test]

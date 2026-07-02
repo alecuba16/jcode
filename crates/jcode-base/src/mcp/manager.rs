@@ -465,6 +465,36 @@ impl McpManager {
                 }
             })
             .collect();
+        if let Some(handles) = pool_handles.as_ref() {
+            for (name, handle) in handles.iter() {
+                if !self.config.servers.contains_key(name)
+                    && !statuses.iter().any(|status| status.name == *name)
+                {
+                    statuses.push(McpServerStatus {
+                        name: name.clone(),
+                        enabled: true,
+                        connected: true,
+                        shared: true,
+                        tool_count: handle.tools().len(),
+                    });
+                }
+            }
+        }
+        if let Some(clients) = owned_clients.as_ref() {
+            for (name, client) in clients.iter() {
+                if !self.config.servers.contains_key(name)
+                    && !statuses.iter().any(|status| status.name == *name)
+                {
+                    statuses.push(McpServerStatus {
+                        name: name.clone(),
+                        enabled: true,
+                        connected: true,
+                        shared: true,
+                        tool_count: client.tools().len(),
+                    });
+                }
+            }
+        }
         statuses.sort_by(|a, b| a.name.cmp(&b.name));
         statuses
     }
