@@ -82,6 +82,7 @@ const REGISTERED_COMMANDS: &[RegisteredCommand] = &[
     RegisteredCommand::public("/fast", "Toggle fast mode"),
     RegisteredCommand::public("/transport", "Show/change connection transport"),
     RegisteredCommand::public("/alignment", "Show/change default text alignment"),
+    RegisteredCommand::public("/theme", "Show/change TUI color theme"),
     RegisteredCommand::public(
         "/compact-notifications",
         "Show/toggle single-line swarm/file-activity notifications",
@@ -956,6 +957,18 @@ impl App {
             );
         }
 
+        if prefix.starts_with("/theme ") {
+            let suggestions = crate::tui::available_theme_names()
+                .into_iter()
+                .map(|name| (format!("/theme {name}"), "Save theme and apply it now"))
+                .chain(std::iter::once((
+                    "/theme status".into(),
+                    "Show current and available themes",
+                )))
+                .collect();
+            return self.rank_suggestions(input, suggestions);
+        }
+
         if prefix.starts_with("/compact-notifications ") {
             return self.rank_suggestions(
                 input,
@@ -1476,6 +1489,7 @@ impl App {
                 | "/compact"
                 | "/compact mode"
                 | "/alignment"
+                | "/theme"
                 | "/compact-notifications"
                 | "/show-agentgrep-output"
                 | "/reasoning"

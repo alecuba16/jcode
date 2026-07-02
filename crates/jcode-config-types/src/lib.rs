@@ -950,6 +950,8 @@ pub struct DisplayConfig {
     /// configured shortcut (default: true). Set false to disable all such hints.
     #[serde(default = "default_true")]
     pub keybinding_hints: bool,
+    /// TUI color theme: light, dark, system, or a custom theme name in ~/.jcode/themes.
+    pub theme: String,
 }
 
 impl Default for DisplayConfig {
@@ -980,6 +982,7 @@ impl Default for DisplayConfig {
             show_agentgrep_output: false,
             native_scrollbars: NativeScrollbarConfig::default(),
             keybinding_hints: true,
+            theme: "light".to_string(),
         }
     }
 }

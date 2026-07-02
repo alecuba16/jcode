@@ -1,54 +1,281 @@
 use crate::color;
 use crate::color::rgb;
 use ratatui::prelude::*;
+use serde::Deserialize;
+use std::collections::BTreeMap;
+use std::path::Path;
+use std::sync::{OnceLock, RwLock};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ThemeColor {
+    User,
+    Ai,
+    Tool,
+    FileLink,
+    Dim,
+    Accent,
+    SystemMessage,
+    Queued,
+    Asap,
+    Pending,
+    UserText,
+    UserBg,
+    AiText,
+    HeaderIcon,
+    HeaderName,
+    HeaderSession,
+}
+
+#[derive(Debug, Clone)]
+pub struct Theme {
+    colors: BTreeMap<ThemeColor, Color>,
+}
+
+impl Theme {
+    fn color(&self, key: ThemeColor) -> Color {
+        self.colors.get(&key).copied().unwrap_or(Color::Reset)
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct ThemeFile {
+    colors: BTreeMap<String, String>,
+}
+
+static ACTIVE_THEME: OnceLock<RwLock<Theme>> = OnceLock::new();
+
+fn active_theme() -> &'static RwLock<Theme> {
+    ACTIVE_THEME.get_or_init(|| RwLock::new(light_theme()))
+}
+
+pub fn set_theme(name: &str, themes_dir: Option<&Path>) -> anyhow::Result<()> {
+    let theme = load_theme(name, themes_dir)?;
+    *active_theme()
+        .write()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = theme;
+    Ok(())
+}
+
+pub fn load_theme(name: &str, themes_dir: Option<&Path>) -> anyhow::Result<Theme> {
+    match name.trim().to_ascii_lowercase().as_str() {
+        "" | "light" => Ok(light_theme()),
+        "dark" => Ok(dark_theme()),
+        "system" => Ok(system_theme()),
+        custom => load_custom_theme(custom, themes_dir),
+    }
+}
+
+pub fn available_theme_names(themes_dir: Option<&Path>) -> Vec<String> {
+    let mut names = vec![
+        "light".to_string(),
+        "dark".to_string(),
+        "system".to_string(),
+    ];
+    if let Some(dir) = themes_dir {
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().and_then(|ext| ext.to_str()) == Some("toml") {
+                    if let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) {
+                        let stem = stem.to_string();
+                        if !names.iter().any(|name| name == &stem) {
+                            names.push(stem);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    names
+}
+
+fn themed_color(key: ThemeColor) -> Color {
+    active_theme()
+        .read()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .color(key)
+}
+
+fn load_custom_theme(name: &str, themes_dir: Option<&Path>) -> anyhow::Result<Theme> {
+    if name.contains('/') || name.contains('\\') || name == "." || name == ".." {
+        anyhow::bail!(
+            "Invalid theme name '{}': use a file stem from the themes directory",
+            name
+        );
+    }
+    let dir = themes_dir.ok_or_else(|| anyhow::anyhow!("No themes directory configured"))?;
+    let path = dir.join(format!("{name}.toml"));
+    let content = std::fs::read_to_string(&path)
+        .map_err(|e| anyhow::anyhow!("Failed to read theme {}: {}", path.display(), e))?;
+    let file: ThemeFile = toml::from_str(&content)
+        .map_err(|e| anyhow::anyhow!("Failed to parse theme {}: {}", path.display(), e))?;
+
+    let mut theme = light_theme();
+    for (raw_key, raw_value) in file.colors {
+        let key = parse_theme_color(&raw_key).ok_or_else(|| {
+            anyhow::anyhow!("Unknown theme color '{}': {}", raw_key, path.display())
+        })?;
+        let value = parse_color(&raw_value).ok_or_else(|| {
+            anyhow::anyhow!("Invalid theme color '{}': {}", raw_value, path.display())
+        })?;
+        theme.colors.insert(key, value);
+    }
+    Ok(theme)
+}
+
+fn parse_theme_color(raw: &str) -> Option<ThemeColor> {
+    match raw.trim().replace('-', "_").to_ascii_lowercase().as_str() {
+        "user" | "user_color" => Some(ThemeColor::User),
+        "ai" | "ai_color" => Some(ThemeColor::Ai),
+        "tool" | "tool_color" => Some(ThemeColor::Tool),
+        "file_link" | "file_link_color" => Some(ThemeColor::FileLink),
+        "dim" | "dim_color" => Some(ThemeColor::Dim),
+        "accent" | "accent_color" => Some(ThemeColor::Accent),
+        "system_message" | "system_message_color" => Some(ThemeColor::SystemMessage),
+        "queued" | "queued_color" => Some(ThemeColor::Queued),
+        "asap" | "asap_color" => Some(ThemeColor::Asap),
+        "pending" | "pending_color" => Some(ThemeColor::Pending),
+        "user_text" => Some(ThemeColor::UserText),
+        "user_bg" => Some(ThemeColor::UserBg),
+        "ai_text" => Some(ThemeColor::AiText),
+        "header_icon" | "header_icon_color" => Some(ThemeColor::HeaderIcon),
+        "header_name" | "header_name_color" => Some(ThemeColor::HeaderName),
+        "header_session" | "header_session_color" => Some(ThemeColor::HeaderSession),
+        _ => None,
+    }
+}
+
+fn parse_color(raw: &str) -> Option<Color> {
+    let raw = raw.trim();
+    if raw.eq_ignore_ascii_case("reset") || raw.eq_ignore_ascii_case("default") {
+        return Some(Color::Reset);
+    }
+    let hex = raw.strip_prefix('#')?;
+    if hex.len() != 6 {
+        return None;
+    }
+    let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
+    let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
+    let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
+    Some(rgb(r, g, b))
+}
+
+fn light_theme() -> Theme {
+    Theme {
+        colors: BTreeMap::from([
+            (ThemeColor::User, rgb(28, 88, 160)),
+            (ThemeColor::Ai, rgb(38, 120, 72)),
+            (ThemeColor::Tool, rgb(92, 92, 92)),
+            (ThemeColor::FileLink, rgb(28, 92, 176)),
+            (ThemeColor::Dim, rgb(105, 105, 105)),
+            (ThemeColor::Accent, rgb(112, 72, 170)),
+            (ThemeColor::SystemMessage, rgb(176, 58, 126)),
+            (ThemeColor::Queued, rgb(158, 106, 0)),
+            (ThemeColor::Asap, rgb(0, 112, 150)),
+            (ThemeColor::Pending, rgb(112, 112, 112)),
+            (ThemeColor::UserText, rgb(30, 30, 34)),
+            (ThemeColor::UserBg, rgb(244, 241, 236)),
+            (ThemeColor::AiText, rgb(36, 38, 40)),
+            (ThemeColor::HeaderIcon, rgb(0, 122, 150)),
+            (ThemeColor::HeaderName, rgb(44, 80, 122)),
+            (ThemeColor::HeaderSession, rgb(34, 34, 38)),
+        ]),
+    }
+}
+
+fn dark_theme() -> Theme {
+    Theme {
+        colors: BTreeMap::from([
+            (ThemeColor::User, rgb(138, 180, 248)),
+            (ThemeColor::Ai, rgb(129, 199, 132)),
+            (ThemeColor::Tool, rgb(120, 120, 120)),
+            (ThemeColor::FileLink, rgb(180, 200, 255)),
+            (ThemeColor::Dim, rgb(80, 80, 80)),
+            (ThemeColor::Accent, rgb(186, 139, 255)),
+            (ThemeColor::SystemMessage, rgb(255, 170, 220)),
+            (ThemeColor::Queued, rgb(255, 193, 7)),
+            (ThemeColor::Asap, rgb(110, 210, 255)),
+            (ThemeColor::Pending, rgb(140, 140, 140)),
+            (ThemeColor::UserText, rgb(245, 245, 255)),
+            (ThemeColor::UserBg, rgb(35, 40, 50)),
+            (ThemeColor::AiText, rgb(220, 220, 215)),
+            (ThemeColor::HeaderIcon, rgb(120, 210, 230)),
+            (ThemeColor::HeaderName, rgb(190, 210, 235)),
+            (ThemeColor::HeaderSession, rgb(255, 255, 255)),
+        ]),
+    }
+}
+
+fn system_theme() -> Theme {
+    Theme {
+        colors: BTreeMap::from([
+            (ThemeColor::User, Color::Reset),
+            (ThemeColor::Ai, Color::Reset),
+            (ThemeColor::Tool, Color::Reset),
+            (ThemeColor::FileLink, Color::Reset),
+            (ThemeColor::Dim, Color::Reset),
+            (ThemeColor::Accent, Color::Reset),
+            (ThemeColor::SystemMessage, Color::Reset),
+            (ThemeColor::Queued, Color::Reset),
+            (ThemeColor::Asap, Color::Reset),
+            (ThemeColor::Pending, Color::Reset),
+            (ThemeColor::UserText, Color::Reset),
+            (ThemeColor::UserBg, Color::Reset),
+            (ThemeColor::AiText, Color::Reset),
+            (ThemeColor::HeaderIcon, Color::Reset),
+            (ThemeColor::HeaderName, Color::Reset),
+            (ThemeColor::HeaderSession, Color::Reset),
+        ]),
+    }
+}
 
 pub fn user_color() -> Color {
-    rgb(138, 180, 248)
+    themed_color(ThemeColor::User)
 }
 pub fn ai_color() -> Color {
-    rgb(129, 199, 132)
+    themed_color(ThemeColor::Ai)
 }
 pub fn tool_color() -> Color {
-    rgb(120, 120, 120)
+    themed_color(ThemeColor::Tool)
 }
 pub fn file_link_color() -> Color {
-    rgb(180, 200, 255)
+    themed_color(ThemeColor::FileLink)
 }
 pub fn dim_color() -> Color {
-    rgb(80, 80, 80)
+    themed_color(ThemeColor::Dim)
 }
 pub fn accent_color() -> Color {
-    rgb(186, 139, 255)
+    themed_color(ThemeColor::Accent)
 }
 pub fn system_message_color() -> Color {
-    rgb(255, 170, 220)
+    themed_color(ThemeColor::SystemMessage)
 }
 pub fn queued_color() -> Color {
-    rgb(255, 193, 7)
+    themed_color(ThemeColor::Queued)
 }
 pub fn asap_color() -> Color {
-    rgb(110, 210, 255)
+    themed_color(ThemeColor::Asap)
 }
 pub fn pending_color() -> Color {
-    rgb(140, 140, 140)
+    themed_color(ThemeColor::Pending)
 }
 pub fn user_text() -> Color {
-    rgb(245, 245, 255)
+    themed_color(ThemeColor::UserText)
 }
 pub fn user_bg() -> Color {
-    rgb(35, 40, 50)
+    themed_color(ThemeColor::UserBg)
 }
 pub fn ai_text() -> Color {
-    rgb(220, 220, 215)
+    themed_color(ThemeColor::AiText)
 }
 pub fn header_icon_color() -> Color {
-    rgb(120, 210, 230)
+    themed_color(ThemeColor::HeaderIcon)
 }
 pub fn header_name_color() -> Color {
-    rgb(190, 210, 235)
+    themed_color(ThemeColor::HeaderName)
 }
 pub fn header_session_color() -> Color {
-    rgb(255, 255, 255)
+    themed_color(ThemeColor::HeaderSession)
 }
 
 // Spinner frames for animated status. Keep these single-cell because the fast
@@ -256,5 +483,19 @@ mod tests {
             LIVENESS_SPINNER_FPS >= 8.0,
             "liveness spinner should animate at a smooth, responsive rate"
         );
+    }
+
+    #[test]
+    fn light_theme_uses_off_white_user_background() {
+        let theme = load_theme("light", None).expect("light theme");
+        assert_eq!(theme.color(ThemeColor::UserBg), rgb(244, 241, 236));
+        assert_eq!(theme.color(ThemeColor::SystemMessage), rgb(176, 58, 126));
+    }
+
+    #[test]
+    fn system_theme_uses_terminal_defaults() {
+        let theme = load_theme("system", None).expect("system theme");
+        assert_eq!(theme.color(ThemeColor::User), Color::Reset);
+        assert_eq!(theme.color(ThemeColor::UserBg), Color::Reset);
     }
 }

@@ -2804,6 +2804,45 @@ fn handle_show_agentgrep_output_command(app: &mut App, trimmed: &str) -> bool {
     true
 }
 
+fn handle_theme_command(app: &mut App, trimmed: &str) -> bool {
+    if trimmed != "/theme" && !trimmed.starts_with("/theme ") {
+        return false;
+    }
+
+    let rest = trimmed.strip_prefix("/theme").unwrap_or_default().trim();
+    if rest.is_empty() || matches!(rest, "show" | "status") {
+        let current = crate::config::config().display.theme.clone();
+        let themes = crate::tui::available_theme_names().join(", ");
+        app.push_display_message(DisplayMessage::system(format!(
+            "Theme is currently {}.\n\nAvailable themes: {}.\n\nUse /theme light, /theme dark, /theme system, or /theme <custom-name> to change it.",
+            current, themes
+        )));
+        return true;
+    }
+
+    match crate::tui::apply_theme_name(rest) {
+        Ok(()) => {
+            app.set_status_notice(format!("Theme: {}", rest));
+            match crate::config::Config::set_display_theme(rest) {
+                Ok(()) => app.push_display_message(DisplayMessage::system(format!(
+                    "Saved theme: {}. Applied to this session immediately.",
+                    rest
+                ))),
+                Err(error) => app.push_display_message(DisplayMessage::error(format!(
+                    "Applied theme {} for this session, but failed to save it as the default: {}",
+                    rest, error
+                ))),
+            }
+        }
+        Err(error) => app.push_display_message(DisplayMessage::error(format!(
+            "Failed to load theme '{}': {}",
+            rest, error
+        ))),
+    }
+
+    true
+}
+
 fn parse_agents_target(raw: &str) -> Option<crate::tui::AgentModelTarget> {
     match raw.trim().to_ascii_lowercase().as_str() {
         "swarm" | "agent" | "agents" | "subagent" | "subagents" => {
@@ -2956,6 +2995,10 @@ pub(super) fn handle_config_command(app: &mut App, trimmed: &str) -> bool {
     }
 
     if handle_show_agentgrep_output_command(app, trimmed) {
+        return true;
+    }
+
+    if handle_theme_command(app, trimmed) {
         return true;
     }
 

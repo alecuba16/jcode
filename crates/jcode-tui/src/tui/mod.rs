@@ -53,7 +53,33 @@ pub use app::{App, CopyBadgeUiState, ProcessingStatus, RunResult};
 use crate::message::ToolCall;
 use ratatui::prelude::Frame;
 use ratatui::text::Line;
+use std::path::PathBuf;
 use std::time::Duration;
+
+pub(crate) fn themes_dir() -> Option<PathBuf> {
+    crate::config::Config::path().and_then(|path| path.parent().map(|parent| parent.join("themes")))
+}
+
+pub(crate) fn apply_configured_theme() {
+    let cfg = crate::config::config();
+    if let Err(error) =
+        jcode_tui_style::theme::set_theme(&cfg.display.theme, themes_dir().as_deref())
+    {
+        crate::logging::error(&format!(
+            "Failed to load display.theme '{}': {}",
+            cfg.display.theme, error
+        ));
+        let _ = jcode_tui_style::theme::set_theme("light", None);
+    }
+}
+
+pub(crate) fn apply_theme_name(name: &str) -> anyhow::Result<()> {
+    jcode_tui_style::theme::set_theme(name, themes_dir().as_deref())
+}
+
+pub(crate) fn available_theme_names() -> Vec<String> {
+    jcode_tui_style::theme::available_theme_names(themes_dir().as_deref())
+}
 
 pub(crate) fn scheduled_notification_text(
     info: Option<&info_widget::AmbientWidgetData>,

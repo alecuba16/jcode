@@ -4145,7 +4145,10 @@ dependencies = [
 name = "jcode-tui-style"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "ratatui",
+ "serde",
+ "toml",
 ]
 
 [[package]]

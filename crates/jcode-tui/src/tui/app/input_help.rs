@@ -164,6 +164,9 @@ impl App {
             "alignment" => {
                 "/alignment\nShow the current alignment and the saved default.\n\n/alignment centered\nSave centered alignment as the default and apply it immediately.\n\n/alignment left\nSave left-aligned mode as the default and apply it immediately.\n\nPress Alt+C anytime to toggle alignment just for the current session."
             }
+            "theme" => {
+                "/theme\nShow the current theme and available themes.\n\n/theme light\nUse the built-in readable light theme.\n\n/theme dark\nUse the built-in dark theme.\n\n/theme system\nUse terminal-provided colors.\n\n/theme <custom-name>\nLoad ~/.jcode/themes/<custom-name>.toml and save it as the default."
+            }
             "compact-notifications" => {
                 "/compact-notifications\nShow whether swarm/file-activity notifications are compact.\n\n/compact-notifications on\nCollapse file-activity notifications to a single line (path · summary), dropping the intent and diff preview.\n\n/compact-notifications off\nRestore the full multi-line notification cards."
             }

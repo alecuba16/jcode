@@ -250,6 +250,7 @@ impl App {
         registry: Registry,
         mut session: Session,
     ) -> Self {
+        crate::tui::apply_configured_theme();
         let skills = Arc::new(SkillRegistry::default());
         let mcp_manager = Arc::new(RwLock::new(McpManager::new()));
         if session.model.is_none() {
@@ -624,6 +625,7 @@ impl App {
     }
 
     pub fn new(provider: Arc<dyn Provider>, registry: Registry) -> Self {
+        crate::tui::apply_configured_theme();
         let t0 = std::time::Instant::now();
         let skills = SkillRegistry::shared_snapshot();
         let t_skills = t0.elapsed();

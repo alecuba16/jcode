@@ -278,6 +278,10 @@ pub(super) fn draw_help_overlay(frame: &mut Frame, area: Rect, scroll: usize, ap
         "Show or persist text alignment preference",
     ));
     lines.push(help_entry(
+        "/theme [status|light|dark|system|<custom>]",
+        "Show or persist TUI color theme",
+    ));
+    lines.push(help_entry(
         "/compact-notifications [status|on|off]",
         "Collapse swarm/file-activity notifications to one line",
     ));

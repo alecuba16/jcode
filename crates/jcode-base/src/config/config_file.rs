@@ -195,6 +195,15 @@ impl Config {
         Ok(())
     }
 
+    /// Update the persisted TUI color theme.
+    pub fn set_display_theme(theme: &str) -> anyhow::Result<()> {
+        let mut cfg = Self::load();
+        cfg.display.theme = theme.to_string();
+        cfg.save()?;
+        crate::logging::info(&format!("Saved display.theme to config: {}", theme));
+        Ok(())
+    }
+
     /// Persist the baked global launch-hotkey mapping.
     ///
     /// Auto-import calls this once with the per-repo chord -> directory layout it
