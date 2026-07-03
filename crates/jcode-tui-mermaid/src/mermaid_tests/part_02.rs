@@ -193,3 +193,37 @@ fn bounded_bookkeeping_insert_caps_map_growth() {
     crate::bounded_bookkeeping_insert(&mut map, last, 1);
     assert_eq!(map.len(), before, "existing-key update must not clear");
 }
+
+/// Inline-fit geometry must preserve aspect ratio, respect the row cap, and
+/// return a marker-parsable placeholder that survives leading padding spans
+/// (centered mode inserts one).
+#[test]
+fn inline_fit_geometry_and_marker_roundtrip() {
+    use ratatui::style::Style;
+    use ratatui::text::{Line, Span};
+
+    // Wide image at 80 cells: width-bound, well under the cap.
+    let (rows, cols) = crate::inline_fit_geometry(1600, 400, 80, crate::INLINE_DIAGRAM_MAX_ROWS);
+    assert!(rows >= crate::INLINE_FIT_MIN_ROWS);
+    assert!(rows < crate::INLINE_DIAGRAM_MAX_ROWS);
+    assert!(cols <= 80);
+
+    // Tall image: height-bound by the cap.
+    let (tall_rows, _) = crate::inline_fit_geometry(400, 40_000, 80, 20);
+    assert_eq!(tall_rows, 20);
+
+    // Placeholder lines round-trip through the parser.
+    let lines = crate::inline_image_placeholder_lines(0xabcdef, rows, cols);
+    assert_eq!(lines.len(), rows as usize);
+    let parsed = crate::parse_inline_image_placeholder(&lines[0]);
+    assert_eq!(parsed, Some((0xabcdef, rows, cols)));
+
+    // A leading whitespace span (centered-mode padding) must not break parsing.
+    let mut padded = lines[0].clone();
+    padded.spans.insert(0, Span::styled("    ", Style::default()));
+    assert_eq!(
+        crate::parse_inline_image_placeholder(&padded),
+        Some((0xabcdef, rows, cols)),
+        "padded marker line must still parse"
+    );
+}
