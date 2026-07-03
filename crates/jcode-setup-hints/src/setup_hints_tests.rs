@@ -484,6 +484,9 @@ fn glyph_safe_notice_silent_on_robust_terminals() {
 fn row(chord: &str, label: &str, self_dev: bool) -> LaunchHotkeyRow {
     LaunchHotkeyRow {
         chord: chord.to_string(),
+        display: keymap::KeyChord::parse(chord)
+            .map(|c| c.display_symbols())
+            .unwrap_or_else(|| chord.to_string()),
         label: label.to_string(),
         cwd_display: format!("/repos/{label}"),
         self_dev,
@@ -500,7 +503,7 @@ fn launch_hotkey_notice_lists_all_unlearned_bindings() {
     let usage = std::collections::HashMap::new();
     let lines = launch_hotkey_notice_lines(&rows, &usage, 1).expect("should show all bindings");
     assert_eq!(lines.len(), 3);
-    assert!(lines[0].starts_with("cmd+; → home (/repos/home)"));
+    assert!(lines[0].starts_with("⌘; → home (/repos/home)"));
     assert!(lines[2].ends_with("[self-dev]"));
 }
 
@@ -515,7 +518,7 @@ fn launch_hotkey_notice_hides_individually_learned_bindings() {
     usage.insert("cmd+;".to_string(), LAUNCH_HOTKEY_LEARNED_USES);
     let lines = launch_hotkey_notice_lines(&rows, &usage, 3).expect("one binding still new");
     assert_eq!(lines.len(), 1);
-    assert!(lines[0].starts_with("cmd+' → last project"));
+    assert!(lines[0].starts_with("⌘' → last project"));
 }
 
 #[test]

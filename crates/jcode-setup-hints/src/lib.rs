@@ -730,11 +730,14 @@ pub fn run_setup_hotkey(_listen_macos_hotkey: bool) -> Result<()> {
                     eprintln!();
                     eprintln!("  Press these anywhere, system-wide (niri reloads on save):");
                     for hk in &hotkeys {
-                        if let Some(bind) = linux_niri::chord_to_niri_bind(&hk.chord) {
+                        if linux_niri::chord_to_niri_bind(&hk.chord).is_some() {
                             let suffix = if hk.self_dev { " [self-dev]" } else { "" };
                             eprintln!(
                                 "    \x1b[1m{}\x1b[0m → {} ({}){}",
-                                bind, hk.label, hk.dir, suffix
+                                hk.chord.display_super(),
+                                hk.label,
+                                hk.dir,
+                                suffix
                             );
                         }
                     }
@@ -1205,8 +1208,12 @@ fn macos_launch_hotkeys_notice(state: &SetupHintsState) -> Option<StartupHints> 
         .into_iter()
         .map(|entry| {
             let cwd = launch_hotkeys::resolve_target_dir(&entry.dir, &last_dir, &last_repo);
+            let display = keymap::KeyChord::parse(&entry.chord)
+                .map(|c| c.display_symbols())
+                .unwrap_or_else(|| entry.chord.clone());
             LaunchHotkeyRow {
                 chord: entry.chord,
+                display,
                 label: entry.label,
                 cwd_display: cwd.display().to_string(),
                 self_dev: entry.args.iter().any(|arg| arg == "self-dev"),
@@ -1399,6 +1406,7 @@ fn linux_niri_launch_hotkeys_notice(state: &SetupHintsState) -> Option<StartupHi
             let bind = linux_niri::chord_to_niri_bind(&hk.chord)?;
             Some(LaunchHotkeyRow {
                 chord: bind,
+                display: hk.chord.display_super(),
                 label: hk.label.clone(),
                 cwd_display: hk.dir.clone(),
                 self_dev: hk.self_dev,
@@ -1434,7 +1442,10 @@ fn linux_niri_launch_hotkeys_notice(state: &SetupHintsState) -> Option<StartupHi
 /// One resolved launch hotkey row for the startup notice.
 #[cfg_attr(not(any(target_os = "macos", target_os = "linux")), allow(dead_code))]
 pub(crate) struct LaunchHotkeyRow {
+    /// Canonical chord string used as the usage-tracking key (e.g. `cmd+;`).
     pub chord: String,
+    /// Pretty, user-facing chord rendering (e.g. `⌘;` or `Super+;`).
+    pub display: String,
     pub label: String,
     pub cwd_display: String,
     pub self_dev: bool,
@@ -1476,7 +1487,7 @@ pub(crate) fn launch_hotkey_notice_lines(
             let suffix = if row.self_dev { " [self-dev]" } else { "" };
             format!(
                 "{} → {} ({}){}",
-                row.chord, row.label, row.cwd_display, suffix
+                row.display, row.label, row.cwd_display, suffix
             )
         })
         .collect();
