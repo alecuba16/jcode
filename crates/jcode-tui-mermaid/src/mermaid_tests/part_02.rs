@@ -87,13 +87,18 @@ fn deferred_render_supersedes_prefix_stream_updates_only() {
 
 #[cfg(all(feature = "mmdr-size-api", mmdr_size_api_available))]
 #[test]
-fn mmdr_size_api_reports_explicit_png_canvas() {
+fn mmdr_size_api_fits_natural_aspect_into_target_canvas() {
     super::reset_debug_stats();
     let unique = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let content = format!("flowchart TD\nA[Start {unique}] --> B[End]");
+    // Wide linear chain: natural layout is much wider than the ~4:3 target
+    // box, so forcing the raw target canvas would letterbox ~80% of the PNG
+    // with transparent padding above and below the ink.
+    let content = format!(
+        "flowchart LR\nA[Start {unique}] --> B[Step] --> C[Step] --> D[Step] --> E[End]"
+    );
 
     let result = super::render_mermaid_untracked(&content, Some(100));
     let (width, height) = match result {
@@ -102,12 +107,35 @@ fn mmdr_size_api_reports_explicit_png_canvas() {
     };
     let stats = super::debug_stats();
 
-    assert_eq!(stats.last_measured_width, stats.last_target_width);
-    assert_eq!(stats.last_measured_height, stats.last_target_height);
+    let target_width = stats.last_target_width.expect("target width");
+    let target_height = stats.last_target_height.expect("target height");
+    let measured_width = stats.last_measured_width.expect("measured width");
+    let measured_height = stats.last_measured_height.expect("measured height");
+    let viewbox_width = stats.last_viewbox_width.unwrap_or_default();
+    let viewbox_height = stats.last_viewbox_height.unwrap_or_default();
+    assert!(viewbox_width > 0);
+    assert!(viewbox_height > 0);
+
+    // Output canvas must fit inside the requested box (small rounding slack).
+    assert!(
+        measured_width <= target_width + 1 && measured_height <= target_height + 1,
+        "measured {measured_width}x{measured_height} exceeds target {target_width}x{target_height}"
+    );
+    // The canvas must hug the ink: output aspect matches the natural viewbox
+    // aspect instead of the target box aspect (no letterboxing).
+    let measured_ratio = measured_width as f64 / measured_height.max(1) as f64;
+    let natural_ratio = viewbox_width as f64 / viewbox_height.max(1) as f64;
+    assert!(
+        (measured_ratio - natural_ratio).abs() / natural_ratio < 0.05,
+        "output aspect {measured_ratio:.3} should match natural aspect {natural_ratio:.3}"
+    );
+    // The binding axis should reach the target box (fit, not shrink-only).
+    assert!(
+        measured_width + 1 >= target_width || measured_height + 1 >= target_height,
+        "fit should touch the target box on one axis: measured {measured_width}x{measured_height}, target {target_width}x{target_height}"
+    );
     assert_eq!(Some(width), stats.last_measured_width);
     assert_eq!(Some(height), stats.last_measured_height);
-    assert!(stats.last_viewbox_width.unwrap_or_default() > 0);
-    assert!(stats.last_viewbox_height.unwrap_or_default() > 0);
 }
 
 /// Regression guard for inline-image scroll latency.
