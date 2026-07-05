@@ -555,3 +555,68 @@ fn layout_cache_evicts_lru_and_clears_on_theme_change() {
     assert_eq!(cache.entries.len(), 1);
     assert!(cache.get(&key(0, 2)).is_some());
 }
+
+#[test]
+fn streaming_preview_then_final_registration_does_not_double_count() {
+    // Pin the dedupe behavior between STREAMING_PREVIEW_DIAGRAM and
+    // ACTIVE_DIAGRAMS when the same content hash finishes streaming and is
+    // registered as a final diagram (mermaid_active.rs).
+    let saved = super::snapshot_active_diagrams();
+    super::clear_active_diagrams(); // also clears the streaming preview
+
+    const HASH: u64 = 0xDEAD_BEEF_CAFE_0001;
+
+    // 1. Streaming preview only: visible in the combined list, but NOT in the
+    //    registered snapshot (preview is ephemeral, never persisted).
+    super::set_streaming_preview_diagram(HASH, 100, 80, None);
+    let combined = super::get_active_diagrams();
+    assert_eq!(combined.len(), 1, "preview alone yields one entry");
+    assert_eq!(combined[0].hash, HASH);
+    assert!(
+        super::snapshot_active_diagrams().is_empty(),
+        "preview must not appear in the registered ACTIVE_DIAGRAMS list"
+    );
+    assert_eq!(super::active_diagram_count(), 0);
+
+    // 2. Final registration with the SAME content hash: get_active_diagrams
+    //    filters registered entries whose hash matches the live preview, so
+    //    the diagram is NOT double-counted.
+    super::register_active_diagram(HASH, 200, 160, Some("final".to_string()));
+    let combined = super::get_active_diagrams();
+    assert_eq!(
+        combined.len(),
+        1,
+        "same-hash preview + registration must dedupe to one entry, got {}",
+        combined.len()
+    );
+    assert_eq!(combined[0].hash, HASH);
+    // While the preview is still live, the preview entry wins (it is pushed
+    // first and the registered duplicate is filtered by hash).
+    assert_eq!(combined[0].width, 100, "live preview entry shadows the registered one");
+    let registered = super::snapshot_active_diagrams();
+    assert_eq!(registered.len(), 1, "exactly one registered entry");
+    assert_eq!(registered[0].hash, HASH);
+    assert_eq!(registered[0].width, 200);
+    assert_eq!(registered[0].label.as_deref(), Some("final"));
+
+    // 3. Once the streaming preview is cleared (segment committed), only the
+    //    registered final diagram remains, with its final size/label.
+    super::clear_streaming_preview_diagram();
+    let combined = super::get_active_diagrams();
+    assert_eq!(combined.len(), 1);
+    assert_eq!(combined[0].hash, HASH);
+    assert_eq!(combined[0].width, 200);
+    assert_eq!(combined[0].label.as_deref(), Some("final"));
+
+    // 4. Control: a preview with a DIFFERENT hash is a distinct diagram and
+    //    is counted separately (no over-eager dedupe).
+    super::set_streaming_preview_diagram(HASH ^ 1, 50, 40, None);
+    assert_eq!(
+        super::get_active_diagrams().len(),
+        2,
+        "different-hash preview must not be merged with the registered diagram"
+    );
+
+    super::clear_active_diagrams();
+    super::restore_active_diagrams(saved);
+}
