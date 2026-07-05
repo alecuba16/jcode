@@ -521,11 +521,24 @@ pub(super) fn layout_computations_for_test(hash: u64) -> u64 {
         .unwrap_or(0)
 }
 
-/// Test-only: drop all PNG render-cache entries (and their on-disk files) for
-/// `hash`, forcing the next render to rasterize while the layout tier stays
-/// warm. Simulates the bucket-crossing-resize / disk-eviction path.
+/// Drop all PNG render-cache entries (memory and on-disk files, every width
+/// bucket and profile) for `content`, forcing the next render to rasterize
+/// fresh. The width-aware cache lookup deliberately accepts wider cached PNGs
+/// (`cached_width_satisfies`), which is right for resize reuse but wrong for
+/// probes/tests that need deterministic geometry for a specific pane width.
+pub fn evict_render_cache_for_content(content: &str) {
+    evict_render_cache_by_hash(hash_content(content));
+}
+
+/// Test-only alias kept for the layout-tier cache tests: drop all PNG
+/// render-cache entries for `hash` while the layout tier stays warm.
+/// Simulates the bucket-crossing-resize / disk-eviction path.
 #[cfg(test)]
 pub(super) fn evict_render_cache_for_test(hash: u64) {
+    evict_render_cache_by_hash(hash);
+}
+
+fn evict_render_cache_by_hash(hash: u64) {
     let mut cache = RENDER_CACHE
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -541,6 +554,18 @@ pub(super) fn evict_render_cache_for_test(hash: u64) {
         }
         if let Some(pos) = cache.order.iter().position(|entry| *entry == key) {
             cache.order.remove(pos);
+        }
+    }
+    // Also delete on-disk files not resident in memory: `discover_on_disk`
+    // would otherwise resurrect them on the next lookup.
+    if let Ok(entries) = fs::read_dir(&cache.cache_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if let Some((file_hash, _, _)) = parse_cache_filename(&path)
+                && file_hash == hash
+            {
+                let _ = fs::remove_file(&path);
+            }
         }
     }
 }

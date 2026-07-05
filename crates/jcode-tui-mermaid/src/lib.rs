@@ -228,9 +228,10 @@ mod viewport_render;
 mod widget_render;
 
 pub use cache_render::{
-    RenderResult, deferred_render_epoch, get_cached_path, is_mermaid_lang, render_mermaid,
-    render_mermaid_deferred, render_mermaid_deferred_with_registration,
-    render_mermaid_deferred_with_stream_scope, render_mermaid_sized, render_mermaid_untracked,
+    RenderResult, deferred_render_epoch, evict_render_cache_for_content, get_cached_path,
+    is_mermaid_lang, render_mermaid, render_mermaid_deferred,
+    render_mermaid_deferred_with_registration, render_mermaid_deferred_with_stream_scope,
+    render_mermaid_sized, render_mermaid_untracked,
 };
 #[cfg(feature = "renderer")]
 pub use content_render::terminal_theme;
