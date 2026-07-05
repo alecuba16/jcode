@@ -26,17 +26,17 @@ database_id = "abaa524c-3e90-4ba9-a569-027e78a083c6"
 # Until then this binding must stay commented out or `wrangler deploy` fails
 # with code 10089. The worker code degrades gracefully without the binding
 # (responses report firehose:false). After enabling, uncomment and redeploy.
-#[[analytics_engine_datasets]]
-#binding = "FIREHOSE"
-#dataset = "jcode_telemetry_firehose"
+[[analytics_engine_datasets]]
+binding = "FIREHOSE"
+dataset = "jcode_telemetry_firehose"
 
 # Web/subscription firehose (FIREHOSE_WEB_SCHEMA in src/worker.js). The main
 # FIREHOSE_SCHEMA is at Analytics Engine's 20-blob/20-double capacity, so
 # website + subscription events get their own dataset. Same one-time enable
 # caveat as above; the worker degrades gracefully without the binding.
-#[[analytics_engine_datasets]]
-#binding = "FIREHOSE_WEB"
-#dataset = "jcode_web_firehose"
+[[analytics_engine_datasets]]
+binding = "FIREHOSE_WEB"
+dataset = "jcode_web_firehose"
 
 [vars]
 ALLOWED_ORIGIN = "*"
