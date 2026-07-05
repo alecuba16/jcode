@@ -427,6 +427,104 @@ fn test_offscreen_plan_graph_message_still_registers_active_diagram() {
     crate::tui::mermaid::clear_active_diagrams();
 }
 
+/// wiring-audit.session-switch-diagram-leak: a session-changing History event
+/// clears display messages and the swarm plan snapshot (server_events.rs
+/// ~1592, ~1636-1639) but never touches the process-global ACTIVE_DIAGRAMS
+/// registry (mermaid_active.rs: `clear_active_diagrams` is only called from
+/// debug/bench/test paths). A plan-graph diagram registered in the PREVIOUS
+/// session therefore survives the switch: it still counts in the pinned pane
+/// counter, is reachable via Ctrl+arrow cycling, and is listed by
+/// `get_active_diagrams` (the Margin info widget source), even though its
+/// transcript message is gone.
+#[test]
+fn test_session_change_history_leaks_previous_session_active_diagram() {
+    let _env_lock = swarm_plan_mermaid_env_lock();
+    let _render_lock = scroll_render_test_lock();
+    let _mode_guard = DiagramModeOverrideGuard::pinned();
+    let mut app = create_test_app();
+    app.diagram_mode = crate::config::DiagramDisplayMode::Pinned;
+    app.diagram_pane_enabled = true;
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let _guard = rt.enter();
+    let mut remote = crate::tui::backend::RemoteConnection::dummy();
+    remote.mark_history_loaded();
+
+    crate::tui::mermaid::clear_active_diagrams();
+
+    // Session A: a plan-graph message lands and renders, registering its
+    // diagram in the global registry (same path as the transcript render).
+    app.remote_session_id = Some("session_old".to_string());
+    app.handle_server_event(
+        swarm_plan_event(1, vec![swarm_plan_graph_item("haiku-1", "write a haiku")]),
+        &mut remote,
+    );
+    let plan_msg = app
+        .display_messages()
+        .iter()
+        .rev()
+        .find(|m| m.role == "swarm")
+        .expect("plan graph message")
+        .clone();
+    let _ = crate::tui::ui::render_swarm_message(
+        &plan_msg,
+        80,
+        crate::config::DiffDisplayMode::Inline,
+    );
+    assert_eq!(
+        crate::tui::mermaid::active_diagram_count(),
+        1,
+        "session A plan render registers one active diagram"
+    );
+    let stale_hash = crate::tui::mermaid::get_active_diagrams()[0].hash;
+
+    // Switch to session B via a session-changing History event. The handler
+    // clears the transcript and the swarm plan snapshot...
+    app.handle_server_event(history_event_for_session("session_new"), &mut remote);
+    assert!(
+        plan_graph_titles(&app).is_empty(),
+        "session switch removes the plan-graph transcript message"
+    );
+    assert!(
+        app.swarm_plan_items.is_empty(),
+        "session switch clears the swarm plan snapshot"
+    );
+    assert_eq!(app.swarm_plan_version, None);
+
+    // ...but the diagram registry is NOT re-scoped: the previous session's
+    // plan graph is still registered and returned to the info widget.
+    let diagrams = crate::tui::mermaid::get_active_diagrams();
+    assert_eq!(
+        diagrams.len(),
+        1,
+        "LEAK CONFIRMED: session-changing History leaves the previous \
+         session's diagram in ACTIVE_DIAGRAMS"
+    );
+    assert_eq!(
+        diagrams[0].hash, stale_hash,
+        "the surviving entry is exactly the stale session-A plan graph"
+    );
+
+    // The pinned pane still targets it: the fit-context sync anchors on the
+    // stale hash and cycling reports it in the counter, with no transcript
+    // message backing it anymore.
+    app.diagram_index = 0;
+    app.sync_diagram_fit_context();
+    assert_eq!(
+        app.last_visible_diagram_hash,
+        Some(stale_hash),
+        "pinned pane shows the previous session's diagram after the switch"
+    );
+    app.cycle_diagram(1);
+    let notice = crate::tui::TuiState::status_notice(&app);
+    assert_eq!(
+        notice.as_deref(),
+        Some("Diagram 1/1"),
+        "Ctrl+arrow cycling counts the stale cross-session diagram"
+    );
+
+    crate::tui::mermaid::clear_active_diagrams();
+}
+
 fn history_event_for_session(session_id: &str) -> crate::protocol::ServerEvent {
     crate::protocol::ServerEvent::History {
         id: 1,
