@@ -620,9 +620,12 @@ fn retrieval_candidates_include_local_skills() {
     with_temp_home(|home| {
         // memory no longer reaches into skill directly; register the skill
         // synthetic-entry provider (as cli::startup does in production) so the
-        // memory<-skill integration this test exercises is wired up.
+        // memory<-skill integration this test exercises is wired up. The
+        // shared snapshot is global-only (issue #457), so production composes
+        // the process-cwd project overlay on top.
         crate::memory::register_synthetic_entry_provider(|| {
-            crate::skill::SkillRegistry::shared_snapshot()
+            let global = crate::skill::SkillRegistry::shared_snapshot();
+            crate::skill::SkillRegistry::effective_for_working_dir(&global, None)
                 .list()
                 .into_iter()
                 .map(|skill| skill.as_memory_entry())
