@@ -34,11 +34,7 @@ fn kitty_is_tmux() -> bool {
         || std::env::var("TERM_PROGRAM").is_ok_and(|term_program| term_program == "tmux")
 }
 
-fn kitty_transmit_virtual(img: &DynamicImage, id: u32) -> String {
-    let (w, h) = (img.width(), img.height());
-    let img_rgba8 = img.to_rgba8();
-    let bytes = img_rgba8.as_raw();
-
+fn kitty_transmit_payload(bytes: &[u8], id: u32, format: &str) -> String {
     let (start, escape, end) = Parser::escape_tmux(kitty_is_tmux());
     let mut data = String::from(start);
 
@@ -52,7 +48,7 @@ fn kitty_transmit_virtual(img: &DynamicImage, id: u32) -> String {
             0 => {
                 let more = if chunk_count > 1 { 1 } else { 0 };
                 data.push_str(&format!(
-                    "_Gq=2,i={id},a=T,U=1,f=32,t=d,s={w},v={h},m={more};{payload}"
+                    "_Gq=2,i={id},a=T,U=1,{format},t=d,m={more};{payload}"
                 ));
             }
             n if n + 1 == chunk_count => {
@@ -68,6 +64,24 @@ fn kitty_transmit_virtual(img: &DynamicImage, id: u32) -> String {
     data.push_str(end);
 
     data
+}
+
+fn kitty_transmit_virtual(img: &DynamicImage, id: u32) -> String {
+    // Kitty accepts PNG payloads directly (`f=100`). Mermaid and generated
+    // images compress especially well, while the previous raw RGBA upload sent
+    // width*height*4 bytes plus base64 overhead. A 780x585 sequence diagram was
+    // 97 KiB as PNG but 2.4 MiB as base64 RGBA; a zoomed side-panel image could
+    // exceed 20 MiB and block the terminal flush for several seconds.
+    let mut png = std::io::Cursor::new(Vec::new());
+    if img.write_to(&mut png, image::ImageFormat::Png).is_ok() {
+        return kitty_transmit_payload(png.get_ref(), id, "f=100");
+    }
+
+    // Encoding should only fail for an unsupported in-memory image shape. Keep
+    // the raw path as a defense-in-depth fallback rather than dropping the image.
+    let (w, h) = (img.width(), img.height());
+    let rgba = img.to_rgba8();
+    kitty_transmit_payload(rgba.as_raw(), id, &format!("f=32,s={w},v={h}"))
 }
 
 fn kitty_scaled_image_for_zoom(source: &DynamicImage, zoom_percent: u8) -> DynamicImage {
@@ -1209,6 +1223,26 @@ mod kitty_viewport_leak_tests {
     use super::*;
 
     const PLACEHOLDER: char = '\u{10EEEE}';
+
+    #[test]
+    fn virtual_transmit_uses_compressed_png_payload() {
+        let image = DynamicImage::ImageRgba8(image::ImageBuffer::from_pixel(
+            256,
+            256,
+            image::Rgba([245, 245, 245, 255]),
+        ));
+        let transmit = kitty_transmit_virtual(&image, 7);
+        let raw_base64_bytes = (256usize * 256 * 4).div_ceil(3) * 4;
+
+        assert!(transmit.contains("f=100"));
+        assert!(!transmit.contains("f=32"));
+        assert!(
+            transmit.len() < raw_base64_bytes / 10,
+            "PNG transmit should be far smaller than raw RGBA: {} vs {} bytes",
+            transmit.len(),
+            raw_base64_bytes,
+        );
+    }
 
     /// Seed `KITTY_VIEWPORT_STATE` with a fit entry so the emitter has an id to
     /// address without needing a real terminal/transmit.
