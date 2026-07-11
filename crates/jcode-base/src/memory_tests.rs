@@ -1,4 +1,9 @@
 use super::*;
+
+#[test]
+fn manager_without_project_dir_does_not_use_process_cwd() {
+    assert!(MemoryManager::new().get_project_dir().is_none());
+}
 use crate::message::{ContentBlock, Message, Role};
 use serde_json::json;
 use std::fs;

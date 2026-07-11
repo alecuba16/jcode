@@ -246,9 +246,7 @@ impl MemoryManager {
     }
 
     fn get_project_dir(&self) -> Option<PathBuf> {
-        self.project_dir
-            .clone()
-            .or_else(|| std::env::current_dir().ok())
+        self.project_dir.clone()
     }
 
     fn project_memory_path(&self) -> Result<Option<PathBuf>> {
@@ -1289,15 +1287,6 @@ impl MemoryManager {
         let manager = self.clone();
 
         tokio::spawn(async move {
-            let manager = if manager.project_dir.is_none() {
-                MemoryManager {
-                    project_dir: std::env::current_dir().ok(),
-                    ..manager
-                }
-            } else {
-                manager
-            };
-
             match manager
                 .get_relevant_parallel(&sid, &messages, event_tx.clone())
                 .await
