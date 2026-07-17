@@ -1,6 +1,6 @@
 param(
     [Parameter(Mandatory = $true)][string]$ArtifactExePath,
-    [Parameter(Mandatory = $true)][string]$Version
+    [string]$Version
 )
 
 $ErrorActionPreference = 'Stop'
@@ -8,19 +8,46 @@ Set-StrictMode -Version Latest
 
 $repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $resolvedArtifact = (Resolve-Path -LiteralPath $ArtifactExePath).Path
-$tempRoot = Join-Path $env:RUNNER_TEMP ("jcode-windows-install-verify-" + [guid]::NewGuid().ToString('N'))
+$originalUserPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+$originalEnvironment = @{
+    LOCALAPPDATA = $env:LOCALAPPDATA
+    APPDATA = $env:APPDATA
+    USERPROFILE = $env:USERPROFILE
+    JCODE_HOME = $env:JCODE_HOME
+    JCODE_WINDOWS_SETUP_SKIP_PROCESS_LIFECYCLE = $env:JCODE_WINDOWS_SETUP_SKIP_PROCESS_LIFECYCLE
+}
+
+if (-not $Version) {
+    $artifactVersionOutput = & $resolvedArtifact --version
+    if ($LASTEXITCODE -ne 0) {
+        throw "Local Windows artifact failed to run --version"
+    }
+
+    $artifactVersionText = ($artifactVersionOutput -join "`n")
+    if ($artifactVersionText -notmatch '(?i)\bjcode\s+v?(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)\b') {
+        throw "Could not parse jcode version from local artifact output: $artifactVersionText"
+    }
+    $Version = 'v' + $Matches[1]
+} else {
+    $Version = 'v' + (($Version.Trim()) -replace '^[vV]', '')
+}
+
+$tempBase = if ($env:RUNNER_TEMP) { $env:RUNNER_TEMP } else { $env:TEMP }
+$tempRoot = Join-Path $tempBase ("jcode-windows-install-verify-" + [guid]::NewGuid().ToString('N'))
 $localAppData = Join-Path $tempRoot 'localappdata'
 $appData = Join-Path $tempRoot 'appdata'
 $userProfile = Join-Path $tempRoot 'userprofile'
 $jcodeHome = Join-Path $tempRoot '.jcode'
 $installDir = Join-Path $localAppData 'jcode\bin'
 
+try {
 New-Item -ItemType Directory -Force -Path $localAppData, $appData, $userProfile, $jcodeHome | Out-Null
 
 $env:LOCALAPPDATA = $localAppData
 $env:APPDATA = $appData
 $env:USERPROFILE = $userProfile
 $env:JCODE_HOME = $jcodeHome
+$env:JCODE_WINDOWS_SETUP_SKIP_PROCESS_LIFECYCLE = '1'
 
 $installScript = Join-Path $repoRoot 'scripts\install.ps1'
 
@@ -101,3 +128,18 @@ if (Test-Path -LiteralPath $legacyVbs) {
 }
 
 Write-Host "Windows install verification passed for $Version" -ForegroundColor Green
+} finally {
+    # The installer intentionally persists PATH in HKCU. This verifier uses an
+    # isolated filesystem profile, so always restore the caller's actual user
+    # PATH and environment even if one of the lifecycle assertions fails.
+    [Environment]::SetEnvironmentVariable('Path', $originalUserPath, 'User')
+    foreach ($name in $originalEnvironment.Keys) {
+        $value = $originalEnvironment[$name]
+        if ($null -eq $value) {
+            Remove-Item -Path "Env:$name" -ErrorAction SilentlyContinue
+        } else {
+            Set-Item -Path "Env:$name" -Value $value
+        }
+    }
+    Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
+}

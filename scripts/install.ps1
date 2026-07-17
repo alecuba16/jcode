@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Install jcode on Windows.
 .DESCRIPTION
@@ -17,10 +17,13 @@
     Use a local jcode.exe artifact instead of downloading from GitHub.
 .PARAMETER ArtifactTgzPath
     Use a local jcode .tar.gz artifact instead of downloading from GitHub.
+.PARAMETER BuildFromSource
+    If no prebuilt release asset is available, explicitly allow a source build.
+    Source builds require Git, Rust, and the Visual Studio C++ Build Tools.
 .PARAMETER ConfigureAlacritty
     Install Alacritty through winget when it is not already available.
 .PARAMETER ConfigureHotkey
-    Configure the optional global launch hotkey. This requires Alacritty.
+    Configure the optional global launch hotkey.
 .PARAMETER SkipAlacrittySetup
     Deprecated compatibility switch. Alacritty setup is opt-in by default.
 .PARAMETER SkipHotkeySetup
@@ -31,6 +34,7 @@ param(
     [string]$Version,
     [string]$ArtifactExePath,
     [string]$ArtifactTgzPath,
+    [switch]$BuildFromSource,
     [switch]$ConfigureAlacritty,
     [switch]$ConfigureHotkey,
     [switch]$SkipAlacrittySetup,
@@ -47,7 +51,9 @@ if ($PSVersionTable.PSVersion.Major -lt 5) {
 $Repo = "1jehuang/jcode"
 
 if (-not $InstallDir) {
-    $InstallDir = Join-Path $env:LOCALAPPDATA "jcode\bin"
+    $localAppData = if ($env:LOCALAPPDATA) { $env:LOCALAPPDATA } else { [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData) }
+    if (-not $localAppData -and $env:USERPROFILE) { $localAppData = Join-Path $env:USERPROFILE "AppData\Local" }
+    $InstallDir = Join-Path $localAppData "jcode\bin"
 }
 
 $JcodeHome = if ($env:JCODE_HOME) {
@@ -62,8 +68,26 @@ $HotkeyDir = Join-Path $JcodeHome "hotkey"
 $SetupHintsPath = Join-Path $JcodeHome "setup_hints.json"
 
 function Write-Info($msg) { Write-Host $msg -ForegroundColor Blue }
-function Write-Err($msg) { Write-Host "error: $msg" -ForegroundColor Red; exit 1 }
+function Write-Err($msg) { throw "error: $msg" }
 function Write-Warn($msg) { Write-Host "warning: $msg" -ForegroundColor Yellow }
+
+function Get-JcodeSha256FromManifest {
+    param(
+        [Parameter(Mandatory = $true)][string]$ManifestText,
+        [Parameter(Mandatory = $true)][string]$AssetName
+    )
+
+    foreach ($line in ($ManifestText -split "`r?`n")) {
+        if ($line -match '^\s*([0-9a-fA-F]{64})\s+\*?(.+?)\s*$') {
+            $candidateName = [System.IO.Path]::GetFileName($Matches[2])
+            if ($candidateName -eq $AssetName) {
+                return $Matches[1].ToLowerInvariant()
+            }
+        }
+    }
+
+    return $null
+}
 
 function Get-ReleaseChecksum([string]$ReleaseTag, [string]$AssetName) {
     $checksumUrl = "https://github.com/$Repo/releases/download/$ReleaseTag/SHA256SUMS"
@@ -74,31 +98,273 @@ function Get-ReleaseChecksum([string]$ReleaseTag, [string]$AssetName) {
         Write-Err "Could not download SHA256SUMS for $ReleaseTag. Refusing to install an unverified download: $_"
     }
 
-    foreach ($line in ($contents -split "`r?`n")) {
-        if ($line -match '^([0-9a-fA-F]{64})\s+\*?(.+?)\s*$') {
-            if ($Matches[2] -eq $AssetName) {
-                return $Matches[1].ToLowerInvariant()
-            }
-        }
-    }
+    $expected = Get-JcodeSha256FromManifest -ManifestText $contents -AssetName $AssetName
+    if ($expected) { return $expected }
 
     Write-Err "SHA256SUMS for $ReleaseTag does not list $AssetName"
 }
 
-function Assert-FileChecksum([string]$Path, [string]$ExpectedSha256, [string]$AssetName) {
+function Assert-JcodeFileChecksum([string]$FilePath, [string]$ExpectedSha256, [string]$AssetName) {
     try {
-        $actual = (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
+        $actual = (Get-FileHash -LiteralPath $FilePath -Algorithm SHA256).Hash.ToLowerInvariant()
     } catch {
         Write-Err "Could not calculate SHA256 for ${AssetName}: $_"
     }
 
     if ($actual -ne $ExpectedSha256) {
-        Remove-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $FilePath -Force -ErrorAction SilentlyContinue
         Write-Err "SHA256 verification failed for $AssetName (expected $ExpectedSha256, got $actual)"
     }
 
     Write-Info "Verified SHA256: $AssetName"
+    return $actual
 }
+
+function Get-JcodeLocalAppDataDir {
+    if ($env:LOCALAPPDATA) {
+        return $env:LOCALAPPDATA
+    }
+
+    $localAppData = [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)
+    if ($localAppData) {
+        return $localAppData
+    }
+
+    if ($env:USERPROFILE) {
+        return (Join-Path $env:USERPROFILE "AppData\Local")
+    }
+
+    return (Join-Path ([Environment]::GetFolderPath("UserProfile")) "AppData\Local")
+}
+
+function Get-DefaultJcodeInstallDir {
+    return (Join-Path (Get-JcodeLocalAppDataDir) "jcode\bin")
+}
+
+function ConvertTo-JcodePathKey([string]$PathValue) {
+    if (-not $PathValue) {
+        return ""
+    }
+
+    $clean = [Environment]::ExpandEnvironmentVariables($PathValue.Trim().Trim('"'))
+    if (-not $clean) {
+        return ""
+    }
+
+    try {
+        $clean = [System.IO.Path]::GetFullPath($clean)
+    } catch {
+    }
+
+
+    $clean = $clean.TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
+    return $clean.ToUpperInvariant()
+}
+
+function Split-JcodePathList([string]$PathValue) {
+    if (-not $PathValue) {
+        return @()
+    }
+
+    $entries = @()
+    foreach ($entry in ($PathValue -split ';')) {
+        $clean = $entry.Trim().Trim('"')
+        if ($clean) {
+            $entries += $clean
+        }
+    }
+    return $entries
+}
+
+function Join-JcodePathList([string[]]$Entries) {
+    if (-not $Entries -or $Entries.Count -eq 0) {
+        return ""
+    }
+
+    return ($Entries -join ';')
+}
+
+function Get-JcodeManagedPathKeys([string]$InstallDir) {
+    $keys = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($candidate in @($InstallDir, (Get-DefaultJcodeInstallDir))) {
+        $key = ConvertTo-JcodePathKey $candidate
+        if ($key) {
+            [void]$keys.Add($key)
+        }
+    }
+    return $keys
+}
+
+function Resolve-JcodePathUpdate {
+    param(
+        [Parameter(Mandatory = $true)][string]$InstallDir,
+        [AllowNull()][string]$CurrentPath,
+        [switch]$RemoveOnly
+    )
+
+    $managedKeys = Get-JcodeManagedPathKeys -InstallDir $InstallDir
+    $nextEntries = @()
+    $removedManaged = 0
+
+    foreach ($entry in (Split-JcodePathList $CurrentPath)) {
+        $key = ConvertTo-JcodePathKey $entry
+        if (-not $key) {
+            continue
+        }
+
+        if ($managedKeys.Contains($key)) {
+            $removedManaged += 1
+            continue
+        }
+
+        $nextEntries += $entry
+    }
+
+    if (-not $RemoveOnly) {
+        $nextEntries = @($InstallDir) + $nextEntries
+    }
+
+    $nextPath = Join-JcodePathList $nextEntries
+    $changed = ($nextPath -ne ([string]$CurrentPath))
+
+    return [pscustomobject]@{
+        Path = $nextPath
+        Changed = $changed
+        RemovedManagedEntries = $removedManaged
+        RemovedDuplicateEntries = 0
+        AddedLauncherEntry = (-not $RemoveOnly)
+        InstallDir = $InstallDir
+    }
+}
+
+function Send-JcodeEnvironmentChangedBroadcast {
+    if ($env:JCODE_DISABLE_ENV_BROADCAST -eq "1") {
+        return $false
+    }
+
+    if (-not ("Jcode.EnvironmentBroadcast" -as [type])) {
+        Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+namespace Jcode {
+    public static class EnvironmentBroadcast {
+        [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Auto)]
+        public static extern IntPtr SendMessageTimeout(
+            IntPtr hWnd,
+            UInt32 Msg,
+            UIntPtr wParam,
+            string lParam,
+            UInt32 fuFlags,
+            UInt32 uTimeout,
+            out UIntPtr lpdwResult);
+    }
+}
+"@
+    }
+
+    $result = [UIntPtr]::Zero
+    [Jcode.EnvironmentBroadcast]::SendMessageTimeout([IntPtr]0xffff, 0x001A, [UIntPtr]::Zero, "Environment", 0x0002, 5000, [ref]$result) | Out-Null
+    return $true
+}
+
+function Set-JcodeUserPath {
+    param(
+        [Parameter(Mandatory = $true)][string]$InstallDir,
+        [AllowNull()][string]$CurrentPath,
+        [scriptblock]$SetUserPathAction,
+        [scriptblock]$BroadcastAction,
+        [bool]$Broadcast = $true
+    )
+
+    if (-not $PSBoundParameters.ContainsKey('CurrentPath')) {
+        $CurrentPath = [Environment]::GetEnvironmentVariable("Path", "User")
+    }
+
+    $update = Resolve-JcodePathUpdate -InstallDir $InstallDir -CurrentPath $CurrentPath
+    $broadcasted = $false
+
+    if ($update.Changed) {
+        if ($SetUserPathAction) {
+            & $SetUserPathAction $update.Path
+        } else {
+            [Environment]::SetEnvironmentVariable("Path", $update.Path, "User")
+        }
+
+        if ($Broadcast) {
+            if ($BroadcastAction) {
+                & $BroadcastAction | Out-Null
+            } else {
+                Send-JcodeEnvironmentChangedBroadcast | Out-Null
+            }
+            $broadcasted = $true
+        }
+    }
+
+    $update | Add-Member -NotePropertyName Broadcasted -NotePropertyValue $broadcasted
+    return $update
+}
+
+function Remove-JcodeUserPath {
+    param(
+        [Parameter(Mandatory = $true)][string]$InstallDir,
+        [AllowNull()][string]$CurrentPath,
+        [scriptblock]$SetUserPathAction,
+        [scriptblock]$BroadcastAction,
+        [bool]$Broadcast = $true
+    )
+
+    if (-not $PSBoundParameters.ContainsKey('CurrentPath')) {
+        $CurrentPath = [Environment]::GetEnvironmentVariable("Path", "User")
+    }
+
+    $update = Resolve-JcodePathUpdate -InstallDir $InstallDir -CurrentPath $CurrentPath -RemoveOnly
+    $broadcasted = $false
+
+    if ($update.Changed) {
+        if ($SetUserPathAction) {
+            & $SetUserPathAction $update.Path
+        } else {
+            [Environment]::SetEnvironmentVariable("Path", $update.Path, "User")
+        }
+
+        if ($Broadcast) {
+            if ($BroadcastAction) {
+                & $BroadcastAction | Out-Null
+            } else {
+                Send-JcodeEnvironmentChangedBroadcast | Out-Null
+            }
+            $broadcasted = $true
+        }
+    }
+
+    $update | Add-Member -NotePropertyName Broadcasted -NotePropertyValue $broadcasted
+    return $update
+}
+
+function Set-JcodeProcessPath([string]$InstallDir) {
+    $update = Resolve-JcodePathUpdate -InstallDir $InstallDir -CurrentPath $env:Path
+    $env:Path = $update.Path
+    return $update
+}
+
+function Install-JcodeLauncher {
+    param(
+        [Parameter(Mandatory = $true)][string]$SourcePath,
+        [Parameter(Mandatory = $true)][string]$LauncherPath
+    )
+
+    $launcherDir = Split-Path -Parent $LauncherPath
+    New-Item -ItemType Directory -Path $launcherDir -Force | Out-Null
+
+    $tempLauncher = Join-Path $launcherDir (".jcode-launcher-{0}.tmp.exe" -f ([guid]::NewGuid().ToString('N')))
+    try {
+        Copy-Item -Path $SourcePath -Destination $tempLauncher -Force
+        Move-Item -Path $tempLauncher -Destination $LauncherPath -Force
+    } finally {
+        Remove-Item -Path $tempLauncher -Force -ErrorAction SilentlyContinue
+    }
+
+    return $LauncherPath}
 
 function Resolve-OptionalPath([string]$PathValue) {
     if (-not $PathValue) {
@@ -271,6 +537,119 @@ function Stop-JcodeHotkeyListeners {
             Where-Object { $_.CommandLine -like '*jcode-hotkey*' } |
             ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
     } catch {}
+
+    try {
+        $currentPid = $PID
+        Get-CimInstance Win32_Process -Filter "Name = 'jcode.exe'" -ErrorAction SilentlyContinue |
+            Where-Object { $_.ProcessId -ne $currentPid -and $_.CommandLine -like '*--listen-windows-hotkey*' } |
+            ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+    } catch {}
+}
+
+function ConvertFrom-JcodeVersionOutput([string]$Output) {
+    if (-not $Output) {
+        return $null
+    }
+
+    # A genuinely fresh profile may print the one-time telemetry notice before
+    # the version. When output is captured by PowerShell, terminal control
+    # sequences can also leave the final `jcode v...` on the same logical line.
+    if ($Output -match '(?i)\bjcode\s+v?([0-9][0-9A-Za-z.+-]*)') {
+        return "v$($Matches[1])"
+    }
+
+    return $null
+}
+
+function Get-JcodeVersionFromBinary([string]$BinaryPath) {
+    if (-not $BinaryPath -or -not (Test-Path -LiteralPath $BinaryPath)) {
+        return $null
+    }
+
+    $previousErrorActionPreference = $ErrorActionPreference
+    try {
+        # Fresh profiles emit the one-time telemetry notice on stderr. Under
+        # Windows PowerShell with ErrorActionPreference=Stop, native stderr is
+        # promoted to a terminating NativeCommandError even when the process
+        # succeeds. Capture both streams without letting that notice abort the
+        # version probe.
+        $ErrorActionPreference = 'Continue'
+        $output = (& $BinaryPath --version 2>&1 | Out-String).Trim()
+        $exitCode = $LASTEXITCODE
+        if ($exitCode -ne 0) {
+            return $null
+        }
+        return (ConvertFrom-JcodeVersionOutput $output)
+    } catch {
+        return $null
+    } finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
+}
+
+function Assert-JcodeBinaryCandidate {
+    param(
+        [Parameter(Mandatory = $true)][string]$BinaryPath,
+        [Parameter(Mandatory = $true)][string]$ExpectedVersion
+    )
+
+    if ($env:JCODE_INSTALL_SKIP_BINARY_VALIDATION -eq "1") {
+        return $null
+    }
+
+    $reportedVersion = Get-JcodeVersionFromBinary $BinaryPath
+    if (-not $reportedVersion) {
+        Write-Err "Downloaded jcode binary could not run '--version'. It may be corrupt, quarantined by antivirus, or built for the wrong architecture."
+    }
+
+    $expectedNumber = $ExpectedVersion.TrimStart('v')
+    if ($reportedVersion.TrimStart('v') -ne $expectedNumber) {
+        Write-Err "Downloaded binary reports $reportedVersion, but the installer requested $ExpectedVersion"
+    }
+
+    Write-Info "Validated jcode binary: $reportedVersion"
+    return $reportedVersion
+}
+
+function Test-JcodeMsvcBuildToolsAvailable {
+    if (Get-Command link.exe -ErrorAction SilentlyContinue) {
+        return $true
+    }
+
+    $programFilesX86 = [Environment]::GetFolderPath([Environment+SpecialFolder]::ProgramFilesX86)
+    if (-not $programFilesX86) {
+        return $false
+    }
+
+    $vswhere = Join-Path $programFilesX86 "Microsoft Visual Studio\Installer\vswhere.exe"
+    if (-not (Test-Path -LiteralPath $vswhere)) {
+        return $false
+    }
+
+    try {
+        $linkPath = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -find 'VC\Tools\MSVC\**\bin\Hostx64\x64\link.exe' 2>$null | Select-Object -First 1
+        return [bool]$linkPath
+    } catch {
+        return $false
+    }
+}
+
+function Assert-JcodeSourceBuildPrerequisites {
+    if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
+        Write-Err "Git is required for -BuildFromSource. Install it with: winget install -e --id Git.Git"
+    }
+    if (-not (Get-Command cargo -ErrorAction SilentlyContinue) -or -not (Get-Command rustc -ErrorAction SilentlyContinue)) {
+        Write-Err "Rust is required for -BuildFromSource. Install it from https://rustup.rs, then open a new PowerShell window."
+    }
+
+    $rustHost = ""
+    try {
+        $rustHost = (& rustc -vV 2>$null | Select-String '^host:' | Select-Object -First 1).ToString()
+    } catch {}
+
+    if ($rustHost -match 'pc-windows-msvc' -and -not (Test-JcodeMsvcBuildToolsAvailable)) {
+        Write-Err "The MSVC linker (link.exe) was not found. Install Visual Studio 2022 Build Tools with the 'Desktop development with C++' workload, then open a new PowerShell window before using -BuildFromSource."
+    }
 }
 
 function Set-SetupHintsState([bool]$AlacrittyConfigured, [bool]$HotkeyConfigured) {
@@ -311,90 +690,50 @@ function Set-SetupHintsState([bool]$AlacrittyConfigured, [bool]$HotkeyConfigured
     $state | ConvertTo-Json | Set-Content -Path $SetupHintsPath -Encoding UTF8
 }
 
-function Install-JcodeHotkey([string]$JcodeExePath) {
-    $alacrittyPath = Find-AlacrittyPath
-    if (-not $alacrittyPath) {
-        Write-Warn "Skipping Alt+; hotkey because Alacritty is not installed"
-        return $false
-    }
-
-    New-Item -ItemType Directory -Path $HotkeyDir -Force | Out-Null
-    Stop-JcodeHotkeyListeners
-
-    $escapedAlacritty = $alacrittyPath.Replace("'", "''")
-    $escapedJcodeExe = $JcodeExePath.Replace("'", "''")
-
-    $ps1Path = Join-Path $HotkeyDir "jcode-hotkey.ps1"
-    $ps1Lines = @(
-        '# jcode Alt+; global hotkey listener',
-        '# Auto-generated by scripts/install.ps1. Runs at login via startup shortcut.',
-        '',
-        'Add-Type @"',
-        'using System;',
-        'using System.Runtime.InteropServices;',
-        'public class HotKeyHelper {',
-        '    [DllImport("user32.dll")]',
-        '    public static extern bool RegisterHotKey(IntPtr hWnd, int id, uint fsModifiers, uint vk);',
-        '    [DllImport("user32.dll")]',
-        '    public static extern bool UnregisterHotKey(IntPtr hWnd, int id);',
-        '    [DllImport("user32.dll")]',
-        '    public static extern int GetMessage(out MSG lpMsg, IntPtr hWnd, uint wMsgFilterMin, uint wMsgFilterMax);',
-        '    [StructLayout(LayoutKind.Sequential)]',
-        '    public struct MSG {',
-        '        public IntPtr hwnd;',
-        '        public uint message;',
-        '        public IntPtr wParam;',
-        '        public IntPtr lParam;',
-        '        public uint time;',
-        '        public int pt_x;',
-        '        public int pt_y;',
-        '    }',
-        '}',
-        '"@',
-        '',
-        '$MOD_ALT = 0x0001',
-        '$MOD_NOREPEAT = 0x4000',
-        '$VK_OEM_1 = 0xBA',
-        '$WM_HOTKEY = 0x0312',
-        '$HOTKEY_ID = 0x4A43',
-        '',
-        'if (-not [HotKeyHelper]::RegisterHotKey([IntPtr]::Zero, $HOTKEY_ID, $MOD_ALT -bor $MOD_NOREPEAT, $VK_OEM_1)) {',
-        '    Write-Error "Failed to register Alt+; hotkey (another program may have claimed it)"',
-        '    exit 1',
-        '}',
-        '',
-        'try {',
-        '    $msg = New-Object HotKeyHelper+MSG',
-        '    while ([HotKeyHelper]::GetMessage([ref]$msg, [IntPtr]::Zero, $WM_HOTKEY, $WM_HOTKEY) -ne 0) {',
-        '        if ($msg.message -eq $WM_HOTKEY -and $msg.wParam.ToInt32() -eq $HOTKEY_ID) {',
-        "            Start-Process '$escapedAlacritty' -ArgumentList '-e', '$escapedJcodeExe'",
-        '        }',
-        '    }',
-        '} finally {',
-        '    [HotKeyHelper]::UnregisterHotKey([IntPtr]::Zero, $HOTKEY_ID)',
-        '}'
-    )
-    $ps1Content = $ps1Lines -join "`r`n"
-    Set-Content -Path $ps1Path -Value $ps1Content -Encoding UTF8
-    Remove-Item -LiteralPath (Join-Path $HotkeyDir "jcode-hotkey-launcher.vbs") -Force -ErrorAction SilentlyContinue
-
-    $startupDir = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\Startup"
-    New-Item -ItemType Directory -Path $startupDir -Force | Out-Null
-    $startupShortcutPath = (Join-Path $startupDir "jcode-hotkey.lnk").Replace("'", "''")
-    $escapedPs1Path = $ps1Path.Replace("'", "''")
-
+function Get-JcodeHotkeyShortcutScript([string]$StartupShortcutPath, [string]$JcodeExePath) {
+    $escapedShortcutPath = $StartupShortcutPath.Replace("'", "''")
+    $escapedExePath = $JcodeExePath.Replace("'", "''")
+    $listenerArguments = "-NoProfile -ExecutionPolicy RemoteSigned -WindowStyle Hidden -Command `"& '$escapedExePath' setup-hotkey --listen-windows-hotkey`""
+    $escapedListenerArguments = $listenerArguments.Replace("'", "''")
     $shortcutLines = @(
         '$ErrorActionPreference = ''Stop''',
         '$shell = New-Object -ComObject WScript.Shell',
-        "`$shortcut = `$shell.CreateShortcut('$startupShortcutPath')",
+        "`$shortcut = `$shell.CreateShortcut('$escapedShortcutPath')",
         "`$shortcut.TargetPath = 'powershell.exe'",
-        ("`$shortcut.Arguments = '-NoProfile -ExecutionPolicy RemoteSigned -WindowStyle Hidden -File ""{0}""'" -f $escapedPs1Path),
-        "`$shortcut.Description = 'jcode Alt+; hotkey listener'",
+        "`$shortcut.Arguments = '$escapedListenerArguments'",
+        "`$shortcut.Description = 'jcode global launch hotkey listener'",
         '$shortcut.WindowStyle = 7',
         '$shortcut.Save()',
         "Write-Output 'OK'"
     )
-    $shortcutScript = $shortcutLines -join "`r`n"
+    return ($shortcutLines -join "`r`n")
+}
+
+function Install-JcodeHotkey([string]$JcodeExePath) {
+    New-Item -ItemType Directory -Path $HotkeyDir -Force | Out-Null
+    $skipProcessLifecycle = (
+        $env:JCODE_WINDOWS_SETUP_SKIP_EXTERNALS -eq "1" -or
+        $env:JCODE_WINDOWS_SETUP_SKIP_PROCESS_LIFECYCLE -eq "1"
+    )
+    if (-not $skipProcessLifecycle) {
+        Stop-JcodeHotkeyListeners
+    }
+
+    # Upgrade cleanup: v0.47 and earlier wrote a generated PowerShell listener.
+    # The first-party listener now lives in jcode.exe itself and is launched via
+    # `jcode setup-hotkey --listen-windows-hotkey` from a login shortcut.
+    Remove-Item -Path (Join-Path $HotkeyDir "jcode-hotkey.ps1") -Force -ErrorAction SilentlyContinue
+    Remove-Item -Path (Join-Path $HotkeyDir "jcode-hotkey-launcher.vbs") -Force -ErrorAction SilentlyContinue
+    $startupDir = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\Startup"
+    New-Item -ItemType Directory -Path $startupDir -Force | Out-Null
+    $startupShortcutPath = Join-Path $startupDir "jcode-hotkey.lnk"
+    $shortcutScript = Get-JcodeHotkeyShortcutScript -StartupShortcutPath $startupShortcutPath -JcodeExePath $JcodeExePath
+
+    if ($env:JCODE_WINDOWS_SETUP_SKIP_EXTERNALS -eq "1") {
+        Set-Content -Path (Join-Path $HotkeyDir "jcode-hotkey-shortcut.ps1") -Value $shortcutScript -Encoding UTF8
+        Write-Info "Configured Alt+; and the Copilot key to launch jcode"
+        return $true
+    }
 
     $shortcutOutput = & powershell -NoProfile -Command $shortcutScript
     if ($LASTEXITCODE -ne 0 -or -not ($shortcutOutput -match 'OK')) {
@@ -402,15 +741,31 @@ function Install-JcodeHotkey([string]$JcodeExePath) {
         return $false
     }
 
-    $listenerArgs = @('-NoProfile', '-ExecutionPolicy', 'RemoteSigned', '-WindowStyle', 'Hidden', '-File', $ps1Path)
-    try {
-        Start-Process powershell.exe -ArgumentList $listenerArgs -WindowStyle Hidden -ErrorAction Stop | Out-Null
-    } catch {
-        Write-Warn "Hotkey will start on next login, but could not be launched immediately"
+    $escapedExePath = $JcodeExePath.Replace("'", "''")
+    $launchHotkeyCommand = "Start-Process -FilePath '$escapedExePath' -ArgumentList @('setup-hotkey', '--listen-windows-hotkey') -WindowStyle Hidden"
+    if (-not $skipProcessLifecycle) {
+        & powershell -NoProfile -ExecutionPolicy RemoteSigned -WindowStyle Hidden -Command $launchHotkeyCommand | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            Write-Warn "Hotkey will start on next login, but could not be launched immediately"
+        }
     }
 
-    Write-Info "Configured Alt+; to launch jcode in Alacritty"
+    Write-Info "Configured Alt+; and the Copilot key to launch jcode"
     return $true
+}
+function Resolve-JcodeWindowsArtifact([string[]]$ArchitectureCandidates) {
+    $sawX64 = $false
+
+    foreach ($arch in @($ArchitectureCandidates)) {
+        if (-not $arch) { continue }
+        switch -Regex ($arch.Trim()) {
+            '^(Arm64|ARM64|AARCH64|aarch64)$' { return "jcode-windows-aarch64" }
+            '^(X64|AMD64|x86_64)$' { $sawX64 = $true }
+        }
+    }
+
+    if ($sawX64) { return "jcode-windows-x86_64" }
+    return $null
 }
 
 function Get-JcodeWindowsArtifact {
@@ -425,17 +780,14 @@ function Get-JcodeWindowsArtifact {
         if ($envArch) { $candidates += [string]$envArch }
     }
 
-    foreach ($arch in $candidates) {
-        switch -Regex ($arch.Trim()) {
-            '^(X64|AMD64|x86_64)$' { return "jcode-windows-x86_64" }
-            '^(Arm64|ARM64|AARCH64|aarch64)$' { return "jcode-windows-aarch64" }
-        }
-    }
+    $artifact = Resolve-JcodeWindowsArtifact $candidates
+    if ($artifact) { return $artifact }
 
     $displayArch = if ($candidates.Count -gt 0) { $candidates -join ", " } else { "<unknown>" }
     Write-Err "Unsupported architecture: $displayArch (supported: x86_64, ARM64)"
 }
 
+function Invoke-JcodeInstall {
 $Artifact = Get-JcodeWindowsArtifact
 
 $ResolvedArtifactExePath = Resolve-OptionalPath $ArtifactExePath
@@ -446,16 +798,22 @@ if ($ResolvedArtifactExePath -and $ResolvedArtifactTgzPath) {
 }
 
 if (-not $Version) {
-    if ($ResolvedArtifactExePath -or $ResolvedArtifactTgzPath) {
-        Write-Err "-Version is required when using a local artifact path"
-    }
-
-    Write-Info "Fetching latest release..."
-    try {
-        $Release = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases/latest"
-        $Version = $Release.tag_name
-    } catch {
-        Write-Err "Failed to determine latest version: $_"
+    if ($ResolvedArtifactExePath) {
+        $Version = Get-JcodeVersionFromBinary $ResolvedArtifactExePath
+        if (-not $Version) {
+            Write-Err "Could not detect a jcode version from '$ResolvedArtifactExePath'. Pass -Version explicitly if this is a trusted local build."
+        }
+        Write-Info "Detected local artifact version: $Version"
+    } elseif ($ResolvedArtifactTgzPath) {
+        Write-Err "-Version is required when using -ArtifactTgzPath"
+    } else {
+        Write-Info "Fetching latest release..."
+        try {
+            $Release = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases/latest"
+            $Version = $Release.tag_name
+        } catch {
+            Write-Err "Failed to determine latest version: $_"
+        }
     }
 }
 
@@ -465,7 +823,7 @@ $VersionNum = $Version.TrimStart('v')
 $TgzUrl = "https://github.com/$Repo/releases/download/$Version/$Artifact.tar.gz"
 $ExeUrl = "https://github.com/$Repo/releases/download/$Version/$Artifact.exe"
 
-$BuildsDir = Join-Path $env:LOCALAPPDATA "jcode\builds"
+$BuildsDir = Join-Path (Get-JcodeLocalAppDataDir) "jcode\builds"
 $StableDir = Join-Path $BuildsDir "stable"
 $VersionDir = Join-Path $BuildsDir "versions\$VersionNum"
 $LauncherPath = Join-Path $InstallDir "jcode.exe"
@@ -493,8 +851,10 @@ foreach ($d in @($InstallDir, $StableDir, $VersionDir)) {
 $TempDir = Join-Path $env:TEMP "jcode-install-$(Get-Random)"
 New-Item -ItemType Directory -Path $TempDir -Force | Out-Null
 
+try {
 $DownloadMode = ""
 $DownloadPath = Join-Path $TempDir "jcode.download"
+$DownloadedAssetName = $null
 
 if ($ResolvedArtifactExePath) {
     Write-Info "Using local artifact exe: $ResolvedArtifactExePath"
@@ -509,11 +869,13 @@ if ($ResolvedArtifactExePath) {
         Write-Info "Downloading $Artifact.exe..."
         Invoke-WebRequest -UseBasicParsing -Uri $ExeUrl -OutFile $DownloadPath
         $DownloadMode = "bin"
+        $DownloadedAssetName = "$Artifact.exe"
     } catch {
         try {
             Write-Info "Trying archive download..."
             Invoke-WebRequest -UseBasicParsing -Uri $TgzUrl -OutFile $DownloadPath
             $DownloadMode = "tar"
+            $DownloadedAssetName = "$Artifact.tar.gz"
         } catch {
             $DownloadMode = ""
         }
@@ -523,7 +885,7 @@ if ($ResolvedArtifactExePath) {
 if (-not $ResolvedArtifactExePath -and -not $ResolvedArtifactTgzPath -and $DownloadMode) {
     $downloadedAssetName = if ($DownloadMode -eq "bin") { "$Artifact.exe" } else { "$Artifact.tar.gz" }
     $expectedSha256 = Get-ReleaseChecksum -ReleaseTag $Version -AssetName $downloadedAssetName
-    Assert-FileChecksum -Path $DownloadPath -ExpectedSha256 $expectedSha256 -AssetName $downloadedAssetName
+    Assert-JcodeFileChecksum -FilePath $DownloadPath -ExpectedSha256 $expectedSha256 -AssetName $downloadedAssetName | Out-Null
 }
 
 $DestBin = Join-Path $VersionDir "jcode.exe"
@@ -539,9 +901,13 @@ if ($DownloadMode -eq "tar") {
 } elseif ($DownloadMode -eq "bin") {
     Move-Item -Path $DownloadPath -Destination $DestBin -Force
 } else {
-    Write-Info "No prebuilt asset found for $Artifact in $Version; building from source..."
-    if (-not (Get-Command git -ErrorAction SilentlyContinue)) { Write-Err "git is required to build from source" }
-    if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) { Write-Err "cargo is required to build from source" }
+    if (-not $BuildFromSource) {
+        $releaseUrl = "https://github.com/$Repo/releases/tag/$Version"
+        Write-Err "No prebuilt $Artifact asset was found in $Version. Check $releaseUrl or rerun the downloaded script with -BuildFromSource. The installer will not start a long source build automatically."
+    }
+
+    Write-Info "No prebuilt asset found for $Artifact in $Version; -BuildFromSource was requested"
+    Assert-JcodeSourceBuildPrerequisites
 
     $SrcDir = Join-Path $TempDir "jcode-src"
     Write-Info "Cloning $Repo at $Version..."
@@ -564,7 +930,10 @@ if ($DownloadMode -eq "tar") {
     }
 
     Write-Info "Building jcode from source (this can take several minutes)..."
-    $cargoResult = Invoke-ProcessWithTimeout -FilePath "cargo" -ArgumentList @("build", "--release", "--manifest-path", (Join-Path $SrcDir "Cargo.toml")) -TimeoutSeconds 1800 -FriendlyName "cargo-build" -CaptureOutput
+    $cargoResult = Invoke-ProcessWithTimeout -FilePath "cargo" -ArgumentList @(
+        "build", "--release", "--locked", "-p", "jcode", "--bin", "jcode",
+        "--manifest-path", (Join-Path $SrcDir "Cargo.toml")
+    ) -TimeoutSeconds 1800 -FriendlyName "cargo-build" -CaptureOutput
     if ($cargoResult.TimedOut) {
         Write-LogTail -Path $cargoResult.StdoutPath -Label "cargo stdout"
         Write-LogTail -Path $cargoResult.StderrPath -Label "cargo stderr"
@@ -581,9 +950,15 @@ if ($DownloadMode -eq "tar") {
     Copy-Item -Path $BuiltBin -Destination $DestBin -Force
 }
 
-Copy-Item -Path $DestBin -Destination (Join-Path $StableDir "jcode.exe") -Force
+Assert-JcodeBinaryCandidate -BinaryPath $DestBin -ExpectedVersion $Version | Out-Null
+
+$StableBin = Join-Path $StableDir "jcode.exe"
+Copy-Item -Path $DestBin -Destination $StableBin -Force
 Set-Content -Path (Join-Path $BuildsDir "stable-version") -Value $VersionNum
-Copy-Item -Path (Join-Path $StableDir "jcode.exe") -Destination $LauncherPath -Force
+Install-JcodeLauncher -SourcePath $StableBin -LauncherPath $LauncherPath | Out-Null
+} finally {
+    Remove-Item -Path $TempDir -Recurse -Force -ErrorAction SilentlyContinue
+}
 
 # Gracefully reload any running background server onto the freshly installed
 # binary (issue #291). `server reload` only reloads a genuinely-older daemon,
@@ -597,30 +972,39 @@ if ($env:JCODE_SKIP_SERVER_RELOAD -ne "1") {
     }
 }
 
-Remove-Item -Path $TempDir -Recurse -Force -ErrorAction SilentlyContinue
-
-$UserPath = [Environment]::GetEnvironmentVariable("Path", "User")
-if ($UserPath -notlike "*$InstallDir*") {
-    [Environment]::SetEnvironmentVariable("Path", "$InstallDir;$UserPath", "User")
-    Write-Info "Added $InstallDir to user PATH"
+$userPathUpdate = Set-JcodeUserPath -InstallDir $InstallDir
+if ($userPathUpdate.Changed) {
+    Write-Info "Updated user PATH with $InstallDir"
+    if ($userPathUpdate.RemovedManagedEntries -gt 0 -or $userPathUpdate.RemovedDuplicateEntries -gt 0) {
+        Write-Info "  removed $($userPathUpdate.RemovedManagedEntries) stale jcode PATH entr$(if ($userPathUpdate.RemovedManagedEntries -eq 1) { 'y' } else { 'ies' }) and $($userPathUpdate.RemovedDuplicateEntries) duplicate entr$(if ($userPathUpdate.RemovedDuplicateEntries -eq 1) { 'y' } else { 'ies' })"
+    }
+} else {
+    Write-Info "User PATH already contains $InstallDir"
 }
 
-$env:Path = "$InstallDir;$env:Path"
+Set-JcodeProcessPath -InstallDir $InstallDir | Out-Null
 
 $installedAlacritty = $false
 $configuredHotkey = $false
+$shouldSetupAlacritty = [bool]($ConfigureAlacritty -and -not $SkipAlacrittySetup)
+$shouldSetupHotkey = [bool]($ConfigureHotkey -and -not $SkipHotkeySetup)
 
-if ($ConfigureAlacritty -and -not $SkipAlacrittySetup) {
+if ($ConfigureAlacritty -and $SkipAlacrittySetup) {
+    Write-Warn "Both -ConfigureAlacritty and -SkipAlacrittySetup were provided; skipping Alacritty setup"
+}
+if ($ConfigureHotkey -and $SkipHotkeySetup) {
+    Write-Warn "Both -ConfigureHotkey and -SkipHotkeySetup were provided; skipping hotkey setup"
+}
+
+if ($shouldSetupAlacritty) {
     $installedAlacritty = Install-Alacritty
 } else {
     $installedAlacritty = Test-AlacrittyInstalled
     Write-Info "Optional Alacritty setup not requested"
 }
 
-if ($ConfigureHotkey -and -not $SkipHotkeySetup -and $installedAlacritty) {
+if ($shouldSetupHotkey) {
     $configuredHotkey = Install-JcodeHotkey -JcodeExePath $LauncherPath
-} elseif ($ConfigureHotkey -and -not $installedAlacritty) {
-    Write-Warn "Hotkey setup requires Alacritty. Re-run with -ConfigureAlacritty -ConfigureHotkey."
 } else {
     Write-Info "Optional global hotkey setup not requested"
 }
@@ -639,7 +1023,10 @@ if (Test-AlacrittyInstalled) {
 }
 
 if ($configuredHotkey) {
-    Write-Info "Global hotkey ready: Alt+; opens jcode in Alacritty"
+    Write-Info "Global launch keys ready: Alt+; and the Copilot key open jcode"
+    Write-Host ""
+} elseif (-not $ConfigureHotkey) {
+    Write-Info "Optional: run 'jcode setup-hotkey' to configure global launch hotkeys and terminal preferences."
     Write-Host ""
 }
 
@@ -649,4 +1036,9 @@ if (Get-Command jcode -ErrorAction SilentlyContinue) {
     Write-Host "  Open a new terminal window, then run:"
     Write-Host ""
     Write-Host "    jcode" -ForegroundColor Green
+}
+}
+
+if ($env:JCODE_INSTALL_PS1_IMPORT_ONLY -ne "1") {
+    Invoke-JcodeInstall
 }
