@@ -953,6 +953,15 @@ pub struct OpenRouterProvider {
     supports_provider_features: bool,
     supports_model_catalog: bool,
     profile_id: Option<String>,
+    /// True for user-defined named provider profiles from `config.toml`
+    /// (`[providers.<name>]`). False for built-in OpenAI-compatible profiles
+    /// (Cerebras, NVIDIA NIM, ...) constructed via
+    /// `new_openai_compatible_profile_runtime`, and for standard OpenRouter.
+    /// User-defined profiles must always merge their `static_models` with the
+    /// live catalog so explicitly declared `[[providers.<name>.models]]`
+    /// entries survive background catalog refreshes (issue: models disappear
+    /// after 15min soft TTL refresh replaces them).
+    is_user_named_profile: bool,
     /// Explicit `supports_reasoning_effort` override from named-profile config.
     /// `None` means auto-detect (deepseek profile id or DeepSeek-family model).
     reasoning_effort_support: Option<bool>,
@@ -1430,6 +1439,7 @@ impl OpenRouterProvider {
                     jcode_base::config::NamedProviderType::OpenRouter
                 ),
             profile_id: Some(profile_name.to_string()),
+            is_user_named_profile: true,
             reasoning_effort_support: profile.supports_reasoning_effort,
             max_tokens: Self::configured_max_tokens(Some(profile_name)),
             extra_body: Self::resolve_extra_body(
@@ -1631,6 +1641,7 @@ impl OpenRouterProvider {
             supports_provider_features,
             supports_model_catalog,
             profile_id,
+            is_user_named_profile: false,
             reasoning_effort_support: None,
             max_tokens,
             extra_body,
@@ -1672,6 +1683,7 @@ impl OpenRouterProvider {
             supports_provider_features: true,
             supports_model_catalog: true,
             profile_id: None,
+            is_user_named_profile: false,
             reasoning_effort_support: None,
             max_tokens: Self::configured_max_tokens(None),
             extra_body: Self::resolve_extra_body(None, DEFAULT_ENV_FILE),
@@ -1741,6 +1753,7 @@ impl OpenRouterProvider {
             supports_provider_features: false,
             supports_model_catalog: true,
             profile_id: Some(resolved.id.clone()),
+            is_user_named_profile: false,
             reasoning_effort_support: None,
             max_tokens: Self::configured_max_tokens(Some(&resolved.id)),
             extra_body: Self::resolve_extra_body(None, &resolved.env_file),
@@ -1792,7 +1805,14 @@ impl OpenRouterProvider {
         // Preserve static models for OpenRouter itself and for custom/named
         // profiles, where the user supplied the list explicitly and there may be
         // no provider-side catalog contract.
-        self.supports_provider_features || self.profile_id.is_none()
+        //
+        // User-defined named profiles (`[providers.<name>]` in config.toml) must
+        // always merge: their `[[providers.<name>.models]]` entries are explicitly
+        // declared by the user and must survive background catalog refreshes.
+        // Without this, a 15-minute soft-TTL refresh replaces the user's model
+        // list with whatever the live `/models` endpoint returns, making
+        // config-declared models disappear from the picker.
+        self.supports_provider_features || self.profile_id.is_none() || self.is_user_named_profile
     }
 
     pub(crate) fn filter_profile_chat_supported_models(&self, models: Vec<String>) -> Vec<String> {
@@ -1965,6 +1985,7 @@ impl OpenRouterProvider {
                 supports_provider_features: true,
                 supports_model_catalog: true,
                 profile_id: None,
+                is_user_named_profile: false,
                 reasoning_effort_support: None,
                 max_tokens: None,
                 extra_body: None,

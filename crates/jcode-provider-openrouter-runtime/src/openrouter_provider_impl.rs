@@ -749,6 +749,7 @@ impl Provider for OpenRouterProvider {
             supports_provider_features: self.supports_provider_features,
             supports_model_catalog: self.supports_model_catalog,
             profile_id: self.profile_id.clone(),
+            is_user_named_profile: self.is_user_named_profile,
             reasoning_effort_support: self.reasoning_effort_support,
             max_tokens: self.max_tokens,
             extra_body: self.extra_body.clone(),

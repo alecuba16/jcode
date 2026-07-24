@@ -301,6 +301,84 @@ fn named_openai_compatible_provider_exposes_static_models_as_routes() {
     }));
 }
 
+/// Regression test: user-defined named provider profiles from config.toml
+/// must keep their explicitly declared `[[providers.<name>.models]]` entries
+/// visible in `available_models_display` even after a live `/models` catalog
+/// has been fetched that does not contain them.
+///
+/// Without the `is_user_named_profile` flag, `should_merge_static_models_with_live_catalog`
+/// returns false for named profiles with `supports_provider_features = false`, so the
+/// 15-minute background catalog refresh replaces the user's static model list with the
+/// live catalog, making config-declared models disappear from the picker.
+#[test]
+fn named_profile_static_models_survive_live_catalog_refresh() {
+    let _lock = ENV_LOCK.lock();
+    let temp = TempDir::new().expect("create temp home");
+    let _home = EnvVarGuard::set("HOME", temp.path());
+    let _appdata = EnvVarGuard::set("APPDATA", temp.path().join("AppData").join("Roaming"));
+    let _namespace = EnvVarGuard::set(
+        "JCODE_OPENROUTER_CACHE_NAMESPACE",
+        "test-named-profile-static-survive-live-refresh",
+    );
+    let _key = EnvVarGuard::set("TEST_NAMED_SURVIVE_KEY", "test-key");
+
+    // Live catalog returns two models that are NOT in the user's static list.
+    let (api_base, _request_rx) = spawn_single_response_models_server(
+        r#"{
+        "object": "list",
+        "data": [
+            {"id": "live-model-a", "object": "model"},
+            {"id": "live-model-b", "object": "model"}
+        ]
+    }"#,
+    );
+
+    let profile = jcode_base::config::NamedProviderConfig {
+        base_url: api_base,
+        api_key_env: Some("TEST_NAMED_SURVIVE_KEY".to_string()),
+        model_catalog: true,
+        default_model: Some("my-custom-model".to_string()),
+        models: vec![jcode_base::config::NamedProviderModelConfig {
+            id: "my-custom-model".to_string(),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+
+    let provider = OpenRouterProvider::new_named_openai_compatible("my-gateway", &profile)
+        .expect("named profile should initialize");
+
+    // Confirm the merge flag is true for user-defined named profiles.
+    assert!(
+        provider.should_merge_static_models_with_live_catalog(),
+        "user-defined named profiles must merge static models with live catalog"
+    );
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+    rt.block_on(provider.refresh_models())
+        .expect("refresh fake model catalog");
+
+    let display = provider.available_models_display();
+
+    // The user's explicitly declared model must still be present.
+    assert!(
+        display.iter().any(|model| model == "my-custom-model"),
+        "user-declared static model must survive live catalog refresh: {display:?}"
+    );
+    // Live catalog models should also be present (merged, not replaced).
+    assert!(
+        display.iter().any(|model| model == "live-model-a"),
+        "live catalog models should be merged in: {display:?}"
+    );
+    assert!(
+        display.iter().any(|model| model == "live-model-b"),
+        "live catalog models should be merged in: {display:?}"
+    );
+}
+
 #[test]
 fn direct_openai_compatible_provider_advertises_image_input_support() {
     let _lock = ENV_LOCK.lock();
@@ -359,6 +437,7 @@ fn named_openai_compatible_provider_uses_per_model_image_input_support() {
 fn direct_deepseek_profile_does_not_advertise_image_input_support() {
     let provider = OpenRouterProvider {
         profile_id: Some("deepseek".to_string()),
+        is_user_named_profile: false,
         supports_provider_features: false,
         ..make_custom_compatible_provider()
     };
@@ -373,6 +452,7 @@ fn direct_deepseek_profile_omits_image_url_parts() {
     let provider = OpenRouterProvider {
         api_base,
         profile_id: Some("deepseek".to_string()),
+        is_user_named_profile: false,
         supports_provider_features: false,
         supports_model_catalog: false,
         ..make_custom_compatible_provider()
@@ -446,6 +526,7 @@ fn interrupted_reasoning_only_assistant_message_is_not_sent_empty() {
     let provider = OpenRouterProvider {
         api_base,
         profile_id: Some("deepseek".to_string()),
+        is_user_named_profile: false,
         supports_provider_features: false,
         supports_model_catalog: false,
         ..make_custom_compatible_provider()
@@ -539,6 +620,7 @@ fn interrupted_reasoning_only_assistant_message_keeps_reasoning_with_content() {
     let provider = OpenRouterProvider {
         api_base,
         profile_id: None,
+        is_user_named_profile: false,
         supports_provider_features: true,
         supports_model_catalog: false,
         ..make_custom_compatible_provider()
@@ -632,6 +714,7 @@ fn kimi_for_coding_tool_call_message_includes_reasoning_content() {
         // The dedicated Kimi coding endpoint is a direct OpenAI-compatible
         // profile (no OpenRouter provider routing features).
         profile_id: Some("kimi".to_string()),
+        is_user_named_profile: false,
         supports_provider_features: false,
         supports_model_catalog: false,
         model: Arc::new(RwLock::new("kimi-for-coding".to_string())),
@@ -1101,6 +1184,7 @@ fn make_provider() -> OpenRouterProvider {
         supports_provider_features: true,
         supports_model_catalog: true,
         profile_id: None,
+        is_user_named_profile: false,
         reasoning_effort_support: None,
         max_tokens: None,
         extra_body: None,
@@ -1130,6 +1214,7 @@ fn make_custom_compatible_provider() -> OpenRouterProvider {
         supports_provider_features: false,
         supports_model_catalog: true,
         profile_id: None,
+        is_user_named_profile: false,
         reasoning_effort_support: None,
         max_tokens: None,
         extra_body: None,
@@ -1207,6 +1292,7 @@ fn spawn_single_response_chat_server() -> (String, mpsc::Receiver<String>) {
 fn direct_deepseek_profile_exposes_max_reasoning_effort() {
     let provider = OpenRouterProvider {
         profile_id: Some("deepseek".to_string()),
+        is_user_named_profile: false,
         supports_provider_features: false,
         ..make_custom_compatible_provider()
     };
@@ -1264,6 +1350,7 @@ fn openrouter_with_openrouter_profile_id_exposes_unified_reasoning_effort() {
     // (regression: /effort failed with "Reasoning effort is not supported").
     let provider = OpenRouterProvider {
         profile_id: Some("openrouter".to_string()),
+        is_user_named_profile: false,
         ..make_provider()
     };
 
@@ -1465,6 +1552,7 @@ fn direct_deepseek_chat_request_sends_reasoning_effort() {
         api_base,
         model: Arc::new(RwLock::new("deepseek-v4-pro".to_string())),
         profile_id: Some("deepseek".to_string()),
+        is_user_named_profile: false,
         supports_provider_features: false,
         supports_model_catalog: false,
         send_openrouter_headers: false,
@@ -1590,6 +1678,7 @@ fn openai_compatible_model_catalog_refresh_calls_models_endpoint_and_updates_dis
         supports_provider_features: false,
         supports_model_catalog: true,
         profile_id: None,
+        is_user_named_profile: false,
         reasoning_effort_support: None,
         static_models: vec!["static-login-flow-fallback".to_string()],
         send_openrouter_headers: false,
@@ -1640,6 +1729,7 @@ fn openai_compatible_model_catalog_refresh_calls_models_endpoint_and_updates_dis
         supports_provider_features: false,
         supports_model_catalog: true,
         profile_id: None,
+        is_user_named_profile: false,
         reasoning_effort_support: None,
         send_openrouter_headers: false,
         ..make_custom_compatible_provider()
@@ -1676,6 +1766,7 @@ fn built_in_openai_compatible_static_models_drop_out_after_live_catalog() {
         supports_provider_features: false,
         supports_model_catalog: true,
         profile_id: Some("cerebras".to_string()),
+        is_user_named_profile: false,
         static_models: vec!["gpt-oss-120b".to_string(), "zai-glm-4.7".to_string()],
         send_openrouter_headers: false,
         ..make_custom_compatible_provider()
@@ -1705,6 +1796,7 @@ fn direct_openai_compatible_static_models_are_marked_as_fallback_before_live_cat
         supports_provider_features: false,
         supports_model_catalog: true,
         profile_id: Some("opencode".to_string()),
+        is_user_named_profile: false,
         static_models: vec!["minimax-m2.7".to_string()],
         send_openrouter_headers: false,
         ..make_custom_compatible_provider()
@@ -1730,6 +1822,7 @@ fn cerebras_live_catalog_models_are_selectable_on_explicit_switch() {
         supports_provider_features: false,
         supports_model_catalog: true,
         profile_id: Some("cerebras".to_string()),
+        is_user_named_profile: false,
         static_models: vec!["gpt-oss-120b".to_string()],
         send_openrouter_headers: false,
         ..make_custom_compatible_provider()
@@ -1865,6 +1958,7 @@ fn named_profile_set_model_strips_own_session_routing_prefix() {
     // upstream API never sees `tokenrouter:MiniMax-M3` (issues #382/#383/#363).
     let provider = OpenRouterProvider {
         profile_id: Some("tokenrouter".to_string()),
+        is_user_named_profile: false,
         supports_provider_features: false,
         supports_model_catalog: false,
         ..make_custom_compatible_provider()
@@ -1884,6 +1978,7 @@ fn named_profile_set_model_strips_other_known_profile_prefix() {
     // reattached under another must still normalize to the bare model id.
     let provider = OpenRouterProvider {
         profile_id: Some("tokenrouter".to_string()),
+        is_user_named_profile: false,
         supports_provider_features: false,
         supports_model_catalog: false,
         ..make_custom_compatible_provider()
@@ -1899,6 +1994,7 @@ fn named_profile_set_model_keeps_builtin_routing_prefixes() {
     // switch the active provider from a saved session.
     let provider = OpenRouterProvider {
         profile_id: Some("tokenrouter".to_string()),
+        is_user_named_profile: false,
         supports_provider_features: false,
         supports_model_catalog: false,
         ..make_custom_compatible_provider()
@@ -1920,6 +2016,7 @@ fn named_profile_set_model_keeps_unknown_prefix_with_colon() {
     // built-in profile must be preserved verbatim (it may be a real model id).
     let provider = OpenRouterProvider {
         profile_id: Some("tokenrouter".to_string()),
+        is_user_named_profile: false,
         supports_provider_features: false,
         supports_model_catalog: false,
         ..make_custom_compatible_provider()
@@ -2928,6 +3025,7 @@ model_catalog = false
     let provider = OpenRouterProvider {
         api_base,
         profile_id: None,
+        is_user_named_profile: false,
         supports_provider_features: false,
         supports_model_catalog: false,
         ..make_custom_compatible_provider()
