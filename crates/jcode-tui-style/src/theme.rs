@@ -1,54 +1,319 @@
 use crate::color;
 use crate::color::rgb;
 use ratatui::prelude::*;
+use serde::Deserialize;
+use std::collections::BTreeMap;
+use std::path::Path;
+use std::sync::{OnceLock, RwLock};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ThemeColor {
+    Background,
+    User,
+    Ai,
+    Tool,
+    FileLink,
+    Dim,
+    Accent,
+    SystemMessage,
+    Queued,
+    Asap,
+    Pending,
+    UserText,
+    UserBg,
+    InputText,
+    InputBg,
+    AiText,
+    Bold,
+    MarkdownText,
+    HeaderIcon,
+    HeaderName,
+    HeaderSession,
+}
+
+#[derive(Debug, Clone)]
+pub struct Theme {
+    name: String,
+    colors: BTreeMap<ThemeColor, Color>,
+}
+
+impl Theme {
+    fn new(name: impl Into<String>, colors: BTreeMap<ThemeColor, Color>) -> Self {
+        Self {
+            name: name.into(),
+            colors,
+        }
+    }
+
+    fn color(&self, key: ThemeColor) -> Color {
+        self.colors.get(&key).copied().unwrap_or(Color::Reset)
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct ThemeFile {
+    colors: BTreeMap<String, String>,
+}
+
+const BUILTIN_THEMES: &[&str] = &["system", "light", "dark"];
+static ACTIVE_THEME: OnceLock<RwLock<Theme>> = OnceLock::new();
+
+fn active_theme() -> &'static RwLock<Theme> {
+    ACTIVE_THEME.get_or_init(|| RwLock::new(system_theme()))
+}
+
+pub fn active_theme_name() -> String {
+    active_theme()
+        .read()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .name()
+        .to_string()
+}
+
+/// Whether the active palette should be post-processed by the terminal
+/// light/dark adapter from `theme_mode`.
+///
+/// `system` and `light` reuse jcode's native palette plus master's rendered
+/// buffer adapter. Custom TOML themes are explicit palettes, so adapting them
+/// again would surprise users and can invert hand-picked colors.
+pub fn active_theme_uses_terminal_adaptation() -> bool {
+    let name = active_theme_name();
+    name.eq_ignore_ascii_case("system") || name.eq_ignore_ascii_case("light")
+}
+
+pub fn set_theme(name: &str, themes_dir: Option<&Path>) -> anyhow::Result<()> {
+    let theme = load_theme(name, themes_dir)?;
+    *active_theme()
+        .write()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = theme;
+    Ok(())
+}
+
+pub fn load_theme(name: &str, themes_dir: Option<&Path>) -> anyhow::Result<Theme> {
+    let name = name.trim();
+    match name.to_ascii_lowercase().as_str() {
+        "" | "auto" | "system" => Ok(system_theme()),
+        "light" => Ok(system_palette_named("light")),
+        "dark" => Ok(dark_theme()),
+        _ => load_custom_theme(name, themes_dir),
+    }
+}
+
+pub fn available_theme_names(themes_dir: Option<&Path>) -> Vec<String> {
+    let mut names = BUILTIN_THEMES
+        .iter()
+        .map(|name| (*name).to_string())
+        .collect::<Vec<_>>();
+    if let Some(dir) = themes_dir
+        && let Ok(entries) = std::fs::read_dir(dir)
+    {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|ext| ext.to_str()) != Some("toml") {
+                continue;
+            }
+            let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) else {
+                continue;
+            };
+            if !is_safe_custom_theme_name(stem) {
+                continue;
+            }
+            if !names.iter().any(|name| name == stem) {
+                names.push(stem.to_string());
+            }
+        }
+    }
+    names
+}
+
+fn themed_color(key: ThemeColor) -> Color {
+    active_theme()
+        .read()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .color(key)
+}
+
+fn load_custom_theme(name: &str, themes_dir: Option<&Path>) -> anyhow::Result<Theme> {
+    if !is_safe_custom_theme_name(name) {
+        anyhow::bail!(
+            "Invalid theme name '{}': use only ASCII letters, numbers, '-' or '_'",
+            name
+        );
+    }
+    let dir = themes_dir.ok_or_else(|| anyhow::anyhow!("No themes directory configured"))?;
+    let path = dir.join(format!("{name}.toml"));
+    let content = std::fs::read_to_string(&path)
+        .map_err(|e| anyhow::anyhow!("Failed to read theme {}: {}", path.display(), e))?;
+    let file: ThemeFile = toml::from_str(&content)
+        .map_err(|e| anyhow::anyhow!("Failed to parse theme {}: {}", path.display(), e))?;
+
+    let mut theme = system_palette_named(name);
+    for (raw_key, raw_value) in file.colors {
+        let key = parse_theme_color(&raw_key).ok_or_else(|| {
+            anyhow::anyhow!("Unknown theme color '{}': {}", raw_key, path.display())
+        })?;
+        let value = parse_color(&raw_value).ok_or_else(|| {
+            anyhow::anyhow!("Invalid theme color '{}': {}", raw_value, path.display())
+        })?;
+        theme.colors.insert(key, value);
+    }
+    Ok(theme)
+}
+
+fn is_safe_custom_theme_name(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
+fn parse_theme_color(raw: &str) -> Option<ThemeColor> {
+    match raw.trim().replace('-', "_").to_ascii_lowercase().as_str() {
+        "background" | "background_color" | "app_bg" | "app_background" => {
+            Some(ThemeColor::Background)
+        }
+        "user" | "user_color" => Some(ThemeColor::User),
+        "ai" | "ai_color" => Some(ThemeColor::Ai),
+        "tool" | "tool_color" => Some(ThemeColor::Tool),
+        "file_link" | "file_link_color" => Some(ThemeColor::FileLink),
+        "dim" | "dim_color" => Some(ThemeColor::Dim),
+        "accent" | "accent_color" => Some(ThemeColor::Accent),
+        "system_message" | "system_message_color" => Some(ThemeColor::SystemMessage),
+        "queued" | "queued_color" => Some(ThemeColor::Queued),
+        "asap" | "asap_color" => Some(ThemeColor::Asap),
+        "pending" | "pending_color" => Some(ThemeColor::Pending),
+        "user_text" => Some(ThemeColor::UserText),
+        "user_bg" => Some(ThemeColor::UserBg),
+        "input_text" => Some(ThemeColor::InputText),
+        "input_bg" => Some(ThemeColor::InputBg),
+        "ai_text" => Some(ThemeColor::AiText),
+        "bold" | "bold_color" => Some(ThemeColor::Bold),
+        "markdown_text" | "md_text" => Some(ThemeColor::MarkdownText),
+        "header_icon" | "header_icon_color" => Some(ThemeColor::HeaderIcon),
+        "header_name" | "header_name_color" => Some(ThemeColor::HeaderName),
+        "header_session" | "header_session_color" => Some(ThemeColor::HeaderSession),
+        _ => None,
+    }
+}
+
+fn parse_color(raw: &str) -> Option<Color> {
+    let raw = raw.trim();
+    if raw.eq_ignore_ascii_case("reset") || raw.eq_ignore_ascii_case("default") {
+        return Some(Color::Reset);
+    }
+    let hex = raw.strip_prefix('#')?;
+    if hex.len() != 6 {
+        return None;
+    }
+    let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
+    let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
+    let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
+    Some(Color::Rgb(r, g, b))
+}
+
+fn system_theme() -> Theme {
+    system_palette_named("system")
+}
+
+fn system_palette_named(name: &str) -> Theme {
+    Theme::new(
+        name,
+        BTreeMap::from([
+            (ThemeColor::Background, Color::Reset),
+            (ThemeColor::User, rgb(138, 180, 248)),
+            (ThemeColor::Ai, rgb(129, 199, 132)),
+            (ThemeColor::Tool, rgb(120, 120, 120)),
+            (ThemeColor::FileLink, rgb(180, 200, 255)),
+            (ThemeColor::Dim, rgb(80, 80, 80)),
+            (ThemeColor::Accent, rgb(186, 139, 255)),
+            (ThemeColor::SystemMessage, rgb(255, 170, 220)),
+            (ThemeColor::Queued, rgb(255, 193, 7)),
+            (ThemeColor::Asap, rgb(110, 210, 255)),
+            (ThemeColor::Pending, rgb(140, 140, 140)),
+            (ThemeColor::UserText, rgb(245, 245, 255)),
+            (ThemeColor::UserBg, rgb(35, 40, 50)),
+            (ThemeColor::InputText, Color::Reset),
+            (ThemeColor::InputBg, Color::Reset),
+            (ThemeColor::AiText, rgb(220, 220, 215)),
+            (ThemeColor::Bold, rgb(240, 240, 235)),
+            (ThemeColor::MarkdownText, rgb(200, 200, 195)),
+            (ThemeColor::HeaderIcon, rgb(120, 210, 230)),
+            (ThemeColor::HeaderName, rgb(190, 210, 235)),
+            (ThemeColor::HeaderSession, rgb(255, 255, 255)),
+        ]),
+    )
+}
+
+fn dark_theme() -> Theme {
+    system_palette_named("dark")
+}
 
 pub fn user_color() -> Color {
-    rgb(138, 180, 248)
+    themed_color(ThemeColor::User)
+}
+pub fn background_color() -> Color {
+    themed_color(ThemeColor::Background)
 }
 pub fn ai_color() -> Color {
-    rgb(129, 199, 132)
+    themed_color(ThemeColor::Ai)
 }
 pub fn tool_color() -> Color {
-    rgb(120, 120, 120)
+    themed_color(ThemeColor::Tool)
 }
 pub fn file_link_color() -> Color {
-    rgb(180, 200, 255)
+    themed_color(ThemeColor::FileLink)
 }
 pub fn dim_color() -> Color {
-    rgb(80, 80, 80)
+    themed_color(ThemeColor::Dim)
 }
 pub fn accent_color() -> Color {
-    rgb(186, 139, 255)
+    themed_color(ThemeColor::Accent)
 }
 pub fn system_message_color() -> Color {
-    rgb(255, 170, 220)
+    themed_color(ThemeColor::SystemMessage)
 }
 pub fn queued_color() -> Color {
-    rgb(255, 193, 7)
+    themed_color(ThemeColor::Queued)
 }
 pub fn asap_color() -> Color {
-    rgb(110, 210, 255)
+    themed_color(ThemeColor::Asap)
 }
 pub fn pending_color() -> Color {
-    rgb(140, 140, 140)
+    themed_color(ThemeColor::Pending)
 }
 pub fn user_text() -> Color {
-    rgb(245, 245, 255)
+    themed_color(ThemeColor::UserText)
 }
 pub fn user_bg() -> Color {
-    rgb(35, 40, 50)
+    themed_color(ThemeColor::UserBg)
+}
+pub fn input_text() -> Color {
+    themed_color(ThemeColor::InputText)
+}
+pub fn input_bg() -> Color {
+    themed_color(ThemeColor::InputBg)
 }
 pub fn ai_text() -> Color {
-    rgb(220, 220, 215)
+    themed_color(ThemeColor::AiText)
+}
+pub fn bold_color() -> Color {
+    themed_color(ThemeColor::Bold)
+}
+pub fn markdown_text_color() -> Color {
+    themed_color(ThemeColor::MarkdownText)
 }
 pub fn header_icon_color() -> Color {
-    rgb(120, 210, 230)
+    themed_color(ThemeColor::HeaderIcon)
 }
 pub fn header_name_color() -> Color {
-    rgb(190, 210, 235)
+    themed_color(ThemeColor::HeaderName)
 }
 pub fn header_session_color() -> Color {
-    rgb(255, 255, 255)
+    themed_color(ThemeColor::HeaderSession)
 }
 
 // Spinner frames for animated status. Keep these single-cell because the fast
@@ -218,6 +483,45 @@ pub fn animated_tool_color(elapsed: f32, enable_decorative_animations: bool) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn loads_custom_theme_from_toml() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            temp.path().join("solar.toml"),
+            "[colors]\nuser = \"#010203\"\nmarkdown_text = \"#0A0B0C\"\ninput_bg = \"reset\"\n",
+        )
+        .expect("write theme");
+
+        let theme = load_theme("solar", Some(temp.path())).expect("load custom theme");
+        assert_eq!(theme.name(), "solar");
+        assert_eq!(theme.color(ThemeColor::User), Color::Rgb(1, 2, 3));
+        assert_eq!(
+            theme.color(ThemeColor::MarkdownText),
+            Color::Rgb(10, 11, 12)
+        );
+        assert_eq!(theme.color(ThemeColor::InputBg), Color::Reset);
+    }
+
+    #[test]
+    fn rejects_unsafe_custom_theme_names() {
+        assert!(load_theme("../bad", Some(Path::new("/tmp"))).is_err());
+    }
+
+    #[test]
+    fn lists_builtin_and_safe_custom_theme_names() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        std::fs::write(temp.path().join("ocean.toml"), "[colors]\n").expect("write theme");
+        std::fs::write(temp.path().join("bad.name.toml"), "[colors]\n")
+            .expect("write invalid theme name");
+        std::fs::write(temp.path().join("notes.txt"), "ignored").expect("write txt");
+
+        let names = available_theme_names(Some(temp.path()));
+        assert!(names.contains(&"system".to_string()));
+        assert!(names.contains(&"light".to_string()));
+        assert!(names.contains(&"dark".to_string()));
+        assert!(names.contains(&"ocean".to_string()));
+    }
 
     #[test]
     fn spinner_frames_are_circular_braille_sequence() {

@@ -2362,7 +2362,9 @@ impl SessionPicker {
                 self.render(frame);
                 // Standalone picker loop bypasses `ui::draw`; adapt for light
                 // terminal themes here (no-op on dark).
-                jcode_tui_style::adapt_buffer_for_theme(frame.buffer_mut());
+                if jcode_tui_style::theme::active_theme_uses_terminal_adaptation() {
+                    jcode_tui_style::adapt_buffer_for_theme(frame.buffer_mut());
+                }
                 crate::tui::ui::adapt_buffer_for_emoji_preference(frame.buffer_mut());
             })?;
             if event::poll(Duration::from_millis(100))? {

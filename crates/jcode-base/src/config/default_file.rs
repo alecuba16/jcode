@@ -118,6 +118,10 @@ diff_mode = "inline"
 # Center all content by default (default: false)
 centered = false
 
+# TUI color theme: "auto"/"system" (detect terminal background), "light", "dark",
+# or a custom theme file name from ~/.jcode/themes/<name>.toml.
+theme = "auto"
+
 # Pin read images to a side pane (default: true)
 pin_images = true
 

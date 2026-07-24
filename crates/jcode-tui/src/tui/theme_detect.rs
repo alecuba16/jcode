@@ -3,7 +3,7 @@
 //! Resolves the theme mode once per process, before the TUI enters raw mode:
 //!
 //! 1. `JCODE_THEME=dark|light` env override (also accepts `auto`).
-//! 2. `display.theme` config: "dark", "light", or "auto"/empty.
+//! 2. `display.theme` config: "dark", "light", "system", custom name, or "auto"/empty.
 //! 3. Auto: query the terminal's background color (OSC 11 via
 //!    `terminal-colorsaurus`) and classify by perceived lightness. Terminals
 //!    known not to support OSC queries are rejected before the bounded query so
@@ -22,6 +22,7 @@ static DETECTED: OnceLock<ThemeMode> = OnceLock::new();
 /// the (potentially blocking, sub-second) terminal query and later calls are
 /// free. Must be called before entering raw mode / the alternate screen.
 pub fn init_theme_mode() -> ThemeMode {
+    apply_configured_palette();
     let mode = *DETECTED.get_or_init(resolve_theme_mode);
     jcode_tui_style::set_theme_mode(mode);
     mode
@@ -35,6 +36,7 @@ pub fn init_theme_mode() -> ThemeMode {
 /// input. Prefer the theme captured by the previous process and otherwise resolve
 /// configuration without querying the terminal.
 pub fn init_theme_mode_for_resume(inherited_theme: Option<&str>) -> ThemeMode {
+    apply_configured_palette();
     let inherited_theme = inherited_theme.and_then(|value| match value {
         "dark" => Some(ThemeMode::Dark),
         "light" => Some(ThemeMode::Light),
@@ -61,19 +63,48 @@ fn resolve_theme_mode_without_terminal_query() -> ThemeMode {
     resolve_configured_theme(false)
 }
 
-fn resolve_configured_theme(query_terminal: bool) -> ThemeMode {
-    let configured = std::env::var("JCODE_THEME")
+fn configured_theme_name() -> String {
+    std::env::var("JCODE_THEME")
         .ok()
         .filter(|v| !v.trim().is_empty())
-        .unwrap_or_else(|| crate::config::config().display.theme.clone());
+        .unwrap_or_else(|| crate::config::config().display.theme.clone())
+}
+
+fn theme_dir() -> Option<std::path::PathBuf> {
+    crate::storage::app_config_dir()
+        .ok()
+        .map(|dir| dir.join("themes"))
+}
+
+fn palette_name(configured: &str) -> &str {
+    match configured.trim() {
+        "" | "auto" => "system",
+        other => other,
+    }
+}
+
+pub(crate) fn apply_configured_palette() {
+    let configured = configured_theme_name();
+    let dir = theme_dir();
+    let name = palette_name(&configured);
+    if let Err(err) = jcode_tui_style::theme::set_theme(name, dir.as_deref()) {
+        crate::logging::info(&format!(
+            "Failed to load theme '{name}' ({err:#}); using system theme"
+        ));
+        let _ = jcode_tui_style::theme::set_theme("system", None);
+    }
+}
+
+fn resolve_configured_theme(query_terminal: bool) -> ThemeMode {
+    let configured = configured_theme_name();
 
     match configured.trim().to_ascii_lowercase().as_str() {
         "dark" => return ThemeMode::Dark,
         "light" => return ThemeMode::Light,
-        "" | "auto" => {}
+        "" | "auto" | "system" => {}
         other => {
             crate::logging::info(&format!(
-                "Unknown theme '{other}' (expected auto/dark/light); using auto detection"
+                "Custom theme '{other}' selected; using terminal background detection only when palette allows it"
             ));
         }
     }

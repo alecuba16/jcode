@@ -498,10 +498,10 @@ fn html_fg() -> Color {
     rgb(140, 140, 150)
 }
 fn text_color() -> Color {
-    rgb(200, 200, 195)
+    jcode_tui_style::theme::markdown_text_color()
 }
 fn bold_color() -> Color {
-    rgb(240, 240, 235)
+    jcode_tui_style::theme::bold_color()
 }
 fn heading_h1_color() -> Color {
     rgb(255, 215, 100)
