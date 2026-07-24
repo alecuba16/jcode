@@ -1763,6 +1763,12 @@ impl App {
     /// bottom). Reveals the elastic status line below the input and (re)starts
     /// the dwell window after which it rebounds away. Only meaningful in the
     /// `overscroll` mode; `off` never shows the line and `on` always does.
+    /// Refresh the cached overscroll mode from the live config so config
+    /// file changes take effect without a restart. Called on tick.
+    pub(super) fn refresh_overscroll_mode(&mut self) {
+        self.overscroll_status_mode = crate::config::config().display.overscroll_status;
+    }
+
     pub(super) fn register_chat_overscroll(&mut self) {
         if matches!(
             self.overscroll_status_mode,

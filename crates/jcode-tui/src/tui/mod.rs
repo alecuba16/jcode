@@ -1894,6 +1894,9 @@ pub fn prewarm_focused_side_panel(
 }
 
 #[cfg(test)]
+mod preview_test;
+
+#[cfg(test)]
 mod tests {
     use super::{
         CacheTtlInfo, KvCacheProblemKind, connection_type_icon, detect_kv_cache_problem,

@@ -1665,6 +1665,9 @@ fn test_click_on_swarm_expand_badge_toggles_tldr_collapse() {
     app.is_processing = false;
     app.status = ProcessingStatus::Idle;
     app.session.short_name = Some("test".to_string());
+    // Disable the status line so the fixed Overview widget doesn't cover
+    // transcript content that this test needs to click on.
+    app.overscroll_status_mode = crate::config::OverscrollStatusMode::Off;
 
     let backend = ratatui::backend::TestBackend::new(90, 30);
     let mut terminal = ratatui::Terminal::new(backend).expect("failed to create test terminal");

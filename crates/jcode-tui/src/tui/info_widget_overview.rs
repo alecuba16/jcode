@@ -104,6 +104,10 @@ pub(crate) fn compute_page_layout(
 }
 
 fn compact_context_height(data: &InfoWidgetData) -> u16 {
+    if data.status_line_active {
+        // Only the "updating..." stale indicator is shown.
+        return u16::from(data.context_info_stale);
+    }
     if let Some(info) = &data.context_info
         && info.total_chars > 0
     {
@@ -126,6 +130,33 @@ fn compact_memory_height(data: &InfoWidgetData) -> u16 {
 }
 
 fn compact_model_height(data: &InfoWidgetData) -> u16 {
+    if data.status_line_active {
+        // Count only supplementary lines (service tier, compaction, session).
+        if !data.has_model_supplementary_info() {
+            return 0;
+        }
+        let mut lines = 0u16;
+        if data
+            .service_tier
+            .as_deref()
+            .map(|s| !s.trim().is_empty() && s != "off" && s != "default")
+            .unwrap_or(false)
+        {
+            lines += 1;
+        }
+        if data.native_compaction_mode.is_some() {
+            lines += 1;
+        }
+        let has_session_line = data.session_count.is_some()
+            || data
+                .session_name
+                .as_deref()
+                .is_some_and(|s| !s.trim().is_empty());
+        if has_session_line {
+            lines += 1;
+        }
+        return lines;
+    }
     if data.model.is_some() {
         let mut lines = 1u16;
         let has_provider = data
@@ -167,6 +198,16 @@ fn compact_usage_height(data: &InfoWidgetData) -> u16 {
     if let Some(info) = &data.usage_info
         && info.available
     {
+        // When the status line is active, CostBased/Copilot are shown there;
+        // only OAuth subscription bars remain.
+        if data.status_line_active
+            && matches!(
+                info.provider,
+                UsageProvider::CostBased | UsageProvider::Copilot
+            )
+        {
+            return 0;
+        }
         // Must mirror render_usage_compact exactly, otherwise the compact
         // overview page either clips its last lines or reserves blank rows.
         if matches!(info.provider, UsageProvider::CostBased) {
@@ -186,7 +227,19 @@ fn compact_usage_height(data: &InfoWidgetData) -> u16 {
 }
 
 fn compact_kv_cache_height(data: &InfoWidgetData) -> u16 {
-    if data.cache_hit_info.is_some() { 1 } else { 0 }
+    // KV cache is never in the status line, always render when present.
+    // Base line (yield + session) = 1, plus 1 if last request stats exist.
+    if let Some(cache) = &data.cache_hit_info {
+        let has_last = cache.last_read_tokens.is_some()
+            || cache.last_reported_input_tokens.is_some();
+        1 + u16::from(has_last)
+    } else {
+        0
+    }
+}
+
+fn compact_compaction_height(data: &InfoWidgetData) -> u16 {
+    if data.compaction_info.is_some() { 2 } else { 0 }
 }
 
 fn compact_git_height(data: &InfoWidgetData) -> u16 {
@@ -198,6 +251,52 @@ fn compact_git_height(data: &InfoWidgetData) -> u16 {
     0
 }
 
+fn compact_mcp_height(data: &InfoWidgetData) -> u16 {
+    if data.mcp_servers.is_empty() {
+        return 0;
+    }
+    // Multi-line: 1 header + 1 per server when too long for single line
+    let w = 38usize; // inner width approximation
+    let full_parts: Vec<String> = data
+        .mcp_servers
+        .iter()
+        .map(|(name, count)| {
+            if *count > 0 {
+                format!("{} ({} tools)", name, count)
+            } else {
+                format!("{} (...)", name)
+            }
+        })
+        .collect();
+    let full = format!("mcp: {}", full_parts.join(", "));
+    if full.chars().count() <= w {
+        return 1;
+    }
+    let short_parts: Vec<String> = data
+        .mcp_servers
+        .iter()
+        .map(|(name, count)| {
+            if *count > 0 {
+                format!("{}({})", name, count)
+            } else {
+                format!("{}(…)", name)
+            }
+        })
+        .collect();
+    let short = format!("mcp: {}", short_parts.join(" "));
+    if short.chars().count() <= w {
+        return 1;
+    }
+    1 + data.mcp_servers.len() as u16
+}
+
+fn compact_skills_height(data: &InfoWidgetData) -> u16 {
+    if data.available_skills.is_empty() {
+        return 0;
+    }
+    1 + data.available_skills.len() as u16
+}
+
 fn compact_overview_height(data: &InfoWidgetData) -> u16 {
     compact_model_height(data)
         + compact_context_height(data)
@@ -206,7 +305,10 @@ fn compact_overview_height(data: &InfoWidgetData) -> u16 {
         + compact_background_height(data)
         + compact_usage_height(data)
         + compact_kv_cache_height(data)
+        + compact_compaction_height(data)
         + compact_git_height(data)
+        + compact_mcp_height(data)
+        + compact_skills_height(data)
 }
 
 fn expanded_todos_height(data: &InfoWidgetData) -> u16 {

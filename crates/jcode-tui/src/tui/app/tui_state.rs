@@ -1589,6 +1589,10 @@ impl crate::tui::TuiState for App {
                 false
             },
             git_info: gather_git_info(),
+            status_line_active: self.chat_overscroll_active(),
+            status_line_pinned: self.chat_overscroll_pinned(),
+            mcp_servers: self.mcp_servers(),
+            available_skills: self.available_skills(),
         }
     }
 

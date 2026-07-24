@@ -134,9 +134,9 @@ pub enum OverscrollStatusMode {
     /// Never show the status line.
     Off,
     /// Always show the status line below the input.
-    On,
-    /// Elastic reveal: show it briefly when scrolling past the bottom (default).
     #[default]
+    On,
+    /// Elastic reveal: show it briefly when scrolling past the bottom.
     Overscroll,
 }
 
@@ -1087,8 +1087,8 @@ pub struct DisplayConfig {
     #[serde(default)]
     pub active_sessions_manager: bool,
     /// When to show the overscroll status line below the input
-    /// (off/on/overscroll, default: overscroll). "overscroll" is the elastic
-    /// reveal when scrolling past the bottom, "on" keeps it always visible.
+    /// (off/on/overscroll, default: on). "on" keeps it always visible,
+    /// "overscroll" is the elastic reveal when scrolling past the bottom.
     #[serde(default)]
     pub overscroll_status: OverscrollStatusMode,
 }

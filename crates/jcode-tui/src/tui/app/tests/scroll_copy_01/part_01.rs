@@ -66,6 +66,11 @@ fn create_scroll_test_app(
     app.status = ProcessingStatus::Idle;
     // Set deterministic session name for snapshot stability
     app.session.short_name = Some("test".to_string());
+    // Scroll tests exercise the elastic overscroll reveal, which only
+    // triggers in Overscroll mode. The config default is On (always visible),
+    // which would make chat_overscroll_active() always true and break the
+    // elastic-behavior assertions.
+    app.overscroll_status_mode = crate::config::OverscrollStatusMode::Overscroll;
 
     let backend = ratatui::backend::TestBackend::new(width, height);
     let terminal = ratatui::Terminal::new(backend).expect("failed to create test terminal");
@@ -99,6 +104,7 @@ fn create_copy_test_app() -> (App, ratatui::Terminal<ratatui::backend::TestBacke
     app.streaming.streaming_text.clear();
     app.status = ProcessingStatus::Idle;
     app.session.short_name = Some("test".to_string());
+    app.overscroll_status_mode = crate::config::OverscrollStatusMode::Off;
 
     let backend = ratatui::backend::TestBackend::new(100, 30);
     let terminal = ratatui::Terminal::new(backend).expect("failed to create test terminal");
@@ -133,6 +139,7 @@ fn create_blockquote_copy_test_app() -> (App, ratatui::Terminal<ratatui::backend
     app.streaming.streaming_text.clear();
     app.status = ProcessingStatus::Idle;
     app.session.short_name = Some("test".to_string());
+    app.overscroll_status_mode = crate::config::OverscrollStatusMode::Off;
 
     let backend = ratatui::backend::TestBackend::new(100, 30);
     let terminal = ratatui::Terminal::new(backend).expect("failed to create test terminal");
@@ -152,6 +159,9 @@ fn create_error_copy_test_app() -> (App, ratatui::Terminal<ratatui::backend::Tes
     app.streaming.streaming_text.clear();
     app.status = ProcessingStatus::Idle;
     app.session.short_name = Some("test".to_string());
+    // Disable the status line so the fixed Overview widget doesn't cover
+    // transcript content that error/copy badge tests need to see.
+    app.overscroll_status_mode = crate::config::OverscrollStatusMode::Off;
 
     let backend = ratatui::backend::TestBackend::new(100, 30);
     let terminal = ratatui::Terminal::new(backend).expect("failed to create test terminal");
@@ -178,6 +188,7 @@ fn create_tool_error_copy_test_app() -> (App, ratatui::Terminal<ratatui::backend
     app.streaming.streaming_text.clear();
     app.status = ProcessingStatus::Idle;
     app.session.short_name = Some("test".to_string());
+    app.overscroll_status_mode = crate::config::OverscrollStatusMode::Off;
 
     let backend = ratatui::backend::TestBackend::new(100, 30);
     let terminal = ratatui::Terminal::new(backend).expect("failed to create test terminal");
@@ -205,6 +216,7 @@ fn create_tool_failed_output_copy_test_app()
     app.streaming.streaming_text.clear();
     app.status = ProcessingStatus::Idle;
     app.session.short_name = Some("test".to_string());
+    app.overscroll_status_mode = crate::config::OverscrollStatusMode::Off;
 
     let backend = ratatui::backend::TestBackend::new(100, 30);
     let terminal = ratatui::Terminal::new(backend).expect("failed to create test terminal");

@@ -8,6 +8,12 @@ pub(super) fn render_model_widget(data: &InfoWidgetData, inner: Rect) -> Vec<Lin
         return Vec::new();
     };
 
+    // When the status line is active, the model name, provider, auth, TPS and
+    // working dir are shown there. Render only the supplementary fields.
+    if data.status_line_active {
+        return render_model_info_supplementary(data, inner);
+    }
+
     let mut lines: Vec<Line> = Vec::new();
 
     let short_name = crate::tui::session_facts::pretty_model(model);
@@ -281,6 +287,67 @@ pub(super) fn render_model_info(data: &InfoWidgetData, inner: Rect) -> Vec<Line<
     lines
 }
 
+/// Render only the supplementary model info not shown in the status line:
+/// service tier, native compaction, session count/name. Used when
+/// `status_line_active` suppresses the full `render_model_info`.
+pub(super) fn render_model_info_supplementary(
+    data: &InfoWidgetData,
+    inner: Rect,
+) -> Vec<Line<'static>> {
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    let max_len = inner.width.saturating_sub(2) as usize;
+
+    // Service tier (e.g. "fast", "flex").
+    if let Some(tier) = data.service_tier.as_deref().and_then(short_service_tier) {
+        lines.push(Line::from(vec![
+            Span::styled("⚡ ", Style::default().fg(rgb(140, 180, 255))),
+            Span::styled(
+                format!("[{tier}]"),
+                Style::default().fg(rgb(200, 140, 255)).bold(),
+            ),
+        ]));
+    }
+
+    // Native compaction mode.
+    if let Some(mode) = &data.native_compaction_mode {
+        let label = if let Some(tokens) = data.native_compaction_threshold_tokens {
+            format!("native {} @ {}k", mode, tokens / 1000)
+        } else {
+            format!("native {}", mode)
+        };
+        lines.push(Line::from(vec![
+            Span::styled("📦 ", Style::default().fg(rgb(120, 210, 230))),
+            Span::styled(label, Style::default().fg(rgb(120, 210, 230))),
+        ]));
+    }
+
+    // Session count / name.
+    if data.session_count.is_some() || data.session_name.is_some() {
+        let mut parts = Vec::new();
+        if let Some(sessions) = data.session_count {
+            parts.push(format!(
+                "{} session{}",
+                sessions,
+                if sessions == 1 { "" } else { "s" }
+            ));
+        }
+        if let Some(name) = data.session_name.as_deref()
+            && !name.trim().is_empty()
+        {
+            parts.push(name.to_string());
+        }
+        if !parts.is_empty() {
+            let detail = truncate_smart(&parts.join(" · "), max_len.saturating_sub(2));
+            lines.push(Line::from(vec![Span::styled(
+                detail,
+                Style::default().fg(rgb(140, 140, 150)),
+            )]));
+        }
+    }
+
+    lines
+}
+
 #[allow(dead_code)] // Retained for status-bar model rendering; currently unused after a layout change.
 pub(crate) fn shorten_model_name(model: &str) -> String {
     if model.contains("claude") {
@@ -419,6 +486,10 @@ mod tests {
             compaction_info: None,
             is_compacting: false,
             git_info: None,
+            status_line_active: false,
+            status_line_pinned: false,
+            mcp_servers: Vec::new(),
+            available_skills: Vec::new(),
         }
     }
 

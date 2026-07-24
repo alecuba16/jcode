@@ -80,7 +80,7 @@ fn kv_cache_widget_shows_session_hit_ratio() {
     let lines = render_kv_cache_widget(&data, Rect::new(0, 0, 40, 5));
     let text = lines_text(&lines);
 
-    assert_eq!(lines.len(), 4);
+    assert_eq!(lines.len(), 5);
     assert!(text.contains("KV cache:"));
     assert!(text.contains("yield "));
     assert!(text.contains("90%"));

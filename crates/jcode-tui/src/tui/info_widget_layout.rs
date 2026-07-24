@@ -9,8 +9,9 @@ use std::collections::HashSet;
 const MIN_WIDGET_WIDTH: u16 = 24;
 /// Maximum width the widget can take.
 const MAX_WIDGET_WIDTH: u16 = 40;
-/// Minimum height needed to show the widget.
-const MIN_WIDGET_HEIGHT: u16 = 5;
+/// Minimum height needed to show the widget. Most widgets need 3+ rows
+/// (border + content), but supplementary-only widgets can be 1 line.
+const MIN_WIDGET_HEIGHT: u16 = 3;
 /// How many consecutive frames a widget may stay hidden-in-place before its
 /// anchor is abandoned and Phase 2 is allowed to re-home it elsewhere.
 ///
@@ -221,7 +222,45 @@ pub(crate) fn calculate_placements_anchored(
     // narrows and *grows back* with hysteresis, so the left edge does not jitter.
     for anchor in ordered_anchors {
         let prev = &anchor.placement;
-        if !available.contains(&prev.kind) || prev.rect.height <= 2 {
+        if prev.rect.height <= 2 {
+            continue;
+        }
+        // When the widget briefly has no data (e.g. git status recalculates and
+        // flips is_interesting() false for a frame, or context drops to zero
+        // during compaction), don't discard the anchor. Keep it hidden-in-place
+        // so when data returns the widget snaps back to the same slot instead of
+        // being re-homed by Phase 2 into a different position (jumping).
+        if !available.contains(&prev.kind) {
+            let hidden_frames = anchor.hidden_frames.saturating_add(1);
+            if hidden_frames <= MAX_HIDDEN_FRAMES {
+                anchored.insert(prev.kind);
+                next_anchors.push(WidgetAnchor {
+                    placement: prev.clone(),
+                    hidden_frames,
+                    content_top: anchor.content_top,
+                });
+                // Still reserve the rows so Phase 2 doesn't drop another widget
+                // into the slot this widget will reclaim when its data returns.
+                let height = prev.rect.height as usize;
+                let row_start = if margins.content_anchored {
+                    if anchor.content_top < margins.scroll_top {
+                        continue;
+                    }
+                    anchor.content_top - margins.scroll_top
+                } else if prev.rect.y >= messages_area.y {
+                    (prev.rect.y - messages_area.y) as usize
+                } else {
+                    continue;
+                };
+                let row_end = row_start + height;
+                let widths = match prev.side {
+                    Side::Right => &margins.right_widths,
+                    Side::Left => &margins.left_widths,
+                };
+                if row_end <= widths.len() && row_end <= messages_area.height as usize {
+                    reserve_rows(&mut all_rects, prev.side, row_start, row_end);
+                }
+            }
             continue;
         }
         if overview_active && is_overview_mergeable(prev.kind) {

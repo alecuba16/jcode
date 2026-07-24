@@ -1419,6 +1419,7 @@ pub(crate) fn clear_test_render_state_for_tests() {
     TEST_PROMPT_VIEWPORT_STATE.with(|state| {
         *state.borrow_mut() = PromptViewportState::default();
     });
+    info_widget::clear_widget_placements_for_tests();
 }
 
 /// Test-only: render just the onboarding welcome screen into `area`, using the

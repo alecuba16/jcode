@@ -55,7 +55,7 @@ use git::{render_git_compact, render_git_widget};
 pub use graph::{GraphEdge, GraphNode, build_graph_topology, graph_node_score};
 pub(crate) use memory_utils::is_traceworthy_memory_event;
 use memory_utils::{memory_active_summary, memory_last_trace_summary, memory_state_detail};
-use model::{render_model_info, render_model_widget};
+use model::{render_model_info, render_model_info_supplementary, render_model_widget};
 use swarm_background::{render_background_compact, render_background_widget, render_swarm_widget};
 use text::{truncate_smart, truncate_with_ellipsis};
 pub(crate) use tips::occasional_status_tip;
@@ -151,7 +151,7 @@ impl WidgetKind {
             WidgetKind::WorkspaceMap => 1,
             WidgetKind::Overview => 8,
             WidgetKind::Todos => 3,
-            WidgetKind::ContextUsage => 2,
+            WidgetKind::ContextUsage => 1, // Can be just "updating..." line
             WidgetKind::MemoryActivity => 3,
             WidgetKind::SwarmStatus => 3,
             WidgetKind::Compaction => 3,
@@ -159,7 +159,7 @@ impl WidgetKind {
             WidgetKind::AmbientMode => 3,
             WidgetKind::UsageLimits => 3,
             WidgetKind::KvCache => 3,
-            WidgetKind::ModelInfo => 3, // Model + usage bars
+            WidgetKind::ModelInfo => 1, // Can be just session/tier line
             WidgetKind::Tips => 3,
             WidgetKind::GitStatus => 3,
         }
@@ -652,6 +652,19 @@ pub struct InfoWidgetData {
     pub is_compacting: bool,
     /// Git repository status
     pub git_info: Option<GitInfo>,
+    /// Whether the fixed status line (below the input) is showing model/context
+    /// info. When true, the duplicate margin widgets (ModelInfo, ContextUsage,
+    /// UsageLimits, KvCache) are suppressed so the info appears in one place.
+    /// True for both the always-on mode and the elastic overscroll reveal.
+    pub status_line_active: bool,
+    /// Whether the status line is pinned permanently on (config `on`), as
+    /// opposed to the elastic overscroll reveal. The fixed Overview widget is
+    /// only used when this is true, to avoid popping in during elastic reveals.
+    pub status_line_pinned: bool,
+    /// Connected MCP servers with their tool counts.
+    pub mcp_servers: Vec<(String, usize)>,
+    /// Available skill names (e.g. /codebase-memory, /bitbucket, ...).
+    pub available_skills: Vec<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -666,6 +679,21 @@ pub struct CompactionInfo {
 impl InfoWidgetData {
     fn widget_disabled(kind: WidgetKind) -> bool {
         matches!(kind, WidgetKind::AmbientMode | WidgetKind::Tips)
+    }
+
+    /// Whether the model widget has supplementary info not shown in the status
+    /// line: service tier, native compaction mode, or session count/name.
+    pub fn has_model_supplementary_info(&self) -> bool {
+        self.service_tier
+            .as_deref()
+            .map(|s| !s.trim().is_empty() && s != "off" && s != "default")
+            .unwrap_or(false)
+            || self.native_compaction_mode.is_some()
+            || self.session_count.is_some()
+            || self
+                .session_name
+                .as_deref()
+                .is_some_and(|s| !s.trim().is_empty())
     }
 
     pub fn is_empty(&self) -> bool {
@@ -690,16 +718,30 @@ impl InfoWidgetData {
             WidgetKind::Diagrams => !self.diagrams.is_empty(),
             WidgetKind::WorkspaceMap => !self.workspace_rows.is_empty(),
             WidgetKind::Overview => {
+                // Keep the Overview widget as the single merged widget even when
+                // the status line is active. It combines todos, kv-cache, git,
+                // and supplementary info (service tier, compaction, session)
+                // into one box. Having one widget = one anchor = no jumping
+                // between multiple widget placements.
                 let mut sections = 0usize;
-                if self.model.is_some() {
+                // Model section: shown when there is supplementary info
+                // (service tier, compaction, session) even if the status line
+                // is active.
+                if self.has_model_supplementary_info() {
+                    sections += 1;
+                } else if !self.status_line_active && self.model.is_some() {
                     sections += 1;
                 }
-                if self
-                    .context_info
-                    .as_ref()
-                    .map(|c| c.total_chars > 0)
-                    .unwrap_or(false)
+                // Context section: shown when stale even if status line active.
+                if !self.status_line_active
+                    && self
+                        .context_info
+                        .as_ref()
+                        .map(|c| c.total_chars > 0)
+                        .unwrap_or(false)
                 {
+                    sections += 1;
+                } else if self.status_line_active && self.context_info_stale {
                     sections += 1;
                 }
                 if !self.todos.is_empty() {
@@ -716,14 +758,33 @@ impl InfoWidgetData {
                 if self.queue_mode.is_some() {
                     sections += 1;
                 }
-                if self
-                    .usage_info
-                    .as_ref()
-                    .map(|u| u.available)
-                    .unwrap_or(false)
+                // Usage section: keep OAuth subscription bars when status
+                // line is active (they show reset times not in the line).
+                if !self.status_line_active
+                    && self
+                        .usage_info
+                        .as_ref()
+                        .map(|u| u.available)
+                        .unwrap_or(false)
+                {
+                    sections += 1;
+                } else if self.status_line_active
+                    && self
+                        .usage_info
+                        .as_ref()
+                        .map(|u| {
+                            u.available
+                                && !matches!(
+                                    u.provider,
+                                    UsageProvider::CostBased
+                                        | UsageProvider::Copilot
+                                )
+                        })
+                        .unwrap_or(false)
                 {
                     sections += 1;
                 }
+                // KV cache is never in the status line, always counts.
                 if self.cache_hit_info.is_some() {
                     sections += 1;
                 }
@@ -738,11 +799,28 @@ impl InfoWidgetData {
                 {
                     sections += 1;
                 }
-                // Only useful as a "join" mode when there are multiple sections.
-                sections >= 2
+                if !self.mcp_servers.is_empty() {
+                    sections += 1;
+                }
+                if !self.available_skills.is_empty() {
+                    sections += 1;
+                }
+                // When the status line is active, the Overview is the single
+                // fixed widget, so show it whenever it has any content at all.
+                // When not active, it's a "join" mode that needs 2+ sections.
+                if self.status_line_active {
+                    sections >= 1
+                } else {
+                    sections >= 2
+                }
             }
             WidgetKind::Todos => !self.todos.is_empty(),
             WidgetKind::ContextUsage => {
+                if self.status_line_active {
+                    // Keep the widget only for the "updating..." stale state;
+                    // the normal context bar is already in the status line.
+                    return self.context_info_stale;
+                }
                 self.context_info_stale
                     || self
                         .context_info
@@ -767,13 +845,49 @@ impl InfoWidgetData {
                 .unwrap_or(false),
             WidgetKind::Compaction => self.compaction_info.is_some(),
             WidgetKind::AmbientMode => false,
-            WidgetKind::UsageLimits => self
-                .usage_info
-                .as_ref()
-                .map(|u| u.available)
-                .unwrap_or(false),
-            WidgetKind::KvCache => self.cache_hit_info.is_some(),
-            WidgetKind::ModelInfo => self.model.is_some(),
+            WidgetKind::UsageLimits => {
+                if self.status_line_active {
+                    // Suppress CostBased/Copilot (already in status line);
+                    // keep OAuth subscription bars with reset times.
+                    return self
+                        .usage_info
+                        .as_ref()
+                        .map(|u| {
+                            u.available
+                                && !matches!(
+                                    u.provider,
+                                    UsageProvider::CostBased
+                                        | UsageProvider::Copilot
+                                )
+                        })
+                        .unwrap_or(false);
+                }
+                self.usage_info
+                    .as_ref()
+                    .map(|u| u.available)
+                    .unwrap_or(false)
+            }
+            WidgetKind::KvCache => {
+                // KV cache is never shown in the status line, so always
+                // keep the widget when data is present.
+                self.cache_hit_info.is_some()
+            }
+            WidgetKind::ModelInfo => {
+                if self.status_line_active {
+                    // Keep the widget when it has supplementary info not shown
+                    // in the status line (service tier, native compaction,
+                    // session count/name).
+                    self.service_tier.is_some()
+                        || self.native_compaction_mode.is_some()
+                        || self.session_count.is_some()
+                        || self
+                            .session_name
+                            .as_deref()
+                            .is_some_and(|s| !s.trim().is_empty())
+                } else {
+                    self.model.is_some()
+                }
+            }
             WidgetKind::Tips => false,
             WidgetKind::GitStatus => self
                 .git_info
@@ -850,6 +964,19 @@ impl InfoWidgetData {
             .filter(|&kind| self.has_data_for(kind))
             .collect();
         widgets.sort_by_key(|&kind| self.effective_priority(kind));
+
+        // When the status line is active and the Overview widget has data,
+        // return only the Overview plus any special widgets (WorkspaceMap,
+        // Diagrams) that are not merged into Overview. The Overview merges all
+        // supplementary info into a single fixed widget, so individual widgets
+        // (ModelInfo, ContextUsage, UsageLimits, KvCache, etc.) must not also
+        // be placed independently — that would scatter info and cause jumping.
+        if self.status_line_pinned && widgets.contains(&WidgetKind::Overview) {
+            widgets.retain(|&k| k == WidgetKind::Overview
+                || k == WidgetKind::WorkspaceMap
+                || k == WidgetKind::Diagrams);
+        }
+
         widgets
     }
 }
@@ -978,6 +1105,83 @@ pub fn calculate_placements(
         None => return Vec::new(),
     };
 
+    // When the status line is pinned on (default), place the Overview widget
+    // at a fixed top-right position (always visible, drawn on top of content).
+    // Skip on very small terminals where the widget would take too much space;
+    // those fall through to the normal margin-based placement.
+    const MIN_FIXED_WIDTH: u16 = 50;
+    const MIN_FIXED_HEIGHT: u16 = 10;
+    if state.enabled
+        && data.status_line_pinned
+        && data.has_data_for(WidgetKind::Overview)
+        && messages_area.width >= MIN_FIXED_WIDTH
+        && messages_area.height >= MIN_FIXED_HEIGHT
+    {
+        let mut placements = calculate_fixed_overview_placement(messages_area, data);
+
+        // Reserve the Overview's rect so the anchored placement doesn't place
+        // other widgets on top of it. We do this by running the anchored placer
+        // with a modified data that suppresses Overview and mergeable widgets.
+        let overview_rect = placements.first().map(|p| p.rect);
+        if let Some(overview_rect) = overview_rect {
+            // Run anchored placement for remaining special widgets (WorkspaceMap,
+            // Diagrams). Suppress Overview from the anchored data so it doesn't
+            // try to also place it. Reserve the Overview's rect by zeroing the
+            // free widths in those rows so other widgets won't overlap it.
+            let mut anchored_data = data.clone();
+            anchored_data.todos.clear();
+            anchored_data.cache_hit_info = None;
+            anchored_data.compaction_info = None;
+            anchored_data.git_info = None;
+            anchored_data.background_info = None;
+            anchored_data.queue_mode = None;
+            anchored_data.service_tier = None;
+            anchored_data.native_compaction_mode = None;
+            anchored_data.session_count = None;
+            anchored_data.session_name = None;
+            anchored_data.context_info_stale = false;
+            anchored_data.mcp_servers.clear();
+            anchored_data.available_skills.clear();
+            // Also suppress usage_info and context_info so has_data_for(Overview)
+            // returns false, preventing a duplicate Overview from anchored placement.
+            anchored_data.usage_info = None;
+            anchored_data.context_info = None;
+            anchored_data.model = None;
+
+            // Zero out the free width on the right side where the Overview sits,
+            // so the anchored system won't place WorkspaceMap/Diagrams there.
+            let mut reserved_margins = margins.clone();
+            let row_start = (overview_rect.y.saturating_sub(messages_area.y)) as usize;
+            let row_end = row_start + overview_rect.height as usize;
+            for row in row_start..row_end.min(reserved_margins.right_widths.len()) {
+                let right_edge = messages_area.x + messages_area.width;
+                let overview_left = right_edge.saturating_sub(overview_rect.width);
+                let free_left_of_overview = overview_left.saturating_sub(messages_area.x);
+                // Only zero the width that the Overview occupies on the right side.
+                // Keep whatever free space is to the LEFT of the Overview.
+                if (reserved_margins.right_widths[row] as u16) > free_left_of_overview {
+                    reserved_margins.right_widths[row] = free_left_of_overview;
+                }
+            }
+
+            let outcome = super::info_widget_layout::calculate_placements_anchored(
+                messages_area,
+                &reserved_margins,
+                &anchored_data,
+                state.enabled,
+                &state.anchors,
+            );
+            state.anchors = outcome.anchors;
+            placements.extend(outcome.visible);
+        }
+
+        state.placements = placements.clone();
+        if swarm_dock_engaged(state) {
+            state.swarm_dock_last_engaged = Some(Instant::now());
+        }
+        return placements;
+    }
+
     let outcome = super::info_widget_layout::calculate_placements_anchored(
         messages_area,
         margins,
@@ -991,6 +1195,52 @@ pub fn calculate_placements(
         state.swarm_dock_last_engaged = Some(Instant::now());
     }
     outcome.visible
+}
+
+/// Place the Overview widget at a fixed top-right position in the messages
+/// area, always visible. The widget is drawn on top of transcript content
+/// (cells behind it are cleared), so it never hides or jumps.
+fn calculate_fixed_overview_placement(
+    messages_area: Rect,
+    data: &InfoWidgetData,
+) -> Vec<WidgetPlacement> {
+    const FIXED_WIDTH: u16 = 40;
+    const MAX_HEIGHT: u16 = 30;
+    const MIN_WIDTH: u16 = 28;
+
+    let mut overview = data.clone();
+    overview.memory_info = None;
+    overview.diagrams.clear();
+    // Adapt width to terminal: use full width on narrow terminals, cap at FIXED_WIDTH on wider ones.
+    let width = FIXED_WIDTH.min(messages_area.width.saturating_sub(2)).max(MIN_WIDTH);
+    let width = if messages_area.width < MIN_WIDTH + 2 {
+        messages_area.width.saturating_sub(2)
+    } else {
+        width
+    };
+
+    let mut overview = data.clone();
+    overview.memory_info = None;
+    overview.diagrams.clear();
+    let inner_width = (width.saturating_sub(2)) as usize;
+    let inner_h = MAX_HEIGHT.saturating_sub(2);
+    let layout = compute_page_layout(&overview, inner_width, inner_h);
+    let content_h = layout.max_page_height;
+    if content_h == 0 {
+        return Vec::new();
+    }
+    // +2 for the border, +1 for dots if shown
+    let total_h = content_h + 2 + u16::from(layout.show_dots);
+    let clamped_h = total_h.min(messages_area.height).min(MAX_HEIGHT);
+
+    let x = messages_area.x + messages_area.width - width;
+    let y = messages_area.y;
+
+    vec![WidgetPlacement {
+        kind: WidgetKind::Overview,
+        rect: Rect::new(x, y, width, clamped_h),
+        side: Side::Right,
+    }]
 }
 
 /// How long the inline swarm strip keeps standing down after the SwarmStatus
@@ -1116,6 +1366,11 @@ pub(crate) fn calculate_widget_height(
             1 + items + if data.todos.len() > 5 { 1 } else { 0 }
         }
         WidgetKind::ContextUsage => {
+            // When the status line is active, only the "updating..." stale
+            // indicator is rendered; the normal context bar is in the line.
+            if data.status_line_active {
+                return u16::from(data.context_info_stale);
+            }
             if data
                 .context_info
                 .as_ref()
@@ -1197,6 +1452,16 @@ pub(crate) fn calculate_widget_height(
         WidgetKind::UsageLimits => {
             if let Some(info) = data.usage_info.as_ref() {
                 if info.available {
+                    // When the status line is active, CostBased/Copilot are
+                    // shown there and suppressed here.
+                    if data.status_line_active
+                        && matches!(
+                            info.provider,
+                            UsageProvider::CostBased | UsageProvider::Copilot
+                        )
+                    {
+                        return 0;
+                    }
                     2 + if info.spark.is_some() { 1 } else { 0 }
                 } else {
                     0
@@ -1220,6 +1485,31 @@ pub(crate) fn calculate_widget_height(
         WidgetKind::ModelInfo => {
             if data.model.is_none() {
                 return 0;
+            }
+            // When the status line is active, only supplementary fields
+            // (service tier, compaction, session) are rendered.
+            if data.status_line_active {
+                let mut h = 0u16;
+                if data
+                    .service_tier
+                    .as_deref()
+                    .map(|s| !s.trim().is_empty() && s != "off" && s != "default")
+                    .unwrap_or(false)
+                {
+                    h += 1;
+                }
+                if data.native_compaction_mode.is_some() {
+                    h += 1;
+                }
+                if data.session_count.is_some()
+                    || data
+                        .session_name
+                        .as_deref()
+                        .is_some_and(|s| !s.trim().is_empty())
+                {
+                    h += 1;
+                }
+                return h;
             }
             let mut h = 1u16; // Model name
             if data
@@ -1324,6 +1614,14 @@ fn render_single_widget(frame: &mut Frame, placement: &WidgetPlacement, data: &I
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(rgb(70, 70, 80)).dim());
 
+    // When the status line is active, the Overview uses a fixed position drawn
+    // on top of transcript content. Give it a dark background so the text is
+    // readable regardless of what's behind it.
+    if placement.kind == WidgetKind::Overview && data.status_line_pinned {
+        block = block
+            .style(Style::default().bg(rgb(30, 30, 35)));
+    }
+
     if placement.kind == WidgetKind::WorkspaceMap {
         block = block.title(Span::styled(
             " Workspace ",
@@ -1347,6 +1645,12 @@ fn render_single_widget(frame: &mut Frame, placement: &WidgetPlacement, data: &I
         let layout = compute_page_layout(&overview, inner.width as usize, inner.height);
         if layout.pages.is_empty() || layout.max_page_height == 0 {
             return;
+        }
+        // When the status line is active, the widget uses a fixed position that
+        // overlaps transcript content. Clear the cells behind it so the widget
+        // is always readable, drawn on top of the text like a HUD panel.
+        if data.status_line_pinned {
+            frame.render_widget(ratatui::widgets::Clear, rect);
         }
         frame.render_widget(block, rect);
         render_overview_widget(frame, inner, data);
@@ -1612,7 +1916,8 @@ fn edge_kind_priority(kind: &str) -> u8 {
 }
 
 /// Render content for a specific widget type
-fn render_widget_content(
+#[cfg_attr(test, allow(dead_code))]
+pub(crate) fn render_widget_content(
     kind: WidgetKind,
     data: &InfoWidgetData,
     inner: Rect,
@@ -1677,7 +1982,7 @@ fn render_kv_cache_widget(data: &InfoWidgetData, _inner: Rect) -> Vec<Line<'stat
     let Some(cache) = data.cache_hit_info.as_ref() else {
         return Vec::new();
     };
-    let mut lines = vec![render_kv_cache_summary_line(cache)];
+    let mut lines = render_kv_cache_summary_line(cache);
 
     lines.push(Line::from(vec![Span::styled(
         "miss attribution",
@@ -1729,9 +2034,9 @@ fn render_kv_cache_widget(data: &InfoWidgetData, _inner: Rect) -> Vec<Line<'stat
     lines
 }
 
-fn render_kv_cache_summary_line(cache: &CacheHitInfo) -> Line<'static> {
+fn render_kv_cache_summary_line(cache: &CacheHitInfo) -> Vec<Line<'static>> {
     let Some(lifetime_ratio) = cache.hit_ratio() else {
-        return Line::default();
+        return Vec::new();
     };
 
     let lifetime_pct = ratio_pct(lifetime_ratio);
@@ -1744,50 +2049,68 @@ fn render_kv_cache_summary_line(cache: &CacheHitInfo) -> Line<'static> {
         .unwrap_or(lifetime_pct);
     let color = kv_cache_optimal_color(health_pct);
 
-    let mut spans = vec![Span::styled(
+    let mut lines = Vec::new();
+
+    // Line 1: header + yield/warm + session
+    let mut spans1 = vec![Span::styled(
         "KV cache: ",
         Style::default().fg(rgb(180, 180, 190)).bold(),
     )];
 
     if let Some(warm_pct) = warm_pct {
-        spans.push(Span::styled(
+        spans1.push(Span::styled(
             "yield ",
             Style::default().fg(rgb(140, 140, 150)),
         ));
-        spans.push(Span::styled(
+        spans1.push(Span::styled(
             format!("{}%", warm_pct),
             Style::default().fg(color).bold(),
         ));
     } else {
-        spans.push(Span::styled(
+        spans1.push(Span::styled(
             "priming",
             Style::default().fg(color).add_modifier(Modifier::BOLD),
         ));
     }
 
-    if let Some(last_pct) = last_pct {
-        spans.push(Span::styled(" · ", Style::default().fg(rgb(80, 80, 90))));
-        spans.push(Span::styled(
-            "last ",
-            Style::default().fg(rgb(140, 140, 150)),
-        ));
-        spans.push(Span::styled(
-            format!("{}%", last_pct),
-            Style::default().fg(color).bold(),
-        ));
-    }
-
-    spans.push(Span::styled(" · ", Style::default().fg(rgb(80, 80, 90))));
-    spans.push(Span::styled(
+    spans1.push(Span::styled(" · ", Style::default().fg(rgb(80, 80, 90))));
+    spans1.push(Span::styled(
         "session ",
         Style::default().fg(rgb(140, 140, 150)),
     ));
-    spans.push(Span::styled(
+    spans1.push(Span::styled(
         format!("{}%", lifetime_pct),
         Style::default().fg(color).bold(),
     ));
 
-    Line::from(spans)
+    lines.push(Line::from(spans1));
+
+    // Line 2: last request stats (if available)
+    if let Some(last_pct) = last_pct {
+        let mut spans2 = vec![Span::styled(
+            "  last ",
+            Style::default().fg(rgb(140, 140, 150)),
+        )];
+        spans2.push(Span::styled(
+            format!("{}%", last_pct),
+            Style::default().fg(color).bold(),
+        ));
+
+        if let Some(last_opt_pct) = last_optimal_pct {
+            spans2.push(Span::styled(
+                " · optimal ",
+                Style::default().fg(rgb(140, 140, 150)),
+            ));
+            spans2.push(Span::styled(
+                format!("{}%", last_opt_pct),
+                Style::default().fg(color).bold(),
+            ));
+        }
+
+        lines.push(Line::from(spans2));
+    }
+
+    lines
 }
 
 fn ratio_pct(ratio: f32) -> u8 {
@@ -2039,12 +2362,24 @@ fn render_sections(
 ) -> Vec<Line<'static>> {
     let mut lines: Vec<Line<'static>> = Vec::new();
 
-    // Model info at the top
-    if data.model.is_some() {
+    // Model info at the top. When the status line is active, render only the
+    // supplementary fields (service tier, compaction, session) that the status
+    // line does not cover.
+    if data.status_line_active {
+        if data.has_model_supplementary_info() {
+            lines.extend(render_model_info_supplementary(data, inner));
+        }
+    } else if data.model.is_some() {
         lines.extend(render_model_info(data, inner));
     }
 
-    if let Some(info) = &data.context_info
+    // Context: skip the normal bar when status line is active (it shows the
+    // bar already), but keep the "updating..." stale indicator.
+    if data.status_line_active {
+        if data.context_info_stale {
+            lines.extend(render_context_compact(data, inner));
+        }
+    } else if let Some(info) = &data.context_info
         && info.total_chars > 0
     {
         lines.extend(render_context_compact(data, inner));
@@ -2076,15 +2411,29 @@ fn render_sections(
         lines.extend(render_background_compact(info));
     }
 
-    // Usage info (subscription limits)
+    // Usage info (subscription limits). When the status line is active,
+    // skip CostBased/Copilot (shown in the line) but keep OAuth bars.
     if let Some(info) = &data.usage_info
         && info.available
     {
-        lines.extend(render_usage_compact(info, inner.width));
+        let skip = data.status_line_active
+            && matches!(
+                info.provider,
+                UsageProvider::CostBased | UsageProvider::Copilot
+            );
+        if !skip {
+            lines.extend(render_usage_compact(info, inner.width));
+        }
     }
 
+    // KV cache is never in the status line, always render.
     if let Some(cache) = data.cache_hit_info.as_ref() {
-        lines.push(render_kv_cache_summary_line(cache));
+        lines.extend(render_kv_cache_summary_line(cache));
+    }
+
+    // Compaction status
+    if let Some(info) = &data.compaction_info {
+        lines.extend(render_compaction_compact(info, inner.width));
     }
 
     // Git info
@@ -2094,6 +2443,124 @@ fn render_sections(
         lines.extend(render_git_compact(info, inner.width));
     }
 
+    // MCP servers
+    if !data.mcp_servers.is_empty() {
+        lines.extend(render_mcp_servers_line(&data.mcp_servers, inner.width));
+    }
+
+    // Available skills
+    if !data.available_skills.is_empty() {
+        lines.extend(render_skills_line(&data.available_skills, inner.width));
+    }
+
+    lines
+}
+
+// ---------------------------------------------------------------------------
+// MCP servers & skills compact lines
+// ---------------------------------------------------------------------------
+
+fn render_compaction_compact(info: &CompactionInfo, width: u16) -> Vec<Line<'static>> {
+    let status = if info.is_compacting {
+        "compacting"
+    } else {
+        "compacted"
+    };
+    let summary_tokens = (info.summary_chars / crate::compaction::CHARS_PER_TOKEN)
+        .max(usize::from(info.summary_chars > 0));
+    let color = if info.is_compacting {
+        rgb(255, 220, 140)
+    } else {
+        rgb(110, 210, 140)
+    };
+    let w = width as usize;
+    
+    // Line 1: status + mode
+    let line1 = format!("CMP {} {}", status, info.mode);
+    
+    // Line 2: detail stats
+    let detail = format!(
+        "{} old · {} active · ~{} tok",
+        info.compacted_messages, info.active_messages, summary_tokens
+    );
+    let detail = truncate_smart(&detail, w);
+    
+    vec![
+        Line::from(Span::styled(line1, Style::default().fg(color))),
+        Line::from(Span::styled(format!("  {}", detail), Style::default().fg(color))),
+    ]
+}
+
+fn render_mcp_servers_line(servers: &[(String, usize)], width: u16) -> Vec<Line<'static>> {
+    let w = width as usize;
+    let full_parts: Vec<String> = servers
+        .iter()
+        .map(|(name, count)| {
+            if *count > 0 {
+                format!("{} ({} tools)", name, count)
+            } else {
+                format!("{} (...)", name)
+            }
+        })
+        .collect();
+    let full = format!("mcp: {}", full_parts.join(", "));
+    if full.chars().count() <= w {
+        return vec![Line::from(Span::styled(
+            full,
+            Style::default().fg(rgb(100, 180, 220)),
+        ))];
+    }
+    // Try compact single line
+    let short_parts: Vec<String> = servers
+        .iter()
+        .map(|(name, count)| {
+            if *count > 0 {
+                format!("{}({})", name, count)
+            } else {
+                format!("{}(…)", name)
+            }
+        })
+        .collect();
+    let short = format!("mcp: {}", short_parts.join(" "));
+    if short.chars().count() <= w {
+        return vec![Line::from(Span::styled(
+            short,
+            Style::default().fg(rgb(100, 180, 220)),
+        ))];
+    }
+    // Multi-line: header + one server per line
+    let mut lines = vec![Line::from(Span::styled(
+        format!("mcp: {} servers", servers.len()),
+        Style::default().fg(rgb(100, 180, 220)),
+    ))];
+    for (name, count) in servers {
+        let entry = if *count > 0 {
+            format!("  {} ({} tools)", name, count)
+        } else {
+            format!("  {} (...)", name)
+        };
+        let entry = truncate_smart(&entry, w);
+        lines.push(Line::from(Span::styled(
+            entry,
+            Style::default().fg(rgb(100, 180, 220)),
+        )));
+    }
+    lines
+}
+
+fn render_skills_line(skills: &[String], width: u16) -> Vec<Line<'static>> {
+    let w = width as usize;
+    let mut lines = vec![Line::from(Span::styled(
+        format!("skills: {} loaded", skills.len()),
+        Style::default().fg(rgb(100, 180, 220)),
+    ))];
+    for s in skills {
+        let entry = truncate_smart(&format!("  /{}", s), w);
+        lines.push(Line::from(Span::styled(
+            entry,
+            Style::default().fg(rgb(100, 180, 220)),
+        )));
+    }
     lines
 }
 

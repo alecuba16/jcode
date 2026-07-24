@@ -11,6 +11,17 @@ pub(super) fn render_usage_widget(data: &InfoWidgetData, inner: Rect) -> Vec<Lin
         return Vec::new();
     }
 
+    // When the status line is active, CostBased/Copilot info is shown there;
+    // only OAuth subscription bars with reset times remain.
+    if data.status_line_active
+        && matches!(
+            info.provider,
+            UsageProvider::CostBased | UsageProvider::Copilot
+        )
+    {
+        return Vec::new();
+    }
+
     match info.provider {
         UsageProvider::Copilot => {
             vec![Line::from(vec![Span::styled(
