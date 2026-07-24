@@ -142,6 +142,10 @@ pub fn register_external_provider_runtimes() {
         || std::sync::Arc::new(jcode_provider_cursor_runtime::CursorCliProvider::new()),
     );
     crate::provider::external::register_external_provider(
+        crate::provider::external::CURSOR_ACP_RUNTIME,
+        || std::sync::Arc::new(jcode_provider_cursor_acp_runtime::CursorAcpProvider::new()),
+    );
+    crate::provider::external::register_external_provider(
         crate::provider::external::ANTIGRAVITY_RUNTIME,
         || std::sync::Arc::new(jcode_provider_antigravity_runtime::AntigravityProvider::new()),
     );
@@ -435,6 +439,7 @@ mod tests {
                 crate::provider::external::ANTIGRAVITY_RUNTIME,
                 "antigravity",
             ),
+            (crate::provider::external::CURSOR_ACP_RUNTIME, "cursor-acp"),
         ] {
             assert!(
                 crate::provider::external::external_provider_registered(key),

@@ -3573,6 +3573,7 @@ dependencies = [
  "jcode-provider-antigravity-runtime",
  "jcode-provider-claude-cli-runtime",
  "jcode-provider-copilot-runtime",
+ "jcode-provider-cursor-acp-runtime",
  "jcode-provider-cursor-runtime",
  "jcode-provider-doctor",
  "jcode-provider-gemini-runtime",
@@ -4173,6 +4174,19 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "tokio",
+]
+
+[[package]]
+name = "jcode-provider-cursor-acp-runtime"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "jcode-message-types",
+ "jcode-provider-core",
+ "serde_json",
+ "tokio",
+ "tokio-stream",
 ]
 
 [[package]]

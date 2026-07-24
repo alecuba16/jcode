@@ -110,6 +110,9 @@ pub enum ProviderChoice {
     #[value(alias = "compat", alias = "custom")]
     OpenaiCompatible,
     Cursor,
+    /// Use Cursor CLI through its native Agent Client Protocol transport.
+    #[value(name = "cursor-acp")]
+    CursorAcp,
     Copilot,
     Gemini,
     #[value(
@@ -170,6 +173,7 @@ impl ProviderChoice {
             Self::AlibabaCodingPlan => "alibaba-coding-plan",
             Self::OpenaiCompatible => "openai-compatible",
             Self::Cursor => "cursor",
+            Self::CursorAcp => "cursor-acp",
             Self::Copilot => "copilot",
             Self::Gemini => "gemini",
             Self::GeminiApi => "gemini-api",
@@ -1446,6 +1450,20 @@ async fn init_provider_with_options(
             clear_initial_model_provider();
             crate::env::set_var("JCODE_ACTIVE_PROVIDER", "cursor");
             Arc::new(jcode_provider_cursor_runtime::CursorCliProvider::new())
+        }
+        ProviderChoice::CursorAcp => {
+            disable_subscription_runtime_mode();
+            clear_initial_model_provider();
+            init_notice("Using Cursor CLI through ACP");
+            crate::env::set_var("JCODE_ACTIVE_PROVIDER", "cursor-acp");
+            crate::provider::external::instantiate_external_provider(
+                crate::provider::external::CURSOR_ACP_RUNTIME,
+            )
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Cursor ACP runtime is not registered. Restart jcode or check the installation."
+                )
+            })?
         }
         ProviderChoice::Copilot => {
             disable_subscription_runtime_mode();

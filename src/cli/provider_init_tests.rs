@@ -60,6 +60,7 @@ fn test_provider_choice_arg_values() {
         "openai-compatible"
     );
     assert_eq!(ProviderChoice::Cursor.as_arg_value(), "cursor");
+    assert_eq!(ProviderChoice::CursorAcp.as_arg_value(), "cursor-acp");
     assert_eq!(ProviderChoice::Copilot.as_arg_value(), "copilot");
     assert_eq!(ProviderChoice::Gemini.as_arg_value(), "gemini");
     assert_eq!(ProviderChoice::Antigravity.as_arg_value(), "antigravity");
