@@ -119,7 +119,14 @@ impl Provider for OpenRouterProvider {
             "stream": true,
         });
 
-        if let Some(max_tokens) = self.max_tokens {
+        // Per-model `max_output_tokens` from named-provider config overrides the
+        // runtime default (opencode `limit.output` parity).
+        let effective_max_tokens = self
+            .static_model_max_output_tokens
+            .get(&model.trim().to_ascii_lowercase())
+            .copied()
+            .or(self.max_tokens);
+        if let Some(max_tokens) = effective_max_tokens {
             request["max_tokens"] = serde_json::json!(max_tokens);
         }
 
@@ -491,6 +498,22 @@ impl Provider for OpenRouterProvider {
 
     fn available_models_display(&self) -> Vec<String> {
         let finalize = |models: Vec<String>| self.filter_profile_chat_supported_models(models);
+        // Replace raw model ids with their configured display name aliases so
+        // the picker shows the user-friendly name (opencode `name` parity).
+        let apply_display_names = |mut models: Vec<String>| {
+            if self.static_model_display_names.is_empty() {
+                return models;
+            }
+            for model in &mut models {
+                if let Some(display) = self
+                    .static_model_display_names
+                    .get(&model.to_ascii_lowercase())
+                {
+                    *model = display.clone();
+                }
+            }
+            models
+        };
         let with_current_model = |mut models: Vec<String>| {
             let current = self.model();
             if !current.trim().is_empty() && !models.iter().any(|model| model == &current) {
@@ -514,14 +537,16 @@ impl Provider for OpenRouterProvider {
 
         if !self.supports_model_catalog {
             if !self.static_models.is_empty() {
-                return finalize(with_current_model(self.static_models.clone()));
+                return finalize(apply_display_names(with_current_model(
+                    self.static_models.clone(),
+                )));
             }
             let model = self.model();
-            return finalize(if model.trim().is_empty() {
+            return finalize(apply_display_names(if model.trim().is_empty() {
                 Vec::new()
             } else {
                 vec![model]
-            });
+            }));
         }
 
         if let Ok(cache) = self.models_cache.try_read()
@@ -534,9 +559,9 @@ impl Provider for OpenRouterProvider {
             {
                 self.maybe_schedule_model_catalog_refresh(cache_age, "display memory cache");
             }
-            return finalize(merge_static_models(
+            return finalize(apply_display_names(merge_static_models(
                 cache.models.iter().map(|m| m.id.clone()).collect(),
-            ));
+            )));
         }
 
         if let Some(cache_entry) = self.load_usable_model_disk_cache_entry() {
@@ -549,9 +574,9 @@ impl Provider for OpenRouterProvider {
                 cache.cached_at = Some(cache_entry.cached_at);
             }
             self.maybe_schedule_model_catalog_refresh(cache_age, "display disk cache");
-            return finalize(merge_static_models(
+            return finalize(apply_display_names(merge_static_models(
                 cache_entry.models.into_iter().map(|m| m.id).collect(),
-            ));
+            )));
         }
 
         // No memory or disk catalog yet. This commonly happens immediately after
@@ -564,15 +589,17 @@ impl Provider for OpenRouterProvider {
         self.maybe_schedule_model_catalog_refresh(u64::MAX, "display cache miss");
 
         if !self.static_models.is_empty() {
-            return finalize(with_current_model(self.static_models.clone()));
+            return finalize(apply_display_names(with_current_model(
+                self.static_models.clone(),
+            )));
         }
 
         let model = self.model();
-        finalize(if model.trim().is_empty() {
+        finalize(apply_display_names(if model.trim().is_empty() {
             Vec::new()
         } else {
             vec![model]
-        })
+        }))
     }
 
     fn available_models_for_switching(&self) -> Vec<String> {
@@ -755,6 +782,10 @@ impl Provider for OpenRouterProvider {
             static_models: self.static_models.clone(),
             static_context_limits: self.static_context_limits.clone(),
             static_image_input_support: self.static_image_input_support.clone(),
+            static_model_display_names: self.static_model_display_names.clone(),
+            static_model_reasoning: self.static_model_reasoning.clone(),
+            static_model_max_output_tokens: self.static_model_max_output_tokens.clone(),
+            display_name: self.display_name.clone(),
             send_openrouter_headers: self.send_openrouter_headers,
             models_cache: Arc::clone(&self.models_cache),
             model_catalog_refresh: Arc::clone(&self.model_catalog_refresh),

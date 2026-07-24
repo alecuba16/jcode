@@ -14,6 +14,32 @@ use super::{
     standard_openrouter_profile_configured,
 };
 
+/// Convert a user-configured `ModelCostConfig` (USD per million tokens) into a
+/// `RouteCheapnessEstimate` so the picker cost overlay can show it for custom
+/// OpenAI-compatible providers that models.dev does not cover.
+fn cost_to_route_cheapness(
+    cost: &crate::config::ModelCostConfig,
+) -> Option<jcode_provider_core::RouteCheapnessEstimate> {
+    use jcode_provider_core::{RouteCheapnessEstimate, RouteCostConfidence, RouteCostSource};
+
+    let input = cost.input?;
+    let output = cost.output?;
+    let input_micros = (input * 1_000_000.0).round() as u64;
+    let output_micros = (output * 1_000_000.0).round() as u64;
+    let cache_read_micros = cost
+        .cache_read
+        .map(|v| (v * 1_000_000.0).round() as u64);
+
+    Some(RouteCheapnessEstimate::metered(
+        RouteCostSource::RuntimePlan,
+        RouteCostConfidence::Exact,
+        input_micros,
+        output_micros,
+        cache_read_micros,
+        Some("user-configured per-model cost".to_string()),
+    ))
+}
+
 /// Build the fast local route snapshot used by the TUI model picker while the
 /// full provider catalog is hydrating.
 ///
@@ -490,17 +516,33 @@ fn append_openai_compatible_profile_routes(
 ///
 /// Text-capable static models plus the profile's `default_model` are offered;
 /// models declared image-only via `input = ["image"]` are excluded.
+///
+/// The provider's `display_name` (opencode `name`) overrides the raw profile
+/// key in the route's `provider` field, and each model's `display_name` and
+/// `cost` are carried through so the picker and cost overlay reflect the
+/// user-configured values.
 fn named_provider_profile_routes(
     profile_name: &str,
     profile_config: &crate::config::NamedProviderConfig,
 ) -> Vec<ModelRoute> {
-    let mut models: Vec<String> = profile_config
+    let provider_label = profile_config
+        .display_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(ToString::to_string)
+        .unwrap_or_else(|| profile_name.to_string());
+
+    let text_capable_models = profile_config
         .models
         .iter()
         .filter(|model| {
             // `input` empty means unspecified (assume text-capable).
             model.input.is_empty() || model.input.iter().any(|input| input == "text")
-        })
+        });
+
+    let mut models: Vec<String> = text_capable_models
+        .clone()
         .map(|model| model.id.trim().to_string())
         .filter(|id| !id.is_empty())
         .collect();
@@ -521,18 +563,55 @@ fn named_provider_profile_routes(
         profile_config.base_url.trim().to_string()
     };
 
+    // Build a lookup so model display-name/cheapness can be attached even for
+    // the `default_model` fallback when it matches a configured model id.
+    let model_meta: std::collections::HashMap<String, (Option<String>, Option<jcode_provider_core::RouteCheapnessEstimate>)> =
+        text_capable_models
+            .map(|model| {
+                let id = model.id.trim().to_string();
+                if id.is_empty() {
+                    return (String::new(), (None, None));
+                }
+                let display = model
+                    .display_name
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|v| !v.is_empty())
+                    .map(ToString::to_string);
+                let cheapness = model
+                    .cost
+                    .as_ref()
+                    .and_then(|cost| cost_to_route_cheapness(cost));
+                (id.to_ascii_lowercase(), (display, cheapness))
+            })
+            .filter(|(id, _)| !id.is_empty())
+            .collect();
+
     let mut routes: Vec<ModelRoute> = Vec::new();
     for model in models {
         if !is_listable_model_name(&model) || routes.iter().any(|route| route.model == model) {
             continue;
         }
+        let (model_display, cheapness) = model_meta
+            .get(&model.to_ascii_lowercase())
+            .cloned()
+            .unwrap_or((None, None));
+        // When a per-model display name is configured, use it as the route's
+        // `model` field so the picker shows the alias. The raw id is preserved
+        // in the detail line for disambiguation.
+        let route_model = model_display.clone().unwrap_or_else(|| model.clone());
+        let route_detail = if model_display.is_some() {
+            format!("{} · {}", detail, model)
+        } else {
+            detail.clone()
+        };
         routes.push(ModelRoute {
-            model,
-            provider: profile_name.to_string(),
+            model: route_model,
+            provider: provider_label.clone(),
             api_method: api_method.clone(),
             available: true,
-            detail: detail.clone(),
-            cheapness: None,
+            detail: route_detail,
+            cheapness,
         });
     }
     routes
@@ -1434,5 +1513,83 @@ mod tests {
                 .any(|r| r.model == "gpt-5.3-codex" && r.api_method == "openrouter"),
             "catalog-listed model keeps its OpenRouter fallback route"
         );
+    }
+
+    #[test]
+    fn named_provider_profile_routes_use_display_name_and_cost() {
+        use crate::config::{ModelCostConfig, NamedProviderConfig, NamedProviderModelConfig};
+
+        let config = NamedProviderConfig {
+            base_url: "http://localhost:8080/v1".to_string(),
+            display_name: Some("My Provider".to_string()),
+            default_model: Some("raw-id".to_string()),
+            models: vec![NamedProviderModelConfig {
+                id: "raw-id".to_string(),
+                display_name: Some("Friendly Model".to_string()),
+                cost: Some(ModelCostConfig {
+                    input: Some(0.50),
+                    output: Some(2.00),
+                    cache_read: Some(0.05),
+                    cache_write: None,
+                }),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        let routes = named_provider_profile_routes("test-profile", &config);
+        assert_eq!(routes.len(), 1, "should produce one route");
+
+        let route = &routes[0];
+        assert_eq!(route.model, "Friendly Model", "model field should use display_name");
+        assert_eq!(route.provider, "My Provider", "provider field should use provider display_name");
+        assert_eq!(route.api_method, "openai-compatible:test-profile");
+        assert!(route.available);
+        assert!(
+            route.detail.contains("raw-id"),
+            "detail should contain raw id for disambiguation: {}",
+            route.detail
+        );
+
+        let cheapness = route
+            .cheapness
+            .as_ref()
+            .expect("cost config should produce cheapness estimate");
+        assert!(
+            cheapness.input_price_per_mtok_micros == Some(500_000),
+            "input price should be 0.50/Mtok = 500_000 micros, got: {:?}",
+            cheapness.input_price_per_mtok_micros
+        );
+        assert!(
+            cheapness.output_price_per_mtok_micros == Some(2_000_000),
+            "output price should be 2.00/Mtok = 2_000_000 micros, got: {:?}",
+            cheapness.output_price_per_mtok_micros
+        );
+        assert_eq!(
+            cheapness.cache_read_price_per_mtok_micros,
+            Some(50_000),
+            "cache_read should be 0.05/Mtok = 50_000 micros"
+        );
+    }
+
+    #[test]
+    fn named_provider_profile_routes_fallback_without_display_name() {
+        use crate::config::{NamedProviderConfig, NamedProviderModelConfig};
+
+        let config = NamedProviderConfig {
+            base_url: "http://localhost:8080/v1".to_string(),
+            default_model: Some("plain-model".to_string()),
+            models: vec![NamedProviderModelConfig {
+                id: "plain-model".to_string(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        let routes = named_provider_profile_routes("test-profile", &config);
+        assert_eq!(routes.len(), 1);
+        assert_eq!(routes[0].model, "plain-model", "raw id when no display_name");
+        assert_eq!(routes[0].provider, "test-profile", "profile name when no display_name");
+        assert!(routes[0].cheapness.is_none(), "no cost config means no cheapness");
     }
 }

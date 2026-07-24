@@ -409,10 +409,33 @@ pub enum NamedProviderAuth {
     None,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+/// Per-model cost configuration for custom OpenAI-compatible providers.
+/// Prices are in USD per million tokens, matching the opencode `cost` object.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(default)]
+pub struct ModelCostConfig {
+    /// USD per million input tokens.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input: Option<f64>,
+    /// USD per million output tokens.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output: Option<f64>,
+    /// USD per million cache-read tokens.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_read: Option<f64>,
+    /// USD per million cache-write tokens.
+    #[serde(default, alias = "cache-write", skip_serializing_if = "Option::is_none")]
+    pub cache_write: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(default)]
 pub struct NamedProviderModelConfig {
     pub id: String,
+    /// Human-friendly display name shown in the `/model` picker instead of the
+    /// raw model id. Mirrors opencode's per-model `name` field.
+    #[serde(default, alias = "name", skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
     #[serde(
         default,
         alias = "context_limit",
@@ -422,8 +445,28 @@ pub struct NamedProviderModelConfig {
         skip_serializing_if = "Option::is_none"
     )]
     pub context_window: Option<usize>,
+    /// Maximum output tokens the model can generate. Mirrors opencode's
+    /// `limit.output`. When unset, jcode uses its default max-tokens behavior.
+    #[serde(
+        default,
+        alias = "output_limit",
+        alias = "max_output_tokens",
+        alias = "max-output-tokens",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub max_output_tokens: Option<usize>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub input: Vec<String>,
+    /// Whether this model supports reasoning/thinking. When `Some(true)`, jcode
+    /// exposes the reasoning-effort picker for this model even on a provider
+    /// that does not globally advertise effort support. Mirrors opencode's
+    /// per-model `reasoning: bool`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<bool>,
+    /// Per-model pricing in USD per million tokens. Overrides models.dev catalog
+    /// pricing for custom/gateway models. Mirrors opencode's per-model `cost`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost: Option<ModelCostConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -431,6 +474,11 @@ pub struct NamedProviderModelConfig {
 pub struct NamedProviderConfig {
     #[serde(rename = "type")]
     pub provider_type: NamedProviderType,
+    /// Human-friendly display name shown in the `/model` picker for this
+    /// provider profile. When unset, the profile key (the `[providers.<key>]`
+    /// section name) is used. Mirrors opencode's provider-level `name` field.
+    #[serde(default, alias = "name", skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
     pub base_url: String,
     pub api: Option<String>,
     pub auth: NamedProviderAuth,
@@ -473,6 +521,7 @@ impl Default for NamedProviderConfig {
     fn default() -> Self {
         Self {
             provider_type: NamedProviderType::OpenAiCompatible,
+            display_name: None,
             base_url: String::new(),
             api: None,
             auth: NamedProviderAuth::Bearer,

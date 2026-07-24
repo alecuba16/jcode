@@ -179,9 +179,11 @@ pub(crate) fn configure_provider_profile(
             id: model.clone(),
             context_window: options.context_window,
             input: Vec::new(),
+            ..Default::default()
         }],
         extra_body: None,
         supports_reasoning_effort: None,
+        display_name: None,
     };
 
     let config_path = Config::path().ok_or_else(|| anyhow::anyhow!("No config path"))?;

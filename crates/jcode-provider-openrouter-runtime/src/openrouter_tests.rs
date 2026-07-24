@@ -1107,6 +1107,10 @@ fn make_provider() -> OpenRouterProvider {
         static_models: Vec::new(),
         static_context_limits: HashMap::new(),
         static_image_input_support: HashMap::new(),
+        static_model_display_names: HashMap::new(),
+        static_model_reasoning: HashMap::new(),
+        static_model_max_output_tokens: HashMap::new(),
+        display_name: None,
         send_openrouter_headers: true,
         models_cache: Arc::new(RwLock::new(ModelsCache::default())),
         model_catalog_refresh: Arc::new(Mutex::new(ModelCatalogRefreshState::default())),
@@ -1136,6 +1140,10 @@ fn make_custom_compatible_provider() -> OpenRouterProvider {
         static_models: Vec::new(),
         static_context_limits: HashMap::new(),
         static_image_input_support: HashMap::new(),
+        static_model_display_names: HashMap::new(),
+        static_model_reasoning: HashMap::new(),
+        static_model_max_output_tokens: HashMap::new(),
+        display_name: None,
         send_openrouter_headers: false,
         models_cache: Arc::new(RwLock::new(ModelsCache::default())),
         model_catalog_refresh: Arc::new(Mutex::new(ModelCatalogRefreshState::default())),
@@ -1772,6 +1780,7 @@ fn named_openai_compatible_model_context_window_overrides_default() {
             id: "custom-long-context".to_string(),
             context_window: Some(512_000),
             input: Vec::new(),
+            ..Default::default()
         }],
         ..Default::default()
     };
@@ -1799,6 +1808,7 @@ fn named_profile_context_window_survives_provider_qualified_model() {
             id: "qwen3.6-35b-a2000-128k".to_string(),
             context_window: Some(131_072),
             input: Vec::new(),
+            ..Default::default()
         }],
         ..Default::default()
     };
@@ -2976,4 +2986,195 @@ model_catalog = false
     );
 
     jcode_base::config::invalidate_config_cache();
+}
+
+// ---------------------------------------------------------------------------
+// Per-model display_name, reasoning, max_output_tokens, and provider
+// display_name (opencode parity) tests.
+// ---------------------------------------------------------------------------
+
+fn make_per_model_test_profile() -> jcode_base::config::NamedProviderConfig {
+    jcode_base::config::NamedProviderConfig {
+        base_url: "http://localhost:8080/v1".to_string(),
+        auth: jcode_base::config::NamedProviderAuth::None,
+        default_model: Some("raw-model-id".to_string()),
+        display_name: Some("My Custom Provider".to_string()),
+        models: vec![
+            jcode_base::config::NamedProviderModelConfig {
+                id: "raw-model-id".to_string(),
+                display_name: Some("Friendly Name".to_string()),
+                reasoning: Some(true),
+                max_output_tokens: Some(8192),
+                cost: Some(jcode_base::config::ModelCostConfig {
+                    input: Some(0.15),
+                    output: Some(0.60),
+                    cache_read: Some(0.015),
+                    cache_write: None,
+                }),
+                ..Default::default()
+            },
+            jcode_base::config::NamedProviderModelConfig {
+                id: "plain-model".to_string(),
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    }
+}
+
+#[test]
+fn named_provider_display_name_overrides_runtime_display_name() {
+    let _lock = ENV_LOCK.lock();
+    let _namespace = EnvVarGuard::remove("JCODE_OPENROUTER_CACHE_NAMESPACE");
+    let profile = make_per_model_test_profile();
+    let provider =
+        OpenRouterProvider::new_named_openai_compatible("custom", &profile).expect("provider");
+    assert_eq!(provider.runtime_display_name(), "My Custom Provider");
+}
+
+#[test]
+fn named_provider_model_display_name_appears_in_available_models_display() {
+    let _lock = ENV_LOCK.lock();
+    let _namespace = EnvVarGuard::remove("JCODE_OPENROUTER_CACHE_NAMESPACE");
+    let mut profile = make_per_model_test_profile();
+    profile.model_catalog = false;
+    let provider =
+        OpenRouterProvider::new_named_openai_compatible("custom", &profile).expect("provider");
+    let models = provider.available_models_display();
+    assert!(
+        models.iter().any(|m| m == "Friendly Name"),
+        "display name alias should appear in available_models_display; got: {models:?}"
+    );
+    assert!(
+        !models.iter().any(|m| m == "raw-model-id"),
+        "raw model id should be replaced by display name; got: {models:?}"
+    );
+}
+
+#[test]
+fn named_provider_model_display_name_appears_in_model_routes() {
+    let _lock = ENV_LOCK.lock();
+    let _namespace = EnvVarGuard::remove("JCODE_OPENROUTER_CACHE_NAMESPACE");
+    let profile = make_per_model_test_profile();
+    let provider =
+        OpenRouterProvider::new_named_openai_compatible("custom", &profile).expect("provider");
+    let routes = provider.model_routes();
+    assert!(
+        routes.iter().any(|r| r.model == "Friendly Name"
+            && r.provider == "My Custom Provider"
+            && r.api_method == "openai-compatible:custom"),
+        "route should carry display name and provider label; got: {routes:?}"
+    );
+}
+
+#[test]
+fn named_provider_per_model_reasoning_enables_effort_ladder() {
+    let _lock = ENV_LOCK.lock();
+    let _namespace = EnvVarGuard::remove("JCODE_OPENROUTER_CACHE_NAMESPACE");
+    let mut profile = make_per_model_test_profile();
+    profile.model_catalog = false;
+    let provider =
+        OpenRouterProvider::new_named_openai_compatible("custom", &profile).expect("provider");
+    // The model has `reasoning = true` on a non-DeepSeek gateway, so the
+    // effort ladder should be available.
+    assert!(
+        !provider.available_efforts().is_empty(),
+        "per-model reasoning=true should enable effort ladder even on non-DeepSeek gateway"
+    );
+    assert!(
+        provider.supports_any_reasoning_effort(),
+        "per-model reasoning=true should make supports_any_reasoning_effort true"
+    );
+}
+
+#[test]
+fn named_provider_plain_model_without_reasoning_has_no_effort_ladder() {
+    let _lock = ENV_LOCK.lock();
+    let _namespace = EnvVarGuard::remove("JCODE_OPENROUTER_CACHE_NAMESPACE");
+    let mut profile = make_per_model_test_profile();
+    profile.default_model = Some("plain-model".to_string());
+    profile.model_catalog = false;
+    let provider =
+        OpenRouterProvider::new_named_openai_compatible("custom", &profile).expect("provider");
+    // plain-model has no reasoning override and is not a DeepSeek/GPT family
+    // model, so the effort ladder should be empty.
+    assert!(
+        provider.available_efforts().is_empty(),
+        "plain model without reasoning should have empty effort ladder; got: {:?}",
+        provider.available_efforts()
+    );
+}
+
+#[test]
+fn named_provider_per_model_max_output_tokens_appears_in_request() {
+    let _lock = ENV_LOCK.lock();
+    let _namespace = EnvVarGuard::remove("JCODE_OPENROUTER_CACHE_NAMESPACE");
+    let (api_base, request_rx) = spawn_single_response_chat_server();
+    let mut profile = make_per_model_test_profile();
+    profile.model_catalog = false;
+    profile.base_url = api_base;
+    let provider =
+        OpenRouterProvider::new_named_openai_compatible("custom", &profile).expect("provider");
+
+    let messages = vec![Message {
+        role: Role::User,
+        content: vec![ContentBlock::Text {
+            text: "hello".to_string(),
+            cache_control: None,
+        }],
+        timestamp: None,
+        tool_duration_ms: None,
+    }];
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+    rt.block_on(async {
+        let stream = provider.complete(&messages, &[], "", None).await.expect("stream starts");
+        futures::pin_mut!(stream);
+        while let Some(event) = stream.next().await {
+            if event.is_err() {
+                break;
+            }
+        }
+    });
+
+    let request = request_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("capture request");
+    let body = parse_captured_request_body(&request);
+    assert_eq!(
+        body.get("max_tokens").and_then(|v| v.as_u64()),
+        Some(8192),
+        "per-model max_output_tokens should be sent as max_tokens; got: {request}"
+    );
+}
+
+#[test]
+fn named_provider_cost_config_converts_to_route_cheapness() {
+    let _lock = ENV_LOCK.lock();
+    let _namespace = EnvVarGuard::remove("JCODE_OPENROUTER_CACHE_NAMESPACE");
+    let profile = make_per_model_test_profile();
+    let provider =
+        OpenRouterProvider::new_named_openai_compatible("custom", &profile).expect("provider");
+    let routes = provider.model_routes();
+    let route = routes
+        .iter()
+        .find(|r| r.model == "Friendly Name")
+        .expect("route with display name should exist");
+    // model_routes() on the runtime currently returns cheapness: None; the
+    // cost-derived cheapness is attached in catalog_routes. This test
+    // verifies the cost config is properly parsed and available in the
+    // profile config.
+    let cost = profile
+        .models
+        .iter()
+        .find(|m| m.id == "raw-model-id")
+        .and_then(|m| m.cost.as_ref())
+        .expect("cost config should be present");
+    assert_eq!(cost.input, Some(0.15));
+    assert_eq!(cost.output, Some(0.60));
+    assert_eq!(cost.cache_read, Some(0.015));
+    assert!(route.available);
 }

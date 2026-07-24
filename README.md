@@ -375,6 +375,11 @@ Useful environment overrides for these endpoints:
 
 - `JCODE_STREAM_IDLE_TIMEOUT_SECS` — raise the streaming idle timeout (default 180s) for slow reasoning models that think silently before emitting tokens. Also settable as `[provider] stream_idle_timeout_secs` in `config.toml`.
 - Per-model `context_window` (alias `context_limit`) in a `[[providers.<name>.models]]` entry — set the context window when the endpoint has no usable `/v1/models` response, so jcode does not fall back to the generic 200k default.
+- Per-model `display_name` (alias `name`) in `[[providers.<name>.models]]` — human-friendly name shown in the `/model` picker instead of the raw model id.
+- Per-model `max_output_tokens` (alias `output_limit`) — override the max output tokens sent in the request body for that model.
+- Per-model `reasoning` (bool) — enable the reasoning effort ladder (`/effort` picker) for a model on gateways that are not auto-detected as reasoning-capable.
+- Per-model `cost` — input/output/cache_read/cache_write USD per million tokens, surfaced in the picker cost overlay.
+- Provider-level `display_name` — overrides the raw profile key as the provider label in the `/model` picker.
 - `extra_body` — inject non-standard top-level fields into every chat/completions request body for backends that require them. See [Extra request-body fields](#extra-request-body-fields-extra_body) below.
 
 For details on self-hosting, local runtimes, and the exact config file shape, see below.
@@ -446,10 +451,15 @@ base_url = "https://llm.example.com/v1"
 api_key_env = "JCODE_PROVIDER_MY_API_API_KEY"
 env_file = "provider-my-api.env"
 default_model = "my-model-id"
+display_name = "My Custom API"
 
 [[providers.my-api.models]]
 id = "my-model-id"
 context_window = 128000
+display_name = "My Model"
+max_output_tokens = 8192
+reasoning = true
+cost = { input = 0.15, output = 0.60, cache_read = 0.015 }
 ```
 
 ##### Extra request-body fields (`extra_body`)
