@@ -849,6 +849,8 @@ pub struct App {
     pending_reload_reconnect_status: Option<PendingReloadReconnectStatus>,
     // Current status
     status: ProcessingStatus,
+    // Last OSC 9 status emitted to stdout, so we only re-emit on transitions.
+    last_osc_state: Option<&'static str>,
     // Subagent status (shown during Task tool execution)
     subagent_status: Option<String>,
     // Batch progress (shown during batch tool execution)

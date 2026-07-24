@@ -249,6 +249,11 @@ impl StatusSpinnerRenderer {
             input: crate::tui::ui::frame_input_attribution_snapshot(),
         });
         self.last_frame = Some(completed_buffer);
+
+        // Emit OSC 9 progress with current agent status so terminal
+        // multiplexers (herdr) can detect working/idle without screen-scraping.
+        app.emit_agent_status_osc();
+
         Ok(())
     }
 

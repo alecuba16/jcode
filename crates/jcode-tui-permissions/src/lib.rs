@@ -511,6 +511,13 @@ impl PermissionsApp {
             anyhow::bail!("permissions viewer requires an interactive terminal");
         }
 
+        // Emit OSC 9 progress with "jcode:blocked" so terminal multiplexers
+        // (herdr) detect that the user needs to act on a permission request.
+        // The main jcode TUI is paused while this viewer runs, so it cannot
+        // emit its own status. Emit on entry and on every redraw (deduped
+        // by the terminal: OSC 9 with the same payload is idempotent).
+        emit_osc9_status("blocked");
+
         let mut terminal = std::panic::catch_unwind(std::panic::AssertUnwindSafe(ratatui::init))
             .map_err(|payload| {
                 let msg = if let Some(s) = payload.downcast_ref::<&str>() {
@@ -584,8 +591,22 @@ impl PermissionsApp {
         };
 
         ratatui::restore();
+        // Restore idle status when leaving the permissions viewer so herdr
+        // does not stay stuck in "blocked" after the user has acted.
+        emit_osc9_status("idle");
         result
     }
+}
+
+/// Emit an OSC 9 progress sequence with a `jcode:<state>` payload.
+///
+/// This is the same format the main jcode TUI emits via
+/// `emit_agent_status_osc`, so terminal multiplexers (herdr) can detect
+/// the permissions viewer as a "blocked" state requiring user action.
+fn emit_osc9_status(state: &str) {
+    use std::io::Write as _;
+    let osc = format!("\x1b]9;jcode:{state}\x07");
+    let _ = std::io::stdout().write_all(osc.as_bytes());
 }
 
 fn detail_height(total: u16) -> u16 {

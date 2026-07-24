@@ -120,6 +120,50 @@ impl App {
         );
     }
 
+    /// Compute the current agent status tag for OSC emission.
+    ///
+    /// Returns `Some("working"|"idle")` when the state has changed since the
+    /// last call, or `None` when suppressed (replay/title-off) or unchanged
+    /// (dedup). The OSC byte sequence is built from the returned value.
+    fn agent_osc_state(&mut self) -> Option<&'static str> {
+        if self.suppress_terminal_title_updates || self.is_replay {
+            return None;
+        }
+        let state: &'static str = if self.is_processing() {
+            "working"
+        } else {
+            "idle"
+        };
+        if self.last_osc_state == Some(state) {
+            return None;
+        }
+        self.last_osc_state = Some(state);
+        Some(state)
+    }
+
+    /// Emit an OSC 9 progress sequence carrying a stable agent-status tag.
+    ///
+    /// Terminal multiplexers and status-bar integrations (e.g. herdr) capture
+    /// OSC 9 payloads as a structured side-channel that does not depend on
+    /// screen-scraping. The payload format is `jcode:<state>` so detection
+    /// manifests can match on a version-independent string.
+    ///
+    /// Only emits when the state has actually changed since the last call,
+    /// so it is safe to call on every redraw without flooding the terminal.
+    pub(super) fn emit_agent_status_osc(&mut self) {
+        let Some(state) = self.agent_osc_state() else {
+            return;
+        };
+        let payload = format!("jcode:{state}");
+        // OSC 9 ;<payload> BEL
+        // crossterm does not have a built-in OSC 9 command, so write the
+        // escape sequence directly. Writing to stdout is best-effort: if the
+        // terminal does not understand OSC 9 the bytes are silently ignored.
+        let osc = format!("\x1b]9;{payload}\x07");
+        use std::io::Write as _;
+        let _ = std::io::stdout().write_all(osc.as_bytes());
+    }
+
     pub(super) fn reconnect_target_session_id(&self) -> Option<String> {
         self.remote_session_id
             .clone()
@@ -732,4 +776,101 @@ pub(super) fn handle_dev_command(app: &mut App, trimmed: &str) -> bool {
     }
 
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::provider::Provider;
+    use std::sync::Arc;
+
+    struct MockProvider;
+
+    #[async_trait::async_trait]
+    impl Provider for MockProvider {
+        async fn complete(
+            &self,
+            _messages: &[crate::message::Message],
+            _tools: &[crate::message::ToolDefinition],
+            _system: &str,
+            _resume_session_id: Option<&str>,
+        ) -> anyhow::Result<crate::provider::EventStream> {
+            Err(anyhow::anyhow!("mock"))
+        }
+        fn name(&self) -> &str {
+            "mock"
+        }
+        fn fork(&self) -> Arc<dyn Provider> {
+            Arc::new(Self)
+        }
+    }
+
+    fn create_test_app() -> App {
+        let provider: Arc<dyn Provider> = Arc::new(MockProvider);
+        let rt = tokio::runtime::Runtime::new().expect("runtime");
+        let registry = rt.block_on(crate::tool::Registry::new(provider.clone()));
+        App::new_for_test_harness(provider, registry)
+    }
+
+    #[test]
+    fn osc_state_idle_when_not_processing() {
+        let mut app = create_test_app();
+        app.is_processing = false;
+        app.status = ProcessingStatus::Idle;
+        let state = app.agent_osc_state();
+        assert_eq!(state, Some("idle"));
+        assert_eq!(app.last_osc_state, Some("idle"));
+    }
+
+    #[test]
+    fn osc_state_working_when_processing() {
+        let mut app = create_test_app();
+        app.is_processing = true;
+        app.status = ProcessingStatus::Streaming;
+        let state = app.agent_osc_state();
+        assert_eq!(state, Some("working"));
+        assert_eq!(app.last_osc_state, Some("working"));
+    }
+
+    #[test]
+    fn osc_state_dedup_skips_repeated_same_state() {
+        let mut app = create_test_app();
+        app.is_processing = true;
+        app.status = ProcessingStatus::Streaming;
+        let first = app.agent_osc_state();
+        let second = app.agent_osc_state();
+        assert_eq!(first, Some("working"));
+        assert_eq!(second, None, "second call with same state should be deduped");
+    }
+
+    #[test]
+    fn osc_state_emits_on_transition() {
+        let mut app = create_test_app();
+        app.is_processing = true;
+        app.status = ProcessingStatus::Streaming;
+        assert_eq!(app.agent_osc_state(), Some("working"));
+        app.is_processing = false;
+        app.status = ProcessingStatus::Idle;
+        assert_eq!(app.agent_osc_state(), Some("idle"));
+        app.is_processing = true;
+        app.status = ProcessingStatus::Thinking(Instant::now());
+        assert_eq!(app.agent_osc_state(), Some("working"));
+    }
+
+    #[test]
+    fn osc_state_suppressed_in_replay() {
+        let mut app = create_test_app();
+        app.is_replay = true;
+        app.is_processing = true;
+        assert_eq!(app.agent_osc_state(), None, "replay mode should suppress OSC");
+        assert_eq!(app.last_osc_state, None, "replay should not set last_osc_state");
+    }
+
+    #[test]
+    fn osc_state_suppressed_when_title_updates_off() {
+        let mut app = create_test_app();
+        app.suppress_terminal_title_updates = true;
+        app.is_processing = true;
+        assert_eq!(app.agent_osc_state(), None, "suppressed title mode should not emit OSC");
+    }
 }
