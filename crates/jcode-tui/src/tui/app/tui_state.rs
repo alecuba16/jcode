@@ -1540,6 +1540,19 @@ impl crate::tui::TuiState for App {
             None
         };
 
+        let mut mcp_servers: Vec<crate::tui::info_widget::McpServerInfo> = self
+            .mcp_server_names
+            .iter()
+            .filter(|(_, tool_count)| *tool_count > 0)
+            .map(
+                |(name, tool_count)| crate::tui::info_widget::McpServerInfo {
+                    name: name.clone(),
+                    tool_count: *tool_count,
+                },
+            )
+            .collect();
+        mcp_servers.sort_by(|left, right| left.name.cmp(&right.name));
+
         crate::tui::info_widget::InfoWidgetData {
             todos,
             todo_goals,
@@ -1560,6 +1573,7 @@ impl crate::tui::TuiState for App {
             memory_info,
             swarm_info,
             background_info,
+            mcp_servers,
             usage_info,
             tokens_per_second,
             provider_name: if uses_remote_widget_metadata {

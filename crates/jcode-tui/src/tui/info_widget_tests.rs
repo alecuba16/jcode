@@ -1,13 +1,14 @@
 use super::{
     BackgroundInfo, CacheHitInfo, CacheMissAttribution, GraphEdge, GraphNode, InfoWidgetData,
-    Margins, MemoryActivity, MemoryEvent, MemoryEventKind, MemoryInfo, MemoryState, PipelineState,
-    StepStatus, SwarmInfo, UsageInfo, UsageProvider, WidgetKind, calculate_placements,
-    calculate_widget_height, effective_prompt_tokens, occasional_status_tip,
+    Margins, McpServerInfo, MemoryActivity, MemoryEvent, MemoryEventKind, MemoryInfo, MemoryState,
+    PipelineState, StepStatus, SwarmInfo, UsageInfo, UsageProvider, WidgetKind,
+    calculate_placements, calculate_widget_height, effective_prompt_tokens, occasional_status_tip,
     render_kv_cache_widget, render_memory_compact, render_memory_widget, render_model_widget,
     render_todos_compact, render_todos_expanded, render_todos_widget, render_usage_compact,
     render_usage_widget, swarm_plan_todos, truncate_smart,
 };
 use crate::protocol::SwarmMemberStatus;
+use jcode_tui_style::color::rgb;
 use ratatui::layout::Rect;
 use std::time::{Duration, Instant};
 
@@ -1135,6 +1136,63 @@ fn overview_widget_is_placed_when_space_allows() {
         placements.iter().any(|p| p.kind == WidgetKind::Overview),
         "expected overview widget placement"
     );
+}
+
+#[test]
+fn overview_renders_enabled_mcp_servers_only_when_present() {
+    let data = InfoWidgetData {
+        model: Some("gpt-test".to_string()),
+        mcp_servers: vec![
+            McpServerInfo {
+                name: "filesystem".to_string(),
+                tool_count: 5,
+            },
+            McpServerInfo {
+                name: "github".to_string(),
+                tool_count: 2,
+            },
+        ],
+        ..Default::default()
+    };
+
+    assert!(data.has_data_for(WidgetKind::Overview));
+    let lines = super::render_page(
+        super::InfoPageKind::CompactOnly,
+        &data,
+        Rect::new(0, 0, 48, 10),
+    );
+    let text = lines_text(&lines);
+
+    assert!(text.contains("MCP: filesystem, github"));
+    assert!(!text.contains("7 tools"));
+    let mcp_span = lines
+        .iter()
+        .flat_map(|line| line.spans.iter())
+        .find(|span| span.content.as_ref().starts_with("MCP:"))
+        .expect("missing MCP span");
+    assert_eq!(mcp_span.style.fg, Some(rgb(140, 140, 150)));
+}
+
+#[test]
+fn overview_skips_mcp_line_when_no_servers_are_enabled() {
+    let data = InfoWidgetData {
+        model: Some("gpt-test".to_string()),
+        context_info: Some(crate::prompt::ContextInfo {
+            total_chars: 100,
+            ..Default::default()
+        }),
+        mcp_servers: Vec::new(),
+        ..Default::default()
+    };
+
+    let lines = super::render_page(
+        super::InfoPageKind::CompactOnly,
+        &data,
+        Rect::new(0, 0, 48, 10),
+    );
+    let text = lines_text(&lines);
+
+    assert!(!text.contains("MCP:"));
 }
 
 #[test]

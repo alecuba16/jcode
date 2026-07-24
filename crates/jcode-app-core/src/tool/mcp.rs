@@ -59,8 +59,8 @@ impl Tool for McpManagementTool {
                 "intent": super::intent_schema_property(),
                 "action": {
                     "type": "string",
-                    "enum": ["list", "connect", "disconnect", "reload"],
-                    "description": "Action."
+                    "enum": ["list", "connect", "disconnect", "reload", "enable", "disable"],
+                    "description": "Action. 'enable'/'disable' toggles whether a server's tools are injected into the prompt (persists to config)."
                 },
                 "server": {
                     "type": "string",
@@ -106,8 +106,10 @@ impl Tool for McpManagementTool {
             "connect" => self.connect_server(params, &ctx.session_id).await,
             "disconnect" => self.disconnect_server(params).await,
             "reload" => self.reload_config(&ctx.session_id).await,
+            "enable" => self.toggle_server(params, true, &ctx.session_id).await,
+            "disable" => self.toggle_server(params, false, &ctx.session_id).await,
             _ => Ok(ToolOutput::new(format!(
-                "Unknown action: {}. Use 'list', 'connect', 'disconnect', or 'reload'.",
+                "Unknown action: {}. Use 'list', 'connect', 'disconnect', 'reload', 'enable', or 'disable'.",
                 params.action
             ))),
         };
@@ -456,6 +458,159 @@ impl McpManagementTool {
 
         Ok(ToolOutput::new(output).with_title("MCP: Reloaded"))
     }
+
+    /// Enable or disable an MCP server in config. When enabling, the server is
+    /// connected and its tools registered. When disabling, the server is
+    /// disconnected and its tools unregistered. The change persists to
+    /// ~/.jcode/mcp.json so it survives restarts (opencode-style toggle).
+    async fn toggle_server(
+        &self,
+        params: McpToolInput,
+        enable: bool,
+        session_id: &str,
+    ) -> Result<ToolOutput> {
+        let server_name = params
+            .server
+            .ok_or_else(|| anyhow::anyhow!("'server' is required for enable/disable action"))?;
+
+        // Load current config, update the server's enabled flag, and save.
+        let config = self.manager.read().await.load_fresh_config();
+        let mut server_config = config
+            .servers
+            .get(&server_name)
+            .cloned()
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Server '{}' not found in MCP config. Add it to ~/.jcode/mcp.json first.",
+                    server_name
+                )
+            })?;
+
+        if enable {
+            server_config.disabled = Some(false);
+            server_config.enabled = Some(true);
+        } else {
+            server_config.disabled = Some(true);
+            server_config.enabled = Some(false);
+        }
+
+        // Update and save the global config file (~/.jcode/mcp.json)
+        let mut saved_config = config.clone();
+        saved_config.servers.insert(server_name.clone(), server_config.clone());
+
+        if let Ok(jcode_dir) = crate::storage::jcode_dir() {
+            let mcp_path = jcode_dir.join("mcp.json");
+            if let Err(e) = saved_config.save_to_file(&mcp_path) {
+                crate::logging::event_warn(
+                    "MCP_LIFECYCLE",
+                    vec![
+                        ("phase", "toggle_save_failed".to_string()),
+                        ("server", server_name.clone()),
+                        ("error", e.to_string()),
+                    ],
+                );
+                // Continue anyway: the in-memory toggle still takes effect.
+            }
+        }
+
+        if enable {
+            // Connect the server and register its tools
+            let manager = self.manager.read().await;
+            let connected = manager.connected_servers().await;
+            if connected.contains(&server_name) {
+                return Ok(ToolOutput::new(format!(
+                    "Server '{}' is already connected and enabled.",
+                    server_name
+                ))
+                .with_title(format!("MCP: {} already enabled", server_name)));
+            }
+            drop(manager);
+
+            let manager = self.manager.read().await;
+            match manager.connect(&server_name, &server_config).await {
+                Ok(()) => {
+                    let tools = manager.all_tools().await;
+                    let server_tools: Vec<_> =
+                        tools.iter().filter(|(s, _)| s == &server_name).collect();
+                    let tool_count = server_tools.len();
+                    drop(manager);
+
+                    // Register tools in the registry
+                    if let Some(ref registry) = self.registry {
+                        let mcp_tools =
+                            crate::mcp::create_mcp_tools(Arc::clone(&self.manager)).await;
+                        for (name, tool) in mcp_tools {
+                            if name.starts_with(&format!("mcp__{}__", server_name)) {
+                                registry.register(name, tool).await;
+                            }
+                        }
+                    }
+
+                    crate::logging::event_info(
+                        "MCP_LIFECYCLE",
+                        vec![
+                            ("phase", "server_enabled".to_string()),
+                            ("server", server_name.clone()),
+                            ("session_id", session_id.to_string()),
+                            ("tool_count", tool_count.to_string()),
+                        ],
+                    );
+
+                    Ok(ToolOutput::new(format!(
+                        "Enabled MCP server '{}'. Connected with {} tool(s). Config saved to ~/.jcode/mcp.json.",
+                        server_name, tool_count
+                    ))
+                    .with_title(format!("MCP: Enabled {}", server_name)))
+                }
+                Err(e) => {
+                    drop(manager);
+                    Ok(ToolOutput::new(format!(
+                        "Server '{}' enabled in config but failed to connect: {}.\nUse 'reload' to retry.",
+                        server_name, e
+                    ))
+                    .with_title(format!("MCP: {} enabled (connect failed)", server_name)))
+                }
+            }
+        } else {
+            // Disconnect the server and unregister its tools
+            let manager = self.manager.read().await;
+            let connected = manager.connected_servers().await;
+            if connected.contains(&server_name) {
+                manager.disconnect(&server_name).await?;
+            }
+            drop(manager);
+
+            // Unregister tools for this server
+            if let Some(ref registry) = self.registry {
+                let removed = registry
+                    .unregister_prefix(&format!("mcp__{}__", server_name))
+                    .await;
+                crate::logging::event_info(
+                    "MCP_LIFECYCLE",
+                    vec![
+                        ("phase", "tools_unregistered".to_string()),
+                        ("server", server_name.clone()),
+                        ("removed_tool_count", removed.len().to_string()),
+                    ],
+                );
+            }
+
+            crate::logging::event_info(
+                "MCP_LIFECYCLE",
+                vec![
+                    ("phase", "server_disabled".to_string()),
+                    ("server", server_name.clone()),
+                    ("session_id", session_id.to_string()),
+                ],
+            );
+
+            Ok(ToolOutput::new(format!(
+                "Disabled MCP server '{}'. Tools removed from prompt. Config saved to ~/.jcode/mcp.json.",
+                server_name
+            ))
+            .with_title(format!("MCP: Disabled {}", server_name)))
+        }
+    }
 }
 
 #[cfg(test)]
@@ -645,6 +800,48 @@ mod tests {
 
         let result = tool.execute(input, ctx).await.unwrap();
         assert!(result.output.contains("Unknown action"));
+    }
+
+    #[tokio::test]
+    async fn test_toggle_enable_missing_server() {
+        let tool = create_test_tool();
+        let ctx = create_test_context();
+        let input = json!({"action": "enable", "server": "nonexistent"});
+
+        let result = tool.execute(input, ctx).await;
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("not found in MCP config"));
+    }
+
+    #[tokio::test]
+    async fn test_toggle_disable_missing_server() {
+        let tool = create_test_tool();
+        let ctx = create_test_context();
+        let input = json!({"action": "disable", "server": "nonexistent"});
+
+        let result = tool.execute(input, ctx).await;
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("not found in MCP config"));
+    }
+
+    #[tokio::test]
+    async fn test_toggle_enable_missing_server_field() {
+        let tool = create_test_tool();
+        let ctx = create_test_context();
+        let input = json!({"action": "enable"});
+
+        let result = tool.execute(input, ctx).await;
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("'server' is required"));
     }
 
     #[tokio::test]

@@ -419,6 +419,7 @@ mod tests {
             compaction_info: None,
             is_compacting: false,
             git_info: None,
+            mcp_servers: Vec::new(),
         }
     }
 

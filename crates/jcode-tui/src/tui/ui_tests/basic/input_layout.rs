@@ -234,7 +234,8 @@ fn test_copy_badge_reserves_right_margin_for_info_widgets() {
     reserve_copy_badge_margins(&mut margins, 10, 13, &[(11, 'a')], &copy_badge_ui, Instant::now());
 
     assert_eq!(margins.right_widths[0], 30);
-    assert_eq!(margins.right_widths[1], 16);
+    let expected_reserved = copy_badge_reserved_width('a', &copy_badge_ui, Instant::now()) as u16;
+    assert_eq!(margins.right_widths[1], 30u16.saturating_sub(expected_reserved));
     assert_eq!(margins.right_widths[2], 30);
 }
 

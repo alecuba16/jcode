@@ -621,6 +621,8 @@ pub struct InfoWidgetData {
     pub swarm_info: Option<SwarmInfo>,
     /// Background tasks status
     pub background_info: Option<BackgroundInfo>,
+    /// MCP servers whose tools are currently exposed to the active session.
+    pub mcp_servers: Vec<McpServerInfo>,
     /// Subscription usage info
     pub usage_info: Option<UsageInfo>,
     /// Streaming output tokens per second (approximate)
@@ -654,6 +656,12 @@ pub struct InfoWidgetData {
     pub git_info: Option<GitInfo>,
 }
 
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct McpServerInfo {
+    pub name: String,
+    pub tool_count: usize,
+}
+
 #[derive(Clone, Debug)]
 pub struct CompactionInfo {
     pub is_compacting: bool,
@@ -676,6 +684,7 @@ impl InfoWidgetData {
             && self.memory_info.is_none()
             && self.swarm_info.is_none()
             && self.background_info.is_none()
+            && self.mcp_servers.is_empty()
             && self.diagrams.is_empty()
             && self.workspace_rows.is_empty()
     }
@@ -711,6 +720,9 @@ impl InfoWidgetData {
                     .map(|b| b.running_count > 0)
                     .unwrap_or(false)
                 {
+                    sections += 1;
+                }
+                if !self.mcp_servers.is_empty() {
                     sections += 1;
                 }
                 if self.queue_mode.is_some() {
@@ -2076,6 +2088,10 @@ fn render_sections(
         lines.extend(render_background_compact(info));
     }
 
+    if !data.mcp_servers.is_empty() {
+        lines.push(render_mcp_compact(data, inner.width));
+    }
+
     // Usage info (subscription limits)
     if let Some(info) = &data.usage_info
         && info.available
@@ -2095,6 +2111,20 @@ fn render_sections(
     }
 
     lines
+}
+
+fn render_mcp_compact(data: &InfoWidgetData, width: u16) -> Line<'static> {
+    let names = data
+        .mcp_servers
+        .iter()
+        .map(|server| server.name.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let text = truncate_smart(&format!("MCP: {}", names), width as usize);
+    Line::from(vec![Span::styled(
+        text,
+        Style::default().fg(rgb(140, 140, 150)),
+    )])
 }
 
 // ---------------------------------------------------------------------------
