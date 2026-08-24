@@ -838,6 +838,79 @@ fn test_handle_key_cursor_movement() {
 }
 
 #[test]
+fn test_model_picker_ctrl_s_opens_swarm_model_picker() {
+    with_temp_jcode_home(|| {
+        let mut app = create_test_app();
+        app.is_remote = true;
+        app.remote_available_entries = vec!["gpt-5.5".to_string()];
+        app.remote_model_options = vec![crate::provider::ModelRoute {
+            model: "gpt-5.5".to_string(),
+            provider: "OpenAI".to_string(),
+            api_method: "openai".to_string(),
+            available: true,
+            detail: String::new(),
+            cheapness: None,
+        }];
+
+        app.open_model_picker();
+
+        // Verify the model picker is open
+        assert!(
+            app.inline_interactive_state.is_some(),
+            "model picker should be open"
+        );
+
+        // Ctrl+S should open the swarm model sub-picker
+        app.handle_key(KeyCode::Char('s'), KeyModifiers::CONTROL)
+            .unwrap();
+
+        let picker = app
+            .inline_interactive_state
+            .as_ref()
+            .expect("picker should still be open after Ctrl+S");
+
+        // After Ctrl+S, entries should be tagged as AgentModelChoice for Swarm target
+        assert!(
+            picker.entries.iter().any(|e| matches!(
+                e.action,
+                crate::tui::PickerAction::AgentModelChoice {
+                    target: crate::tui::AgentModelTarget::Swarm,
+                    ..
+                }
+            )),
+            "Ctrl+S should open swarm model picker with AgentModelChoice entries"
+        );
+    });
+}
+
+#[test]
+fn test_model_picker_ctrl_s_does_not_fire_when_not_in_model_picker() {
+    let mut app = create_test_app();
+    app.is_remote = true;
+    app.remote_available_entries = vec!["gpt-5.5".to_string()];
+    app.remote_model_options = vec![crate::provider::ModelRoute {
+        model: "gpt-5.5".to_string(),
+        provider: "OpenAI".to_string(),
+        api_method: "openai".to_string(),
+        available: true,
+        detail: String::new(),
+        cheapness: None,
+    }];
+
+    // Don't open the model picker — Ctrl+S should be a no-op
+    assert!(app.inline_interactive_state.is_none());
+
+    app.handle_key(KeyCode::Char('s'), KeyModifiers::CONTROL)
+        .unwrap();
+
+    // Still no picker should be open
+    assert!(
+        app.inline_interactive_state.is_none(),
+        "Ctrl+S should not open anything when no picker is active"
+    );
+}
+
+#[test]
 fn test_handle_key_ctrl_word_movement_and_delete() {
     let mut app = create_test_app();
     app.set_input_for_test("hello world again");
