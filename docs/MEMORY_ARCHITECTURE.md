@@ -758,6 +758,24 @@ Lightweight consolidation that runs in the memory sidecar after returning result
 - [x] **Contradiction detection on write** — contradictory memories are superseded during incremental extraction.
 - [x] **Reinforcement provenance** — `MemoryEntry` tracks `Vec<Reinforcement>` breadcrumbs (`session_id`, `message_index`, `timestamp`).
 
+### Sidecar Backend Selection
+
+The memory sidecar uses an LLM to judge relevance and extract memories. Which
+LLM backend it uses is now configurable via `memory_sidecar_backend` under
+`[agents]` in `config.toml` (env override: `JCODE_MEMORY_SIDECAR_BACKEND`).
+
+| Value             | Description                                                                 |
+|-------------------|-----------------------------------------------------------------------------|
+| `"auto"` (default) | Auto-select: OpenAI > Claude > active provider, based on which credentials exist. |
+| `"openai"`        | Force the OpenAI Responses API backend (requires Codex credentials).       |
+| `"claude"`        | Force the Claude Messages API backend (requires Claude credentials).      |
+| `"provider"`      | Dispatch through the active agent provider via `complete_simple`. Works with any provider (Copilot, Gemini, Cursor, Bedrock, OpenRouter, custom OpenAI-compatible, etc.). |
+
+When set to `"provider"`, the optional `memory_model` (under `[agents]`) is
+applied to the active provider via `set_model` before `complete_simple`, so the
+configured model is actually used. In `"auto"` mode `memory_model` only routes
+to OpenAI/Claude backends (other values fall back to auto-select).
+
 ### Phase 8: Deep Memory Consolidation (Ambient Garden) 📋
 
 Full graph-wide consolidation that runs during ambient mode background cycles. See [AMBIENT_MODE.md](./AMBIENT_MODE.md) for the ambient mode design.

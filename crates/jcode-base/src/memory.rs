@@ -12,7 +12,6 @@ use crate::memory_types::{
     StepStatus,
     ranking::{top_k_by_ord, top_k_by_score},
 };
-use crate::sidecar::Sidecar;
 use crate::storage;
 use anyhow::Result;
 use chrono::{DateTime, Utc};
@@ -58,8 +57,17 @@ pub use prompt_support::{
 };
 
 const LEGACY_NOTE_CATEGORY: &str = "note";
+const MEMORY_MODEL_FILE: &str = "memory_model.json";
 const MEMORY_RELEVANCE_MAX_CANDIDATES: usize = 30;
 const MEMORY_RELEVANCE_MAX_RESULTS: usize = 10;
+
+/// Persisted by the TUI model picker when Ctrl-M marks a dedicated memory model.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct MemoryModelStore {
+    #[allow(dead_code)]
+    version: u8,
+    model: Option<String>,
+}
 
 /// Producer of synthetic [`MemoryEntry`] values contributed by a higher layer.
 ///
@@ -128,6 +136,41 @@ pub fn memory_sidecar_enabled() -> bool {
 /// Re-evaluated live so login add/remove is reflected without a restart.
 pub fn memory_llm_judge_available() -> bool {
     memory_sidecar_enabled() && crate::sidecar::Sidecar::llm_backend_available()
+}
+
+/// Build a sidecar for memory operations, resolving the model with session
+/// priority: session_memory_model > config memory_model > fallback.
+pub fn sidecar_for_memory(session_memory_model: Option<&str>) -> crate::sidecar::Sidecar {
+    let cfg = &crate::config::config().agents;
+    let persisted_memory_model;
+    let session_memory_model = match session_memory_model.and_then(non_empty_memory_model) {
+        Some(model) => Some(model.to_string()),
+        None => {
+            persisted_memory_model = load_persisted_memory_model();
+            persisted_memory_model
+        }
+    };
+    crate::sidecar::Sidecar::with_session_memory_model(
+        cfg.memory_model.clone(),
+        cfg.memory_sidecar_backend.clone(),
+        session_memory_model,
+    )
+}
+
+fn non_empty_memory_model(model: &str) -> Option<&str> {
+    let model = model.trim();
+    (!model.is_empty()).then_some(model)
+}
+
+fn load_persisted_memory_model() -> Option<String> {
+    let path = storage::app_config_dir().ok()?.join(MEMORY_MODEL_FILE);
+    let contents = std::fs::read_to_string(path).ok()?;
+    let store: MemoryModelStore = serde_json::from_str(&contents).ok()?;
+    store
+        .model
+        .as_deref()
+        .and_then(non_empty_memory_model)
+        .map(str::to_string)
 }
 
 /// Whether memory should do anything at all this moment.
@@ -1122,7 +1165,7 @@ impl MemoryManager {
             return Ok(Vec::new());
         }
 
-        let sidecar = Sidecar::new();
+        let sidecar = sidecar_for_memory(None);
         let extracted = sidecar.extract_memories(transcript).await?;
 
         let mut ids = Vec::new();
@@ -1178,7 +1221,7 @@ impl MemoryManager {
         });
         add_event(MemoryEventKind::SidecarStarted);
 
-        let sidecar = Sidecar::new();
+        let sidecar = sidecar_for_memory(None);
         let mut relevant = Vec::new();
         let mut relevant_ids = Vec::new();
 
@@ -1527,7 +1570,7 @@ impl MemoryManager {
         });
         emit_memory_activity(event_tx.as_ref());
 
-        let sidecar = Sidecar::new();
+        let sidecar = sidecar_for_memory(None);
         let mut relevant = Vec::new();
         let mut relevant_ids = Vec::new();
 

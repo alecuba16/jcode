@@ -61,6 +61,8 @@ fn picker_entry_display_name(entry: &crate::tui::PickerEntry) -> String {
         .any(|option| option.detail.contains("recently added"));
     let suffix = if is_new && !entry.is_current {
         format!(" new{}", default_marker)
+    } else if entry.is_memory_model {
+        format!(" 🧠{}", default_marker)
     } else if entry.is_favorite {
         format!(" ♥{}", default_marker)
     } else if entry.recommended {
@@ -202,7 +204,7 @@ fn model_picker_top_hint(picker: &crate::tui::InlineInteractiveState) -> Option<
             .any(|entry| matches!(entry.action, crate::tui::PickerAction::Model));
     if is_runtime_model_picker {
         Some(
-            " keys: Ctrl+O set default · Ctrl+N favorite · Shift+Tab switch active model to next favorite",
+            " keys: Ctrl+O set default · Ctrl+N favorite · Ctrl+M memory model · Shift+Tab switch active model to next favorite",
         )
     } else {
         None
@@ -911,6 +913,7 @@ mod tests {
                 is_current: true,
                 is_default: false,
                 is_favorite: false,
+                is_memory_model: false,
                 recommended: true,
                 recommendation_rank: 0,
                 usage_score: 0,
@@ -939,6 +942,7 @@ mod tests {
             is_current: true,
             is_default: false,
             is_favorite: false,
+            is_memory_model: false,
             recommended: false,
             recommendation_rank: usize::MAX,
             usage_score: 0,
@@ -967,6 +971,7 @@ mod tests {
                 is_current: false,
                 is_default: false,
                 is_favorite: false,
+                is_memory_model: false,
                 recommended: false,
                 recommendation_rank: usize::MAX,
                 usage_score: 0,
@@ -1009,6 +1014,7 @@ mod tests {
                 is_current: false,
                 is_default: false,
                 is_favorite: false,
+                is_memory_model: false,
                 recommended: false,
                 recommendation_rank: usize::MAX,
                 usage_score: 0,
@@ -1171,6 +1177,7 @@ mod tests {
 
         assert!(hint.contains("Ctrl+O set default"));
         assert!(hint.contains("Ctrl+N favorite"));
+        assert!(hint.contains("Ctrl+M memory model"));
     }
 
     #[test]

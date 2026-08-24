@@ -568,7 +568,49 @@ pub struct AgentsConfig {
     #[serde(default)]
     pub swarm_strip_layout: SwarmStripLayout,
     /// Optional default model override for the memory sidecar.
+    ///
+    /// When `memory_sidecar_backend` is unset ("auto"), this is only used for
+    /// OpenAI or Claude models; any other value falls back to auto-select. When
+    /// `memory_sidecar_backend = "provider"`, this model is passed to the active
+    /// provider via `set_model` before `complete_simple`, so the sidecar uses the
+    /// model you specify instead of the provider's default. It can be any model
+    /// the provider supports (e.g. a custom OpenAI-compatible gateway model).
     pub memory_model: Option<String>,
+    /// Explicit backend selection for the memory sidecar.
+    ///
+    /// - `"auto"` (default): auto-select OpenAI, then Claude, then the active
+    ///   provider, based on which credentials exist.
+    /// - `"openai"`: force the OpenAI Responses API backend (requires Codex
+    ///   credentials).
+    /// - `"claude"`: force the Claude Messages API backend (requires Claude
+    ///   credentials).
+    /// - `"provider"`: dispatch through the active agent provider via
+    ///   `complete_simple`. Works with any provider (Copilot, Gemini, Cursor,
+    ///   Bedrock, OpenRouter, custom OpenAI-compatible, etc.). Use this when
+    ///   you want the sidecar to use your main provider's model instead of
+    ///   OpenAI/Claude.
+    ///
+    /// When set to `"provider"`, `memory_model` (if set) is applied to the active
+    /// provider via `set_model` before `complete_simple`, so the configured model
+    /// is actually used. When unset or `"auto"`, the legacy auto-select logic
+    /// applies and `memory_model` only routes to OpenAI/Claude backends.
+    ///
+    /// Env override: `JCODE_MEMORY_SIDECAR_BACKEND`.
+    #[serde(default)]
+    pub memory_sidecar_backend: Option<String>,
+    /// Fallback behavior when no memory model is marked (neither at session
+    /// level nor in config).
+    ///
+    /// - `"openai_claude"` (default): try OpenAI, then Claude, then the active
+    ///   provider's current model. This preserves the legacy auto-select behavior.
+    /// - `"provider"`: use the active provider's current model directly, skipping
+    ///   the OpenAI/Claude credential checks.
+    /// - `"none"`: memory sidecar is disabled when no model is explicitly marked,
+    ///   preventing unintended use of a different model for memory.
+    ///
+    /// Env override: `JCODE_MEMORY_SIDECAR_FALLBACK`.
+    #[serde(default)]
+    pub memory_sidecar_fallback: String,
     /// Whether memory should use the sidecar for relevance/extraction.
     ///
     /// Defaults to `true`: the LLM precision-judge path is the only memory mode
@@ -660,6 +702,8 @@ impl Default for AgentsConfig {
             swarm_gallery_max_pct: None,
             swarm_strip_layout: SwarmStripLayout::default(),
             memory_model: None,
+            memory_sidecar_backend: None,
+            memory_sidecar_fallback: String::new(),
             memory_sidecar_enabled: default_memory_sidecar_enabled(),
             memory_rerank_cadence: default_memory_rerank_cadence(),
             memory_rerank_votes: default_memory_rerank_votes(),

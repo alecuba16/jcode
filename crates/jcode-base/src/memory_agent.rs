@@ -175,7 +175,7 @@ async fn run_final_extraction(transcript: String, session_id: String, working_di
         transcript.len()
     ));
 
-    let sidecar = crate::sidecar::Sidecar::new();
+    let sidecar = crate::memory::sidecar_for_memory(None);
     let manager = manager_for_working_dir(working_dir.as_deref());
 
     let existing: Vec<String> = manager
@@ -406,7 +406,7 @@ impl MemoryAgent {
     /// login changes (gaining or losing access to a provider/credentials) are
     /// reflected immediately without restarting the agent.
     fn live_sidecar(&self) -> Option<Sidecar> {
-        memory::memory_llm_judge_available().then(Sidecar::new)
+        memory::memory_llm_judge_available().then(|| memory::sidecar_for_memory(None))
     }
 
     /// Reset all agent state
@@ -1452,7 +1452,7 @@ async fn name_cluster_with_sidecar(member_contents: &[String]) -> Result<String>
         return Ok(fallback);
     }
 
-    let sidecar = Sidecar::new();
+    let sidecar = memory::sidecar_for_memory(None);
     let mut prompt = String::from(
         "These memories were retrieved together. Give this cluster a short descriptive name (2-4 words, no quotes):\n",
     );

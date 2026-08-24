@@ -287,6 +287,33 @@ Memories are automatically consolidated every so often via the ambient mode. Thi
 
 <!-- Memory demo media is hosted in the readme-assets release. -->
 
+### Memory sidecar backend
+
+The memory sidecar uses an LLM to judge relevance and extract memories. By default it auto-selects the best backend: OpenAI (GPT-5.6 Luna) if Codex credentials exist, then Claude, then the active agent provider.
+
+If you use a custom OpenAI-compatible provider (e.g. a company gateway) and want the sidecar to use your model instead of OpenAI/Claude, set `memory_sidecar_backend = "provider"` in `[agents]`:
+
+```toml
+[agents]
+memory_sidecar_backend = "provider"
+# Optional: pin a specific model (applied to the provider via set_model;
+# defaults to your active provider's model if unset)
+# memory_model = "my-model-id"
+```
+
+This dispatches through the active provider via `complete_simple`, so it works with any provider jcode supports (Copilot, Gemini, Cursor, Bedrock, OpenRouter, custom OpenAI-compatible, etc.).
+
+Other backend options:
+
+| Value | Description |
+|-------|-------------|
+| `"auto"` (default) | Auto-select: OpenAI > Claude > active provider |
+| `"openai"` | Force OpenAI Responses API (requires Codex credentials) |
+| `"claude"` | Force Claude Messages API (requires Claude credentials) |
+| `"provider"` | Dispatch through the active agent provider |
+
+Env override: `JCODE_MEMORY_SIDECAR_BACKEND`
+
 ---
 
 ## UI: Side panels, Diagrams, Info Widgets, rendering, scrolling, alignment
