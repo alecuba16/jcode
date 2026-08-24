@@ -1,11 +1,13 @@
 use super::{
     BackgroundInfo, CacheHitInfo, CacheMissAttribution, GraphEdge, GraphNode, InfoWidgetData,
-    Margins, MemoryActivity, MemoryEvent, MemoryEventKind, MemoryInfo, MemoryState, PipelineState,
-    StepStatus, SwarmInfo, UsageInfo, UsageProvider, WidgetKind, calculate_placements,
-    calculate_widget_height, effective_prompt_tokens, occasional_status_tip,
-    render_kv_cache_widget, render_memory_compact, render_memory_widget, render_model_widget,
-    render_todos_compact, render_todos_expanded, render_todos_widget, render_usage_compact,
-    render_usage_widget, swarm_plan_todos, truncate_smart,
+    InjectedMemoryItem, Margins, MemoryActivity, MemoryEvent, MemoryEventKind, MemoryInfo,
+    MemoryState, PipelineState, StepStatus, SwarmInfo, UsageInfo, UsageProvider, WidgetKind,
+    calculate_placements, calculate_widget_height, dashed_separator, effective_prompt_tokens,
+    format_age, format_memory_count, memory_active_summary, occasional_status_tip,
+    render_cost_tokens_line, render_kv_cache_summary_line, render_mcp_servers_line,
+    render_memory_compact, render_memory_widget, render_recovered_memories_widget,
+    render_skills_line, render_todos_compact, render_todos_expanded, render_usage_compact,
+    swarm_plan_todos, truncate_smart, wrap_text,
 };
 use crate::protocol::SwarmMemberStatus;
 use ratatui::layout::Rect;
@@ -77,22 +79,17 @@ fn kv_cache_widget_shows_session_hit_ratio() {
     };
 
     assert!(data.has_data_for(WidgetKind::KvCache));
-    let lines = render_kv_cache_widget(&data, Rect::new(0, 0, 40, 5));
+    let cache = data.cache_hit_info.as_ref().unwrap();
+    let lines = render_kv_cache_summary_line(cache);
     let text = lines_text(&lines);
 
-    assert_eq!(lines.len(), 4);
+    // The summary line shows header + yield/warm + session stats.
+    // Full miss-attribution detail is no longer rendered as a standalone widget.
     assert!(text.contains("KV cache:"));
     assert!(text.contains("yield "));
     assert!(text.contains("90%"));
-    assert!(text.contains("last "));
-    assert!(text.contains("94%"));
     assert!(text.contains("session "));
     assert!(text.contains("39%"));
-    assert!(text.contains("miss attribution"));
-    assert!(text.contains("69k missed total"));
-    assert!(text.contains("20>"));
-    assert!(text.contains("69k miss"));
-    assert!(text.contains("provider switch"));
 }
 
 #[test]
@@ -127,7 +124,7 @@ fn todos_widgets_show_item_and_aggregate_confidence() {
         ..Default::default()
     };
 
-    let normal_text = lines_text(&render_todos_widget(&data, Rect::new(0, 0, 80, 8)));
+    let normal_text = lines_text(&render_todos_expanded(&data, Rect::new(0, 0, 80, 8)));
     assert!(normal_text.contains("plausible"));
     assert!(normal_text.contains("plausible"));
     assert!(normal_text.contains("plausible"));
@@ -207,7 +204,7 @@ fn task_group_headers_render_their_own_weighted_confidence() {
     };
 
     for text in [
-        lines_text_concat(&render_todos_widget(&data, Rect::new(0, 0, 90, 10))),
+        lines_text_concat(&render_todos_expanded(&data, Rect::new(0, 0, 90, 10))),
         lines_text_concat(&render_todos_expanded(&data, Rect::new(0, 0, 90, 14))),
     ] {
         assert!(
@@ -267,7 +264,7 @@ fn todos_widget_renders_exact_pips_for_small_lists() {
         ..Default::default()
     };
 
-    let lines = render_todos_widget(&data, Rect::new(0, 0, 80, 8));
+    let lines = render_todos_expanded(&data, Rect::new(0, 0, 80, 8));
     let header = lines_text(&lines[..1]);
     // Exact 1:1 pips on the header: 2 done + 1 active render as filled ●,
     // 1 open renders as hollow ○. (Active is full amber, not half.)
@@ -393,7 +390,7 @@ fn swarm_plan_running_items_render_before_completed_in_large_plans() {
         todos: swarm_plan_todos(&items),
         ..Default::default()
     };
-    let text = lines_text(&render_todos_widget(&data, Rect::new(0, 0, 60, 8)));
+    let text = lines_text(&render_todos_expanded(&data, Rect::new(0, 0, 60, 8)));
     assert!(
         text.contains("task hot-task"),
         "running plan item should be visible in the budgeted list: {text}"
@@ -410,7 +407,7 @@ fn todo_widget_header_says_plan_when_showing_swarm_plan_projection() {
         ..Default::default()
     };
     for text in [
-        lines_text(&render_todos_widget(&plan_data, Rect::new(0, 0, 60, 8))),
+        lines_text(&render_todos_expanded(&plan_data, Rect::new(0, 0, 60, 8))),
         lines_text(&render_todos_expanded(&plan_data, Rect::new(0, 0, 60, 14))),
         lines_text(&render_todos_compact(&plan_data, Rect::new(0, 0, 60, 3))),
     ] {
@@ -423,7 +420,7 @@ fn todo_widget_header_says_plan_when_showing_swarm_plan_projection() {
         todos_are_swarm_plan: false,
         ..Default::default()
     };
-    let text = lines_text(&render_todos_widget(&todo_data, Rect::new(0, 0, 60, 8)));
+    let text = lines_text(&render_todos_expanded(&todo_data, Rect::new(0, 0, 60, 8)));
     assert!(text.contains("Todos"), "todos header missing: {text}");
 }
 
@@ -474,7 +471,7 @@ fn flat_todo_list_shows_feedback_loop_assessments_on_header_in_all_widget_sizes(
         ..Default::default()
     };
     for text in [
-        lines_text_concat(&render_todos_widget(&data, Rect::new(0, 0, 70, 8))),
+        lines_text_concat(&render_todos_expanded(&data, Rect::new(0, 0, 70, 8))),
         lines_text_concat(&render_todos_expanded(&data, Rect::new(0, 0, 70, 14))),
         lines_text_concat(&render_todos_compact(&data, Rect::new(0, 0, 70, 3))),
     ] {
@@ -507,7 +504,7 @@ fn grouped_todos_show_closed_feedback_loop_on_their_group_headers() {
         ..Default::default()
     };
     for text in [
-        lines_text_concat(&render_todos_widget(&data, Rect::new(0, 0, 70, 10))),
+        lines_text_concat(&render_todos_expanded(&data, Rect::new(0, 0, 70, 10))),
         lines_text_concat(&render_todos_expanded(&data, Rect::new(0, 0, 70, 14))),
     ] {
         assert!(text.contains("loop strong"), "group loop missing: {text}");
@@ -522,7 +519,7 @@ fn todos_without_goals_render_no_loop_suffix() {
         ..Default::default()
     };
     for text in [
-        lines_text_concat(&render_todos_widget(&data, Rect::new(0, 0, 70, 8))),
+        lines_text_concat(&render_todos_expanded(&data, Rect::new(0, 0, 70, 8))),
         lines_text_concat(&render_todos_expanded(&data, Rect::new(0, 0, 70, 14))),
         lines_text_concat(&render_todos_compact(&data, Rect::new(0, 0, 70, 3))),
     ] {
@@ -548,7 +545,7 @@ fn loop_suffix_renders_safely_at_tiny_sizes() {
     };
     for (w, h) in [(0, 0), (1, 1), (5, 2), (12, 4), (200, 50)] {
         let rect = Rect::new(0, 0, w, h);
-        let _ = render_todos_widget(&data, rect);
+        let _ = render_todos_expanded(&data, rect);
         let _ = render_todos_expanded(&data, rect);
         let _ = render_todos_compact(&data, rect);
     }
@@ -599,7 +596,7 @@ fn swarm_plan_todos_render_safely_at_extreme_sizes() {
     };
     for (w, h) in [(0, 0), (1, 1), (2, 5), (7, 3), (20, 8), (200, 50)] {
         let rect = Rect::new(0, 0, w, h);
-        let _ = render_todos_widget(&data, rect);
+        let _ = render_todos_expanded(&data, rect);
         let _ = render_todos_expanded(&data, rect);
         let _ = render_todos_compact(&data, rect);
     }
@@ -622,7 +619,7 @@ fn cost_based_usage_widgets_show_price_and_tokens() {
 
     assert!(data.has_data_for(WidgetKind::UsageLimits));
 
-    let expanded_text = lines_text(&render_usage_widget(&data, Rect::new(0, 0, 40, 4)));
+    let expanded_text = lines_text(&render_usage_compact(&usage, 40, false));
     assert!(expanded_text.contains("$0.0123"));
     assert!(expanded_text.contains("12.3K in + 678 out"));
 
@@ -922,8 +919,11 @@ fn memory_widget_uses_distinct_trace_label_when_idle() {
         .join("\n")
         .to_lowercase();
 
+    // The pipeline completed and a memory was injected, so the widget shows
+    // the "Last: " status line and the recovered-memory summary line instead
+    // of the generic "trace:" line.
     assert_eq!(text.matches("last:").count(), 1, "{text}");
-    assert!(text.contains("trace:"), "{text}");
+    assert!(text.contains("1 memory injected"), "{text}");
 }
 
 #[test]
@@ -980,7 +980,23 @@ fn memory_compact_shows_memory_count_before_status() {
 
 #[test]
 fn memory_widget_is_hidden_when_disabled() {
+    // When disabled with 0 memories, activity, or sidecar, the widget is hidden.
     let data = InfoWidgetData {
+        memory_info: Some(MemoryInfo {
+            total_count: 0,
+            project_count: 0,
+            global_count: 0,
+            disabled: true,
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+
+    assert!(render_memory_widget(&data, Rect::new(0, 0, 40, 5)).is_empty());
+    assert!(!data.has_data_for(WidgetKind::MemoryActivity));
+
+    // When disabled but has memories, the widget shows "Memory disabled".
+    let data_with_mem = InfoWidgetData {
         memory_info: Some(MemoryInfo {
             total_count: 12,
             project_count: 8,
@@ -990,10 +1006,8 @@ fn memory_widget_is_hidden_when_disabled() {
         }),
         ..Default::default()
     };
-
-    assert!(render_memory_widget(&data, Rect::new(0, 0, 40, 5)).is_empty());
-    assert!(render_memory_compact(data.memory_info.as_ref().unwrap(), 40).is_empty());
-    assert!(!data.has_data_for(WidgetKind::MemoryActivity));
+    assert!(!render_memory_widget(&data_with_mem, Rect::new(0, 0, 40, 5)).is_empty());
+    assert!(data_with_mem.has_data_for(WidgetKind::MemoryActivity));
 }
 
 #[test]
@@ -1093,12 +1107,16 @@ fn contextual_subgraph_prefers_memory_hub() {
 }
 
 #[test]
-fn overview_requires_multiple_sections() {
+fn overview_shows_for_any_renderable_content() {
+    // The Overview is the single merged widget: it shows whenever the panel
+    // renders any content at all. Model-only data must go somewhere, and the
+    // standalone ModelInfo margin widget is gone (its content is merged into
+    // the Overview panel), so the Overview owns it now.
     let one_section = InfoWidgetData {
         model: Some("gpt-test".to_string()),
         ..Default::default()
     };
-    assert!(!one_section.has_data_for(WidgetKind::Overview));
+    assert!(one_section.has_data_for(WidgetKind::Overview));
 
     let two_sections = InfoWidgetData {
         model: Some("gpt-test".to_string()),
@@ -1123,6 +1141,7 @@ fn overview_widget_is_placed_when_space_allows() {
     let data = InfoWidgetData {
         model: Some("gpt-test".to_string()),
         queue_mode: Some(true),
+        status_line_pinned: true,
         ..Default::default()
     };
     let margins = Margins {
@@ -1179,14 +1198,15 @@ fn workspace_widget_has_high_priority_when_enabled() {
 }
 
 #[test]
-fn model_widget_renders_connection_type() {
+fn model_info_renders_connection_type() {
     let data = InfoWidgetData {
         model: Some("gpt-5.3-codex".to_string()),
         provider_name: Some("openai".to_string()),
         connection_type: Some("websocket".to_string()),
+        auth_method: super::AuthMethod::OpenAIOAuth,
         ..Default::default()
     };
-    let lines = render_model_widget(&data, Rect::new(0, 0, 40, 10));
+    let lines = super::render_model_info(&data, Rect::new(0, 0, 40, 10));
     let text = lines
         .iter()
         .flat_map(|line| line.spans.iter())
@@ -1343,16 +1363,28 @@ fn swarm_widget_dock_mode_lists_managed_agents() {
     let text = lines_text(&lines);
     assert!(text.contains("1/2 agents"), "got: {text}");
     assert!(text.contains("nodes 3/7"), "got: {text}");
-    // Second line is the plan progress bar (low-profile underline cells).
-    assert_eq!(lines.len(), 2, "compact widget is exactly two lines");
+    // First two lines: summary line + plan progress bar (low-profile underline cells).
+    assert!(
+        lines.len() >= 2,
+        "compact widget has at least summary + bar"
+    );
     let bar: String = lines[1].spans.iter().map(|s| s.content.as_ref()).collect();
     assert!(
         bar.chars().all(|c| c == '▁') && !bar.is_empty(),
         "expected underline bar cells: {bar}"
     );
-    // Height: summary line + bar (+ borders).
+    // Remaining lines: individual agent status lines (one per managed member).
+    assert_eq!(
+        lines.len(),
+        4,
+        "summary + bar + 2 agent lines: {}",
+        lines.len()
+    );
+    assert!(text.contains("researcher"), "agent name visible: {text}");
+    assert!(text.contains("reviewer"), "agent name visible: {text}");
+    // Height: summary + bar + 2 agents (+ borders).
     let h = calculate_widget_height(WidgetKind::SwarmStatus, &data, 34, 20);
-    assert_eq!(h, 4, "compact height should be 2 content + 2 border: {h}");
+    assert_eq!(h, 6, "compact height = 4 content + 2 border: {h}");
 }
 
 /// Without managed members the legacy session-list rendering is preserved and
@@ -1421,8 +1453,8 @@ fn swarm_widget_renders_member_roles_and_details() {
 
     let text = lines_text(&super::render_swarm_widget(&data, Rect::new(0, 0, 80, 4)));
 
-    assert!(text.contains("3s"), "got: {text}");
-    assert!(text.contains("1c"), "got: {text}");
+    assert!(text.contains("3 sessions"), "got: {text}");
+    assert!(text.contains("1 client"), "got: {text}");
     assert!(text.contains("★"), "got: {text}");
     assert!(
         text.contains("coord running - orchestrating patch"),
@@ -1509,19 +1541,15 @@ fn swarm_widget_caps_member_rows_for_large_swarms() {
     };
 
     let lines = super::render_swarm_widget(&data, Rect::new(0, 0, 30, 10));
-    // Stats line + at most 3 member rows regardless of swarm size.
-    assert_eq!(lines.len(), 4, "expected stats line + capped member rows");
+    // Stats line + at most 8 member rows regardless of swarm size.
+    assert_eq!(lines.len(), 9, "expected stats line + capped member rows");
     let text = lines_text(&lines);
-    assert!(text.contains("500s"), "got: {text}");
-    assert!(text.contains("3c"), "got: {text}");
+    assert!(text.contains("500 sessions"), "got: {text}");
+    assert!(text.contains("3 clients"), "got: {text}");
 }
 
 #[test]
-fn background_widget_handles_empty_and_large_task_lists() {
-    // No background info: renders nothing.
-    let data = InfoWidgetData::default();
-    assert!(super::render_background_widget(&data, Rect::new(0, 0, 40, 4)).is_empty());
-
+fn background_compact_handles_empty_and_large_task_lists() {
     // running_count == 0: summary is suppressed even if stale task names linger.
     let info = BackgroundInfo {
         running_count: 0,
@@ -1530,28 +1558,22 @@ fn background_widget_handles_empty_and_large_task_lists() {
     };
     assert!(super::render_background_compact(&info).is_empty());
 
-    // Large task list: summary + 3 rows + overflow line, no panic at tiny width.
+    // Large task list: summary + 3 rows + overflow line.
     let info = BackgroundInfo {
         running_count: 200,
         running_tasks: (0..200).map(|i| format!("task-{i}")).collect(),
         progress_detail: Some("42% · working".to_string()),
         ..Default::default()
     };
-    let data = InfoWidgetData {
-        background_info: Some(info.clone()),
-        ..Default::default()
-    };
-    let lines = super::render_background_widget(&data, Rect::new(0, 0, 40, 8));
+    let lines = super::render_background_compact(&info);
     assert_eq!(lines.len(), 5, "summary + 3 tasks + overflow");
     let text = lines_text(&lines);
     assert!(text.contains("200 running"), "got: {text}");
     assert!(text.contains("+197 more"), "got: {text}");
-    // Zero-size rect must not panic (row width clamps to a minimum).
-    let _ = super::render_background_widget(&data, Rect::new(0, 0, 0, 0));
 }
 
 #[test]
-fn background_widget_and_compact_share_summary_format() {
+fn background_compact_renders_summary_format() {
     let info = BackgroundInfo {
         running_count: 4,
         running_tasks: vec![
@@ -1565,26 +1587,23 @@ fn background_widget_and_compact_share_summary_format() {
         memory_agent_active: false,
         memory_agent_turns: 0,
     };
-    let data = InfoWidgetData {
-        background_info: Some(info.clone()),
-        ..Default::default()
-    };
 
-    let widget_text = lines_text(&super::render_background_widget(
-        &data,
-        Rect::new(0, 0, 40, 1),
-    ));
     let compact_text = lines_text(&super::render_background_compact(&info));
 
-    assert_eq!(widget_text, compact_text);
-    assert!(widget_text.contains("Background"), "got: {widget_text}");
-    assert!(widget_text.contains("4"), "got: {widget_text}");
-    assert!(!widget_text.contains("mem:"), "got: {widget_text}");
-    assert!(widget_text.contains("selfdev build"), "got: {widget_text}");
-    assert!(widget_text.contains("train.py"), "got: {widget_text}");
-    assert!(widget_text.contains("cargo test"), "got: {widget_text}");
-    assert!(widget_text.contains("+1 more"), "got: {widget_text}");
-    assert!(widget_text.contains("[#####-------]"), "got: {widget_text}");
+    assert!(compact_text.contains("Background"), "got: {compact_text}");
+    assert!(compact_text.contains("4"), "got: {compact_text}");
+    assert!(!compact_text.contains("mem:"), "got: {compact_text}");
+    assert!(
+        compact_text.contains("selfdev build"),
+        "got: {compact_text}"
+    );
+    assert!(compact_text.contains("train.py"), "got: {compact_text}");
+    assert!(compact_text.contains("cargo test"), "got: {compact_text}");
+    assert!(compact_text.contains("+1 more"), "got: {compact_text}");
+    assert!(
+        compact_text.contains("[#####-------]"),
+        "got: {compact_text}"
+    );
 }
 
 #[test]
@@ -1812,4 +1831,970 @@ fn compact_page_height_matches_for_cost_based_usage() {
 
     let lines = super::render_page(InfoPageKind::CompactOnly, &data, inner);
     assert_eq!(lines.len() as u16, layout.pages[0].height);
+}
+
+/// Build InfoWidgetData with a single MemoryInjected event carrying the given
+/// items. Used by the recovered-memories widget tests.
+fn data_with_injected(items: Vec<InjectedMemoryItem>) -> InfoWidgetData {
+    let now = Instant::now();
+    InfoWidgetData {
+        memory_info: Some(MemoryInfo {
+            total_count: items.len().max(1),
+            activity: Some(MemoryActivity {
+                state: MemoryState::Idle,
+                state_since: now - Duration::from_secs(2),
+                pipeline: None,
+                recent_events: vec![MemoryEvent {
+                    kind: MemoryEventKind::MemoryInjected {
+                        count: items.len().max(1),
+                        prompt_chars: 42,
+                        age_ms: 12,
+                        preview: String::new(),
+                        items,
+                    },
+                    timestamp: now - Duration::from_secs(1),
+                    detail: None,
+                }],
+            }),
+            ..Default::default()
+        }),
+        ..Default::default()
+    }
+}
+
+#[test]
+fn recovered_memories_widget_is_empty_when_no_memory_info() {
+    let data = InfoWidgetData::default();
+    let lines = render_recovered_memories_widget(&data, Rect::new(0, 0, 40, 10));
+    assert!(lines.is_empty());
+}
+
+#[test]
+fn recovered_memories_widget_is_empty_without_injected_events() {
+    let now = Instant::now();
+    let data = InfoWidgetData {
+        memory_info: Some(MemoryInfo {
+            activity: Some(MemoryActivity {
+                state: MemoryState::Idle,
+                state_since: now,
+                pipeline: None,
+                recent_events: vec![MemoryEvent {
+                    kind: MemoryEventKind::EmbeddingComplete {
+                        latency_ms: 5,
+                        hits: 3,
+                    },
+                    timestamp: now,
+                    detail: None,
+                }],
+            }),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let lines = render_recovered_memories_widget(&data, Rect::new(0, 0, 40, 10));
+    assert!(lines.is_empty());
+}
+
+#[test]
+fn recovered_memories_widget_lists_items_when_present() {
+    let data = data_with_injected(vec![
+        InjectedMemoryItem {
+            section: "fact".to_string(),
+            content: "prefers terse answers".to_string(),
+        },
+        InjectedMemoryItem {
+            section: "preference".to_string(),
+            content: "uses worktrees".to_string(),
+        },
+    ]);
+    // Use a wide terminal so the 50% cap still fits each item on one line.
+    let lines = render_recovered_memories_widget(&data, Rect::new(0, 0, 200, 10));
+    let text = lines
+        .iter()
+        .flat_map(|line| line.spans.iter())
+        .map(|span| span.content.as_ref())
+        .collect::<Vec<_>>()
+        .join("\n")
+        .to_lowercase();
+
+    assert!(text.contains("2 memories recovered:"), "{text}");
+    assert!(text.contains("prefers terse answers"), "{text}");
+    assert!(text.contains("uses worktrees"), "{text}");
+}
+
+#[test]
+fn recovered_memories_widget_shows_summary_when_no_item_details() {
+    let data = data_with_injected(Vec::new());
+    let lines = render_recovered_memories_widget(&data, Rect::new(0, 0, 44, 10));
+    let text = lines
+        .iter()
+        .flat_map(|line| line.spans.iter())
+        .map(|span| span.content.as_ref())
+        .collect::<Vec<_>>()
+        .join("\n")
+        .to_lowercase();
+    assert!(text.contains("1 memory injected"), "{text}");
+}
+
+#[test]
+fn has_recovered_memories_reflects_injected_events() {
+    let data = data_with_injected(vec![InjectedMemoryItem {
+        section: "fact".to_string(),
+        content: "x".to_string(),
+    }]);
+    assert!(data.has_recovered_memories());
+
+    let empty = InfoWidgetData::default();
+    assert!(!empty.has_recovered_memories());
+}
+
+#[test]
+fn recovered_memories_height_matches_rendered_lines() {
+    let items = vec![
+        InjectedMemoryItem {
+            section: "fact".to_string(),
+            content: "one".to_string(),
+        },
+        InjectedMemoryItem {
+            section: "fact".to_string(),
+            content: "two".to_string(),
+        },
+    ];
+    let data = data_with_injected(items);
+    // Header + 2 items = 3 content lines.
+    let rendered = render_recovered_memories_widget(&data, Rect::new(0, 0, 40, 30));
+    assert_eq!(rendered.len(), 3);
+
+    // calculate_widget_height should return the same content height (no border).
+    let h = calculate_widget_height(WidgetKind::RecoveredMemories, &data, 40, 30);
+    assert_eq!(h, 3 + 2, "height must include the 2-row border");
+}
+
+/// Visual snapshot test: render a fully-populated Overview panel and print
+/// it as a bordered box so we can see the layout. Run with:
+///   cargo test -p jcode-tui --lib -- info_widget_tests::visual_full_overview --nocapture
+#[test]
+fn visual_full_overview() {
+    use crate::ambient::AmbientStatus;
+    use crate::prompt::ContextInfo;
+    use crate::tui::info_widget::{AmbientWidgetData, AuthMethod, CompactionInfo, GitInfo};
+
+    let data = InfoWidgetData {
+        // Session
+        session_count: Some(3),
+        session_name: Some("fix/info_fields".to_string()),
+        working_dir: Some(
+            "/Users/alejandro/Documents/projects/worktrees/jcode/fix-info-fields".to_string(),
+        ),
+
+        // Model + provider + auth
+        model: Some("claude-sonnet-4-20250514".to_string()),
+        provider_name: Some("anthropic".to_string()),
+        reasoning_effort: Some("high".to_string()),
+        service_tier: Some("priority".to_string()),
+        auth_method: AuthMethod::AnthropicOAuth,
+        upstream_provider: None,
+        connection_type: Some("websocket/persistent-fresh".to_string()),
+
+        // Context
+        context_info: Some(ContextInfo {
+            system_prompt_chars: 8_500,
+            user_messages_chars: 12_000,
+            assistant_messages_chars: 15_000,
+            tool_calls_chars: 6_000,
+            tool_results_chars: 20_000,
+            total_chars: 61_500,
+            user_messages_count: 8,
+            assistant_messages_count: 7,
+            tool_calls_count: 15,
+            tool_results_count: 15,
+            ..Default::default()
+        }),
+        context_limit: Some(200_000),
+
+        // Usage (Anthropic OAuth: subscription bars with reset times)
+        usage_info: Some(UsageInfo {
+            provider: UsageProvider::Anthropic,
+            primary_limit_label: Some("5h".to_string()),
+            five_hour: 0.42,
+            five_hour_resets_at: Some("2026-07-26T13:00:00Z".to_string()),
+            secondary_limit_label: Some("weekly".to_string()),
+            seven_day: 0.18,
+            seven_day_resets_at: Some("2026-07-28T00:00:00Z".to_string()),
+            total_cost: 0.0,
+            input_tokens: 45_200,
+            output_tokens: 8_100,
+            output_tps: Some(42.5),
+            available: true,
+            ..Default::default()
+        }),
+        avg_tokens_per_second: Some(38.2),
+
+        // KV cache
+        cache_hit_info: Some(CacheHitInfo {
+            reported_input_tokens: 45_200,
+            read_tokens: 30_000,
+            creation_tokens: 5_000,
+            optimal_input_tokens: 40_000,
+            ..Default::default()
+        }),
+
+        // Compaction
+        compaction_info: Some(CompactionInfo {
+            is_compacting: false,
+            compacted_messages: 12,
+            active_messages: 8,
+            summary_chars: 3_500,
+            mode: "auto".to_string(),
+        }),
+
+        // Background
+        background_info: Some(BackgroundInfo {
+            running_count: 2,
+            running_tasks: vec!["bash: build".to_string(), "task: tests".to_string()],
+            progress_summary: Some("Building... 80%".to_string()),
+            ..Default::default()
+        }),
+
+        // Swarm
+        swarm_info: Some(SwarmInfo {
+            session_count: 3,
+            session_names: vec![
+                "coordinator".to_string(),
+                "worker-1".to_string(),
+                "worker-2".to_string(),
+            ],
+            plan_progress: Some((2, 1, 5)),
+            ..Default::default()
+        }),
+
+        // MCP servers
+        mcp_servers: vec![("filesystem".to_string(), 8), ("github".to_string(), 12)],
+
+        // Skills
+        available_skills: vec![
+            "/codebase-memory".to_string(),
+            "/bitbucket".to_string(),
+            "/code-review-excellence".to_string(),
+        ],
+
+        // Git
+        git_info: Some(GitInfo {
+            branch: "fix/info_fields".to_string(),
+            modified: 3,
+            staged: 1,
+            untracked: 2,
+            ahead: 2,
+            behind: 0,
+            dirty_files: vec![
+                "src/main.rs".to_string(),
+                "src/info_widget.rs".to_string(),
+                "src/model.rs".to_string(),
+            ],
+        }),
+
+        // Memory
+        memory_info: Some(MemoryInfo {
+            total_count: 47,
+            project_count: 32,
+            global_count: 15,
+            activity: Some(MemoryActivity {
+                state: MemoryState::Idle,
+                state_since: Instant::now(),
+                pipeline: None,
+                recent_events: vec![MemoryEvent {
+                    kind: MemoryEventKind::MemoryInjected {
+                        count: 3,
+                        prompt_chars: 318,
+                        age_ms: 44,
+                        preview: "prefers worktrees".to_string(),
+                        items: vec![
+                            InjectedMemoryItem {
+                                section: "preference".to_string(),
+                                content: "User prefers worktrees for branch work".to_string(),
+                            },
+                            InjectedMemoryItem {
+                                section: "correction".to_string(),
+                                content: "rustfmt uses edition 2024 (let-chains)".to_string(),
+                            },
+                            InjectedMemoryItem {
+                                section: "fact".to_string(),
+                                content: "Build binary from scratch, no selfdev profile"
+                                    .to_string(),
+                            },
+                        ],
+                    },
+                    timestamp: Instant::now(),
+                    detail: None,
+                }],
+            }),
+            ..Default::default()
+        }),
+
+        // Ambient
+        ambient_info: Some(AmbientWidgetData {
+            show_widget: true,
+            status: AmbientStatus::Idle,
+            queue_count: 2,
+            next_queue_preview: Some("Review PR #42".to_string()),
+            reminder_count: 1,
+            next_reminder_preview: Some("Deploy at 5pm".to_string()),
+            last_run_ago: Some("12m ago".to_string()),
+            last_summary: None,
+            next_wake: Some("in 45m".to_string()),
+            next_reminder_wake: None,
+            budget_percent: None,
+        }),
+
+        // Todos
+        todos: vec![
+            crate::todo::TodoItem {
+                group: None,
+                id: "t1".to_string(),
+                content: "Add auth indicator to Overview".to_string(),
+                status: "completed".to_string(),
+                priority: "high".to_string(),
+                confidence: Some(crate::todo::ConfidenceState::from_legacy_score(95)),
+                completion_confidence: Some(crate::todo::ConfidenceState::from_legacy_score(100)),
+                confidence_history: Vec::new(),
+                blocked_by: Vec::new(),
+                assigned_to: None,
+            },
+            crate::todo::TodoItem {
+                group: None,
+                id: "t2".to_string(),
+                content: "Remove dead widget code".to_string(),
+                status: "in_progress".to_string(),
+                priority: "medium".to_string(),
+                confidence: Some(crate::todo::ConfidenceState::from_legacy_score(70)),
+                completion_confidence: None,
+                confidence_history: Vec::new(),
+                blocked_by: Vec::new(),
+                assigned_to: None,
+            },
+        ],
+
+        ..Default::default()
+    };
+
+    // Render the Overview content using render_sections (same function
+    // the real Overview widget calls).
+    let inner = Rect::new(0, 0, 44, 40);
+    let lines = super::render_sections(&data, inner, None);
+
+    // Build a visual bordered box from the rendered lines.
+    let w = inner.width as usize;
+    let mut output = String::new();
+
+    // Top border
+    output.push_str(&format!("┌{}┐\n", "─".repeat(w)));
+
+    for line in &lines {
+        // Flatten spans into a single string
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        let visible_len = text.chars().count();
+        let padded = if visible_len < w {
+            format!("{}{}", text, " ".repeat(w - visible_len))
+        } else {
+            text.chars().take(w).collect::<String>()
+        };
+        output.push_str(&format!("│{}│\n", padded));
+    }
+
+    // Fill remaining rows with empty lines (up to inner.height)
+    let content_lines = lines.len();
+    for _ in content_lines..inner.height as usize {
+        output.push_str(&format!("│{}│\n", " ".repeat(w)));
+    }
+
+    // Bottom border
+    output.push_str(&format!("└{}┘", "─".repeat(w)));
+
+    println!("\n{output}\n");
+
+    // Basic assertions to verify key content is present
+    let all_text: String = lines
+        .iter()
+        .flat_map(|l| l.spans.iter())
+        .map(|s| s.content.as_ref())
+        .collect::<String>();
+
+    assert!(
+        all_text.contains("anthropic"),
+        "provider name should be present"
+    );
+    assert!(
+        all_text.contains("Sonnet 4"),
+        "model name should be present"
+    );
+    assert!(
+        all_text.contains("🔐"),
+        "auth method icon should be present"
+    );
+    assert!(
+        all_text.contains("OAuth"),
+        "auth method label should be present"
+    );
+    assert!(
+        all_text.contains("websocket"),
+        "connection type should be present"
+    );
+    assert!(
+        all_text.contains("Anthropic limits"),
+        "usage provider label should be present"
+    );
+    assert!(
+        all_text.contains("5h"),
+        "primary usage bar label should be present"
+    );
+    assert!(
+        all_text.contains("58% left"),
+        "primary usage percent should be present (shows % left)"
+    );
+    assert!(
+        all_text.contains("weekly"),
+        "secondary usage bar label should be present"
+    );
+    assert!(
+        all_text.contains("82% left"),
+        "secondary usage percent should be present (shows % left)"
+    );
+    assert!(all_text.contains("⌀38.2"), "avg t/s should be present");
+    assert!(all_text.contains("🧠"), "memory icon should be present");
+    assert!(
+        all_text.contains("47 memories"),
+        "memory count should be present"
+    );
+    assert!(all_text.contains("🐝"), "swarm icon should be present");
+}
+
+// ---------------------------------------------------------------------------
+// Unit tests for pure format/render helpers
+// ---------------------------------------------------------------------------
+
+/// Single helper to flatten a `Line` into its plain-text content.
+fn line_text(line: &ratatui::text::Line<'_>) -> String {
+    line.spans
+        .iter()
+        .map(|span| span.content.as_ref())
+        .collect()
+}
+
+#[test]
+fn format_age_handles_zero_and_sub_two_seconds() {
+    assert_eq!(format_age(Duration::from_secs(0)), "now");
+    assert_eq!(format_age(Duration::from_secs(1)), "now");
+    assert_eq!(format_age(Duration::from_millis(1500)), "now");
+}
+
+#[test]
+fn format_age_formats_seconds() {
+    assert_eq!(format_age(Duration::from_secs(5)), "5s");
+    assert_eq!(format_age(Duration::from_secs(59)), "59s");
+}
+
+#[test]
+fn format_age_formats_minutes() {
+    assert_eq!(format_age(Duration::from_secs(60)), "1m");
+    assert_eq!(format_age(Duration::from_secs(120)), "2m");
+    assert_eq!(format_age(Duration::from_secs(3599)), "59m");
+}
+
+#[test]
+fn format_age_formats_hours() {
+    assert_eq!(format_age(Duration::from_secs(3600)), "1h");
+    assert_eq!(format_age(Duration::from_secs(7200)), "2h");
+    assert_eq!(format_age(Duration::from_secs(86_400)), "24h");
+}
+
+#[test]
+fn format_memory_count_singular_and_plural() {
+    assert_eq!(format_memory_count(0), "0 memories");
+    assert_eq!(format_memory_count(1), "1 memory");
+    assert_eq!(format_memory_count(100), "100 memories");
+    assert_eq!(format_memory_count(1000), "1000 memories");
+}
+
+#[test]
+fn wrap_text_short_text_returns_single_line() {
+    let lines = wrap_text("hello", 10);
+    assert_eq!(lines, vec!["hello".to_string()]);
+}
+
+#[test]
+fn wrap_text_long_text_wraps_into_multiple_lines() {
+    let lines = wrap_text("hello world foo bar", 10);
+    assert_eq!(
+        lines,
+        vec![
+            "hello".to_string(),
+            "world foo".to_string(),
+            "bar".to_string()
+        ]
+    );
+}
+
+#[test]
+fn wrap_text_empty_text_returns_single_empty_line() {
+    let lines = wrap_text("", 10);
+    assert_eq!(lines, vec!["".to_string()]);
+}
+
+#[test]
+fn wrap_text_text_exactly_at_max_chars_stays_one_line() {
+    let lines = wrap_text("hello", 5);
+    assert_eq!(lines, vec!["hello".to_string()]);
+}
+
+#[test]
+fn wrap_text_max_chars_zero_returns_original_text() {
+    let lines = wrap_text("hello world", 0);
+    assert_eq!(lines, vec!["hello world".to_string()]);
+}
+
+#[test]
+fn wrap_text_handles_newlines_as_paragraphs() {
+    let lines = wrap_text("hello\nworld", 10);
+    assert_eq!(lines, vec!["hello".to_string(), "world".to_string()]);
+}
+
+#[test]
+fn wrap_text_long_word_exceeds_max_chars_on_its_own_line() {
+    let lines = wrap_text("short verylongword", 10);
+    assert_eq!(lines, vec!["short".to_string(), "verylongword".to_string()]);
+}
+
+#[test]
+fn dashed_separator_fills_width_with_dashes() {
+    let line = dashed_separator(10);
+    let text = line_text(&line);
+    assert_eq!(text, "- - - - - ");
+}
+
+#[test]
+fn dashed_separator_zero_width_is_empty() {
+    let line = dashed_separator(0);
+    let text = line_text(&line);
+    assert_eq!(text, "");
+}
+
+#[test]
+fn dashed_separator_odd_width() {
+    let line = dashed_separator(5);
+    let text = line_text(&line);
+    assert_eq!(text, "- - -");
+}
+
+#[test]
+fn render_mcp_servers_line_single_line_when_fits() {
+    let servers = vec![("filesystem".to_string(), 8)];
+    let lines = render_mcp_servers_line(&servers, 40);
+    assert_eq!(lines.len(), 1);
+    let text = line_text(&lines[0]);
+    assert!(text.contains("mcp: filesystem (8 tools)"), "{text}");
+}
+
+#[test]
+fn render_mcp_servers_line_shows_ellipsis_for_zero_tool_count() {
+    let servers = vec![("fs".to_string(), 0)];
+    let lines = render_mcp_servers_line(&servers, 40);
+    let text = line_text(&lines[0]);
+    assert!(text.contains("fs (...)"), "{text}");
+}
+
+#[test]
+fn render_mcp_servers_line_multiple_servers_on_one_line_when_wide() {
+    let servers = vec![("fs".to_string(), 8), ("gh".to_string(), 12)];
+    let lines = render_mcp_servers_line(&servers, 80);
+    assert_eq!(lines.len(), 1);
+    let text = line_text(&lines[0]);
+    assert!(text.contains("fs (8 tools)"), "{text}");
+    assert!(text.contains("gh (12 tools)"), "{text}");
+}
+
+#[test]
+fn render_mcp_servers_line_compact_format_when_full_too_long() {
+    let servers = vec![("filesystem".to_string(), 8), ("github".to_string(), 12)];
+    // Width that's too narrow for "filesystem (8 tools), github (12 tools)"
+    // but wide enough for the compact "filesystem(8) github(12)".
+    let lines = render_mcp_servers_line(&servers, 40);
+    assert_eq!(lines.len(), 1);
+    let text = line_text(&lines[0]);
+    assert!(text.contains("filesystem(8)"), "{text}");
+    assert!(text.contains("github(12)"), "{text}");
+}
+
+#[test]
+fn render_mcp_servers_line_multi_line_when_narrow() {
+    let servers = vec![("filesystem".to_string(), 8), ("github".to_string(), 12)];
+    // Width that's too narrow for the compact single line (29 chars) but
+    // wide enough to avoid truncating the individual server entries.
+    let lines = render_mcp_servers_line(&servers, 25);
+    // Header line + one per server.
+    assert_eq!(lines.len(), 3);
+    let header = line_text(&lines[0]);
+    assert!(header.contains("mcp: 2 servers"), "{header}");
+    let all_text = lines_text(&lines);
+    assert!(all_text.contains("filesystem"), "{all_text}");
+    assert!(all_text.contains("github"), "{all_text}");
+}
+
+#[test]
+fn render_skills_line_counts_loaded_skills() {
+    let skills: Vec<String> = Vec::new();
+    let lines = render_skills_line(&skills, 40);
+    assert_eq!(lines.len(), 1);
+    let text = line_text(&lines[0]);
+    assert!(text.contains("skills: 0 loaded"), "{text}");
+
+    let skills = vec!["git".to_string()];
+    let lines = render_skills_line(&skills, 40);
+    let text = line_text(&lines[0]);
+    assert!(text.contains("skills: 1 loaded"), "{text}");
+
+    let skills = vec!["git".to_string(), "review".to_string(), "test".to_string()];
+    let lines = render_skills_line(&skills, 40);
+    let text = line_text(&lines[0]);
+    assert!(text.contains("skills: 3 loaded"), "{text}");
+}
+
+#[test]
+fn render_cost_tokens_line_shows_cost_and_tokens_for_cost_based() {
+    let data = InfoWidgetData {
+        usage_info: Some(UsageInfo {
+            provider: UsageProvider::CostBased,
+            total_cost: 0.01234,
+            input_tokens: 12_345,
+            output_tokens: 678,
+            available: true,
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let line = render_cost_tokens_line(&data, Rect::new(0, 0, 40, 1));
+    let text = line_text(&line);
+    assert!(text.contains("$0.0123"), "{text}");
+    assert!(text.contains("12k"), "{text}");
+    assert!(text.contains("678"), "{text}");
+    assert!(text.contains("t/s"), "{text}");
+}
+
+#[test]
+fn render_cost_tokens_line_shows_na_when_no_usage_info() {
+    let data = InfoWidgetData::default();
+    let line = render_cost_tokens_line(&data, Rect::new(0, 0, 40, 1));
+    let text = line_text(&line);
+    assert!(text.contains("$NA"), "{text}");
+    assert!(text.contains("⌀0 t/s"), "{text}");
+}
+
+#[test]
+fn render_cost_tokens_line_shows_avg_tps_when_available() {
+    let data = InfoWidgetData {
+        usage_info: Some(UsageInfo {
+            provider: UsageProvider::CostBased,
+            total_cost: 0.05,
+            input_tokens: 5_000,
+            output_tokens: 200,
+            available: true,
+            ..Default::default()
+        }),
+        avg_tokens_per_second: Some(38.2),
+        ..Default::default()
+    };
+    let line = render_cost_tokens_line(&data, Rect::new(0, 0, 40, 1));
+    let text = line_text(&line);
+    assert!(text.contains("⌀38.2 t/s"), "{text}");
+}
+
+#[test]
+fn render_cost_tokens_line_shows_zero_tps_when_avg_is_none() {
+    let data = InfoWidgetData {
+        usage_info: Some(UsageInfo {
+            provider: UsageProvider::CostBased,
+            total_cost: 0.05,
+            input_tokens: 5_000,
+            output_tokens: 200,
+            available: true,
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let line = render_cost_tokens_line(&data, Rect::new(0, 0, 40, 1));
+    let text = line_text(&line);
+    assert!(text.contains("⌀0 t/s"), "{text}");
+}
+
+#[test]
+fn has_model_supplementary_info_true_when_compaction_mode_set() {
+    let data = InfoWidgetData {
+        native_compaction_mode: Some("auto".to_string()),
+        ..Default::default()
+    };
+    assert!(data.has_model_supplementary_info());
+}
+
+#[test]
+fn has_model_supplementary_info_false_without_compaction_mode() {
+    let data = InfoWidgetData::default();
+    assert!(!data.has_model_supplementary_info());
+}
+
+#[test]
+fn memory_active_summary_returns_none_for_idle() {
+    assert_eq!(memory_active_summary(&MemoryState::Idle), None);
+}
+
+#[test]
+fn memory_active_summary_returns_labels_for_active_states() {
+    assert_eq!(
+        memory_active_summary(&MemoryState::Embedding),
+        Some("embedding".to_string())
+    );
+    assert_eq!(
+        memory_active_summary(&MemoryState::SidecarChecking { count: 3 }),
+        Some("checking".to_string())
+    );
+    assert_eq!(
+        memory_active_summary(&MemoryState::FoundRelevant { count: 2 }),
+        Some("found".to_string())
+    );
+    assert_eq!(
+        memory_active_summary(&MemoryState::Extracting {
+            reason: "conversation end".to_string()
+        }),
+        Some("extracting".to_string())
+    );
+    assert_eq!(
+        memory_active_summary(&MemoryState::Maintaining {
+            phase: "pruning".to_string()
+        }),
+        Some("maintaining".to_string())
+    );
+    assert_eq!(
+        memory_active_summary(&MemoryState::ToolAction {
+            action: "read_file".to_string(),
+            detail: "src/main.rs".to_string()
+        }),
+        Some("tool".to_string())
+    );
+}
+
+#[test]
+fn render_kv_cache_summary_line_empty_when_no_cache_telemetry() {
+    // All-zero telemetry yields no hit ratio, so nothing renders.
+    let cache = CacheHitInfo::default();
+    assert!(render_kv_cache_summary_line(&cache).is_empty());
+}
+
+#[test]
+fn render_kv_cache_summary_line_renders_session_ratio_only_without_last_stats() {
+    // Subset accounting (no creation, read <= input): denominator = input.
+    let cache = CacheHitInfo {
+        reported_input_tokens: 1_000,
+        read_tokens: 800,
+        ..Default::default()
+    };
+    let lines = render_kv_cache_summary_line(&cache);
+    // No last-request stats -> a single header line.
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    let text = lines_text(&lines);
+    assert!(text.contains("KV cache:"), "{text}");
+    assert!(text.contains("session"), "{text}");
+    // 800 / 1000 = 80%
+    assert!(text.contains("80%"), "{text}");
+}
+
+#[test]
+fn render_compaction_compact_shows_status_mode_and_detail_stats() {
+    let info = super::CompactionInfo {
+        is_compacting: true,
+        compacted_messages: 12,
+        active_messages: 8,
+        summary_chars: 3_500,
+        mode: "auto".to_string(),
+    };
+    let lines = super::render_compaction_compact(&info, 40);
+    assert_eq!(lines.len(), 2);
+    let l0: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
+    let l1: String = lines[1].spans.iter().map(|s| s.content.as_ref()).collect();
+    assert!(l0.contains("compacting"), "status line: {l0}");
+    assert!(l0.contains("auto"), "mode on line 1: {l0}");
+    assert!(l1.contains("12 old"), "compacted count: {l1}");
+    assert!(l1.contains("8 active"), "active count: {l1}");
+    assert!(l1.contains("tok"), "summary tokens: {l1}");
+}
+
+#[test]
+fn render_compaction_compact_says_compacted_when_idle() {
+    let info = super::CompactionInfo {
+        is_compacting: false,
+        compacted_messages: 5,
+        active_messages: 3,
+        summary_chars: 1_000,
+        mode: "manual".to_string(),
+    };
+    let lines = super::render_compaction_compact(&info, 60);
+    let l0: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
+    assert!(l0.contains("compacted"), "{l0}");
+    assert!(l0.contains("manual"), "{l0}");
+}
+
+#[test]
+fn render_compaction_compact_renders_safely_at_tiny_width() {
+    let info = super::CompactionInfo {
+        is_compacting: false,
+        compacted_messages: 1_000_000,
+        active_messages: 2_000_000,
+        summary_chars: 500_000,
+        mode: "auto".to_string(),
+    };
+    // Must not panic on a width smaller than the detail text.
+    let lines = super::render_compaction_compact(&info, 8);
+    assert_eq!(lines.len(), 2);
+}
+
+#[test]
+fn render_model_info_supplementary_shows_native_compaction_with_threshold() {
+    let data = InfoWidgetData {
+        native_compaction_mode: Some("on".to_string()),
+        native_compaction_threshold_tokens: Some(200_000),
+        ..Default::default()
+    };
+    let lines = super::render_model_info_supplementary(&data, Rect::new(0, 0, 44, 10));
+    assert_eq!(lines.len(), 1);
+    let text: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
+    assert!(text.contains("native"), "{text}");
+    assert!(text.contains("on"), "{text}");
+    assert!(text.contains("200k"), "{text}");
+}
+
+#[test]
+fn render_model_info_supplementary_omits_threshold_when_unset() {
+    let data = InfoWidgetData {
+        native_compaction_mode: Some("off".to_string()),
+        ..Default::default()
+    };
+    let lines = super::render_model_info_supplementary(&data, Rect::new(0, 0, 44, 10));
+    assert_eq!(lines.len(), 1);
+    let text: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
+    assert!(text.contains("native off"), "{text}");
+    assert!(!text.contains("@"), "no threshold suffix: {text}");
+}
+
+#[test]
+fn render_model_info_supplementary_empty_without_compaction_mode() {
+    // Service tier and connection type live in the status line / main model
+    // widget, so the supplementary view is empty when no native compaction.
+    let data = InfoWidgetData {
+        model: Some("claude-sonnet-4".to_string()),
+        service_tier: Some("priority".to_string()),
+        connection_type: Some("websocket".to_string()),
+        ..Default::default()
+    };
+    let lines = super::render_model_info_supplementary(&data, Rect::new(0, 0, 44, 10));
+    assert!(
+        lines.is_empty(),
+        "expected no supplementary lines: {lines:?}"
+    );
+}
+
+#[test]
+fn calculate_fixed_overview_placement_anchors_top_right() {
+    let data = InfoWidgetData {
+        model: Some("gpt-test".to_string()),
+        queue_mode: Some(true),
+        ..Default::default()
+    };
+    let area = Rect::new(0, 0, 80, 20);
+    let placements = super::calculate_fixed_overview_placement(area, &data);
+    assert_eq!(placements.len(), 1);
+    let p = &placements[0];
+    assert_eq!(p.kind, WidgetKind::Overview);
+    assert_eq!(p.side, super::Side::Right);
+    // Width caps at FIXED_WIDTH (44) for an 80-col terminal.
+    assert_eq!(p.rect.width, 44, "width: {}", p.rect.width);
+    assert_eq!(
+        p.rect.x, 36,
+        "x = area.x + area.width - width: {}",
+        p.rect.x
+    );
+    assert_eq!(p.rect.y, 0);
+    assert!(
+        p.rect.height > 0 && p.rect.height <= 20,
+        "content fits within area: {}",
+        p.rect.height
+    );
+}
+
+#[test]
+fn overview_panel_engaged_reflects_overview_placement() {
+    super::clear_widget_placements_for_tests();
+    // No overview placed yet.
+    assert!(!super::overview_panel_engaged());
+
+    // Drive the pinned status-line path which places a fixed Overview widget.
+    let data = InfoWidgetData {
+        model: Some("gpt-test".to_string()),
+        queue_mode: Some(true),
+        status_line_pinned: true,
+        ..Default::default()
+    };
+    let margins = Margins {
+        right_widths: vec![40; 20],
+        left_widths: Vec::new(),
+        centered: false,
+        ..Default::default()
+    };
+    let placements = calculate_placements(Rect::new(0, 0, 80, 20), &margins, &data);
+    assert!(
+        placements.iter().any(|p| p.kind == WidgetKind::Overview),
+        "expected overview placement"
+    );
+    assert!(super::overview_panel_engaged());
+
+    // Leave global state clean for subsequent tests.
+    super::clear_widget_placements_for_tests();
+}
+
+#[test]
+fn render_widget_content_dispatches_swarm_to_swarm_widget() {
+    let data = InfoWidgetData {
+        swarm_info: Some(SwarmInfo {
+            managed_members: vec![managed_member("researcher", "running", None)],
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let lines =
+        super::render_widget_content(WidgetKind::SwarmStatus, &data, Rect::new(0, 0, 34, 10));
+    let text = lines_text(&lines);
+    assert!(!lines.is_empty(), "swarm content should render");
+    assert!(text.contains("researcher"), "agent visible: {text}");
+}
+
+#[test]
+fn render_widget_content_returns_empty_for_merged_overview_kinds() {
+    let data = InfoWidgetData {
+        model: Some("gpt-test".to_string()),
+        cache_hit_info: Some(CacheHitInfo {
+            reported_input_tokens: 1_000,
+            read_tokens: 800,
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    // These kinds are merged into the Overview panel, so standalone rendering
+    // intentionally yields no content.
+    for kind in [
+        WidgetKind::Overview,
+        WidgetKind::Todos,
+        WidgetKind::KvCache,
+        WidgetKind::Compaction,
+    ] {
+        assert!(
+            super::render_widget_content(kind, &data, Rect::new(0, 0, 40, 10)).is_empty(),
+            "{kind:?} should be empty (merged into Overview)"
+        );
+    }
 }

@@ -369,7 +369,8 @@ fn test_copy_badge_reserves_right_margin_for_info_widgets() {
     reserve_copy_badge_margins(&mut margins, 10, 13, &[(11, 'a')], &copy_badge_ui, Instant::now());
 
     assert_eq!(margins.right_widths[0], 30);
-    assert_eq!(margins.right_widths[1], 16);
+    let expected_reserved = copy_badge_reserved_width('a', &copy_badge_ui, Instant::now()) as u16;
+    assert_eq!(margins.right_widths[1], 30u16.saturating_sub(expected_reserved));
     assert_eq!(margins.right_widths[2], 30);
 }
 
@@ -405,8 +406,13 @@ fn test_copy_badge_truncates_full_width_line_before_appending_shortcut() {
 
     truncate_copy_badge_line_to_width(&mut line, viewport_width.saturating_sub(reserved));
     // Matches the render path: one separator space, then the shortcut badges.
+    // Use the actual alt-badge string (⌥ on macOS, Alt elsewhere) so the
+    // appended badge width matches what `copy_badge_reserved_width` reserved.
     line.spans.push(Span::raw(" "));
-    line.spans.push(Span::raw("[Alt] [⇧] [A]"));
+    line.spans.push(Span::raw(format!(
+        "{} [⇧] [A]",
+        copy_badge_alt_badge()
+    )));
 
     assert_eq!(line.width(), viewport_width);
     assert!(line.width() <= viewport_width);
@@ -420,7 +426,8 @@ fn test_copy_badge_line_prefers_row_with_free_width_over_truncation() {
     let full = Line::from("│ ".to_string() + &"x".repeat(60));
     let short = Line::from("│ short".to_string());
     let visible_lines = vec![full, short];
-    let reserved = 14usize; // " [Alt] [⇧] [S]"
+    let copy_badge_ui = crate::tui::app::CopyBadgeUiState::default();
+    let reserved = copy_badge_reserved_width('s', &copy_badge_ui, Instant::now());
 
     let picked = pick_copy_badge_line(0, 0, 2, 0, 2, &visible_lines, 62, reserved);
     assert_eq!(picked, 1, "badge should move to the line with free width");

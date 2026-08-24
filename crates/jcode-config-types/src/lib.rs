@@ -153,6 +153,51 @@ impl OverscrollStatusMode {
     }
 }
 
+/// Which time interval the TPS (tokens per second) display uses.
+///
+/// - `generation` (default): only counts model output-generation time,
+///   excluding tool execution and rate-limit waits. This reflects how fast
+///   the model itself generates tokens.
+/// - `total`: counts the full wall-clock time from the first token of a
+///   turn to its completion, including tool execution, rate-limit waits,
+///   and network round-trips. This reflects the effective throughput the
+///   user experiences end-to-end.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TpsIntervalMode {
+    /// Only count model output-generation time (excludes tool execution
+    /// and rate-limit waits). Default.
+    #[default]
+    Generation,
+    /// Count the full wall-clock time between responses, including tool
+    /// execution, rate limits, and network overhead.
+    Total,
+}
+
+impl TpsIntervalMode {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Generation => "generation",
+            Self::Total => "total",
+        }
+    }
+
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Generation => "Generation",
+            Self::Total => "Total",
+        }
+    }
+
+    pub fn parse(input: &str) -> Option<Self> {
+        match input.trim().to_ascii_lowercase().as_str() {
+            "generation" | "gen" => Some(Self::Generation),
+            "total" | "wall" | "wall-clock" | "wallclock" => Some(Self::Total),
+            _ => None,
+        }
+    }
+}
+
 /// How to display mermaid diagrams.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]

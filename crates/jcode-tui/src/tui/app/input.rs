@@ -2931,7 +2931,10 @@ fn paste_placeholder(content: &str) -> String {
 impl App {
     pub(super) fn handle_key_event(&mut self, event: crossterm::event::KeyEvent) {
         if self.remote_login.is_some() {
-            if matches!(event.kind, crossterm::event::KeyEventKind::Press | crossterm::event::KeyEventKind::Repeat) {
+            if matches!(
+                event.kind,
+                crossterm::event::KeyEventKind::Press | crossterm::event::KeyEventKind::Repeat
+            ) {
                 let _ = self.handle_key_press_event(event);
             }
             return;
@@ -3992,6 +3995,8 @@ impl App {
         self.streaming.streaming_total_output_tokens = 0;
         self.streaming.streaming_tps_observed_output_tokens = 0;
         self.streaming.streaming_tps_observed_elapsed = Duration::ZERO;
+        self.streaming.last_displayed_tps = None;
+        self.streaming.streaming_total_tps_start = None;
         self.processing_started = Some(Instant::now());
         self.visible_turn_started = Some(Instant::now());
         self.pending_turn = true;
@@ -4060,6 +4065,8 @@ impl App {
             self.streaming.streaming_total_output_tokens = 0;
             self.streaming.streaming_tps_observed_output_tokens = 0;
             self.streaming.streaming_tps_observed_elapsed = Duration::ZERO;
+            self.streaming.last_displayed_tps = None;
+            self.streaming.streaming_total_tps_start = None;
             self.processing_started = Some(Instant::now());
             if has_combined {
                 if preserve_visible_turn {

@@ -512,87 +512,6 @@ fn todos_widget_label(data: &InfoWidgetData) -> &'static str {
     }
 }
 
-/// Render todos widget content
-pub(super) fn render_todos_widget(data: &InfoWidgetData, inner: Rect) -> Vec<Line<'static>> {
-    if data.todos.is_empty() {
-        return Vec::new();
-    }
-
-    let mut lines: Vec<Line> = Vec::new();
-    let total = data.todos.len();
-    let completed: usize = data
-        .todos
-        .iter()
-        .filter(|t| t.status == "completed")
-        .count();
-    let _in_progress: usize = data
-        .todos
-        .iter()
-        .filter(|t| t.status == "in_progress")
-        .count();
-
-    // Header with progress + inline pip meter
-    let mut header = vec![
-        Span::styled(
-            format!("{} ", todos_widget_label(data)),
-            Style::default().fg(rgb(180, 180, 190)).bold(),
-        ),
-        Span::styled(
-            format!("{}/{}", completed, total),
-            Style::default().fg(rgb(140, 140, 150)),
-        ),
-    ];
-    let pip_budget = (inner.width.saturating_sub(12) / 2).clamp(0, 10) as usize;
-    push_todo_pips(&mut header, data, pip_budget);
-    push_aggregate_confidence_suffix(&mut header, aggregate_todo_confidence(&data.todos));
-
-    let available_lines = inner.height.saturating_sub(1) as usize; // Account for header
-    let budget = available_lines.clamp(1, 5);
-
-    // Grouped layout when any todo declares a group; otherwise the flat list.
-    if let Some(groups) = grouped_todos(&data.todos) {
-        lines.push(Line::from(header));
-        let (group_lines, shown) =
-            render_grouped_todo_lines(&groups, &data.todo_goals, inner, false, budget);
-        lines.extend(group_lines);
-        if total > shown {
-            lines.push(Line::from(vec![Span::styled(
-                format!("  +{} more", total - shown),
-                Style::default().fg(rgb(100, 100, 110)),
-            )]));
-        }
-        return lines;
-    }
-
-    // Flat list: the whole list is one implicit goal, so its feedback-loop score
-    // (if recorded) lives on the header line.
-    if let Some(goal) = goal_for_group(&data.todo_goals, None) {
-        push_goal_loop_suffix(&mut header, goal);
-    }
-    lines.push(Line::from(header));
-
-    // Sort todos: in_progress first, then pending, then completed
-    let mut sorted_todos: Vec<&crate::todo::TodoItem> = data.todos.iter().collect();
-    sorted_todos.sort_by(|a, b| status_sort_rank(&a.status).cmp(&status_sort_rank(&b.status)));
-
-    // Render todos (limit based on available height)
-    for todo in sorted_todos.iter().take(budget) {
-        push_todo_item_line(&mut lines, todo, inner, false, 0);
-    }
-
-    // Show count of remaining items
-    let shown = budget.min(sorted_todos.len());
-    if data.todos.len() > shown {
-        let remaining = data.todos.len() - shown;
-        lines.push(Line::from(vec![Span::styled(
-            format!("  +{} more", remaining),
-            Style::default().fg(rgb(100, 100, 110)),
-        )]));
-    }
-
-    lines
-}
-
 pub(super) fn render_todos_expanded(data: &InfoWidgetData, inner: Rect) -> Vec<Line<'static>> {
     let mut lines: Vec<Line> = Vec::new();
     if data.todos.is_empty() {
@@ -644,7 +563,7 @@ pub(super) fn render_todos_expanded(data: &InfoWidgetData, inner: Rect) -> Vec<L
         return lines;
     }
 
-    // Flat list: the whole list is one implicit goal, so its feedback-loop score
+    // Flat list: the whole list is one implicit goal, so its loop score
     // (if recorded) lives on the header line.
     if let Some(goal) = goal_for_group(&data.todo_goals, None) {
         push_goal_loop_suffix(&mut header, goal);
@@ -685,6 +604,7 @@ pub(super) fn render_todos_expanded(data: &InfoWidgetData, inner: Rect) -> Vec<L
     lines
 }
 
+#[cfg(test)]
 pub(super) fn render_todos_compact(data: &InfoWidgetData, _inner: Rect) -> Vec<Line<'static>> {
     if data.todos.is_empty() {
         return Vec::new();
@@ -709,6 +629,11 @@ pub(super) fn render_todos_compact(data: &InfoWidgetData, _inner: Rect) -> Vec<L
         Span::styled(
             format!("{} active", in_progress),
             Style::default().fg(rgb(255, 200, 100)),
+        ),
+        Span::styled(" · ", Style::default().fg(rgb(100, 100, 110))),
+        Span::styled(
+            format!("{} done", completed),
+            Style::default().fg(rgb(100, 180, 100)),
         ),
         Span::styled(" · ", Style::default().fg(rgb(100, 100, 110))),
         Span::styled(

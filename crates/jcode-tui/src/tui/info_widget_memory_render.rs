@@ -1,3 +1,5 @@
+#[cfg(test)]
+use super::memory_active_summary;
 use super::*;
 
 pub(super) fn render_memory_widget(data: &InfoWidgetData, inner: Rect) -> Vec<Line<'static>> {
@@ -32,7 +34,84 @@ pub(super) fn render_memory_widget(data: &InfoWidgetData, inner: Rect) -> Vec<Li
             }
         }
 
-        if lines.len() < inner.height as usize
+        // Show recovered memories as a list.
+        let injected_events: Vec<&MemoryEvent> = activity
+            .recent_events
+            .iter()
+            .filter(
+                |e| matches!(&e.kind, MemoryEventKind::MemoryInjected { count, .. } if *count > 0),
+            )
+            .collect();
+
+        if !injected_events.is_empty() {
+            for event in &injected_events {
+                if lines.len() >= inner.height as usize {
+                    break;
+                }
+                if let MemoryEventKind::MemoryInjected { count, items, .. } = &event.kind {
+                    if items.is_empty() {
+                        // Single event with no item details — show summary.
+                        if lines.len() < inner.height as usize {
+                            lines.push(Line::from(vec![
+                                Span::styled("  ↳ ", Style::default().fg(rgb(140, 210, 255))),
+                                Span::styled(
+                                    truncate_with_ellipsis(
+                                        &format!(
+                                            "{} {} injected",
+                                            count,
+                                            if *count == 1 { "memory" } else { "memories" }
+                                        ),
+                                        max_width.saturating_sub(4),
+                                    ),
+                                    Style::default().fg(rgb(160, 170, 180)),
+                                ),
+                            ]));
+                        }
+                    } else if items.len() == 1 {
+                        // Single memory — show it inline.
+                        if lines.len() < inner.height as usize {
+                            let item = &items[0];
+                            lines.push(Line::from(vec![
+                                Span::styled("  ↳ ", Style::default().fg(rgb(140, 210, 255))),
+                                Span::styled(
+                                    truncate_with_ellipsis(
+                                        &format!("[{}] {}", item.section, item.content),
+                                        max_width.saturating_sub(4),
+                                    ),
+                                    Style::default().fg(rgb(160, 170, 180)),
+                                ),
+                            ]));
+                        }
+                    } else {
+                        // Multiple memories — show as a list.
+                        if lines.len() < inner.height as usize {
+                            lines.push(Line::from(vec![
+                                Span::styled("  ↳ ", Style::default().fg(rgb(140, 210, 255))),
+                                Span::styled(
+                                    format!("{} memories recovered:", items.len()),
+                                    Style::default().fg(rgb(160, 170, 180)),
+                                ),
+                            ]));
+                        }
+                        for item in items {
+                            if lines.len() >= inner.height as usize {
+                                break;
+                            }
+                            lines.push(Line::from(vec![
+                                Span::styled("    • ", Style::default().fg(rgb(140, 210, 255))),
+                                Span::styled(
+                                    truncate_with_ellipsis(
+                                        &format!("[{}] {}", item.section, item.content),
+                                        max_width.saturating_sub(6),
+                                    ),
+                                    Style::default().fg(rgb(150, 160, 170)),
+                                ),
+                            ]));
+                        }
+                    }
+                }
+            }
+        } else if lines.len() < inner.height as usize
             && let Some(trace_line) = render_memory_last_trace_line(activity, max_width)
         {
             lines.push(trace_line);
@@ -45,6 +124,32 @@ pub(super) fn render_memory_widget(data: &InfoWidgetData, inner: Rect) -> Vec<Li
 
 fn render_memory_header_line(info: &MemoryInfo, max_width: usize) -> Line<'static> {
     let title = memory_count_label(info.total_count);
+    // Count recalls (injected/surfaced events).
+    let recalls = info
+        .activity
+        .as_ref()
+        .map(|a| {
+            a.recent_events
+                .iter()
+                .filter(|e| {
+                    matches!(
+                        &e.kind,
+                        MemoryEventKind::MemoryInjected { count, .. } if *count > 0
+                    )
+                })
+                .count()
+        })
+        .unwrap_or(0);
+    let title = if recalls > 0 {
+        format!(
+            "{} · {} recall{}",
+            title,
+            recalls,
+            if recalls == 1 { "" } else { "s" }
+        )
+    } else {
+        title
+    };
     Line::from(vec![
         Span::styled("🧠 ", Style::default().fg(rgb(200, 150, 255))),
         Span::styled(
@@ -79,6 +184,7 @@ fn memory_should_render_pipeline(activity: &MemoryActivity) -> bool {
     activity.is_processing()
 }
 
+#[cfg(test)]
 fn memory_compact_summary(info: &MemoryInfo) -> String {
     if info.disabled {
         return "disabled".to_string();
@@ -521,6 +627,7 @@ fn memory_pipeline_progress_summary(pipeline: &PipelineState) -> String {
     }
 }
 
+#[cfg(test)]
 pub(super) fn render_memory_compact(info: &MemoryInfo, inner_width: u16) -> Vec<Line<'static>> {
     if !info.should_render() {
         return Vec::new();
@@ -556,31 +663,7 @@ pub(super) fn render_memory_compact(info: &MemoryInfo, inner_width: u16) -> Vec<
     vec![Line::from(spans)]
 }
 
-pub(super) fn render_memory_expanded(info: &MemoryInfo, inner: Rect) -> Vec<Line<'static>> {
-    if !info.should_render() {
-        return Vec::new();
-    }
-
-    let mut lines: Vec<Line> = Vec::new();
-    let max_width = inner.width.saturating_sub(2) as usize;
-    let show_activity = info.should_show_activity();
-
-    lines.push(render_memory_header_line(info, max_width));
-    if show_activity && let Some(activity) = &info.activity {
-        lines.push(render_memory_status_line(activity, max_width));
-        if memory_should_render_pipeline(activity) {
-            lines.extend(render_memory_pipeline_display_lines(activity, max_width));
-        }
-
-        if let Some(last_line) = render_memory_last_trace_line(activity, max_width) {
-            lines.push(last_line);
-        }
-    }
-
-    lines.truncate(inner.height as usize);
-    lines
-}
-fn format_age(duration: std::time::Duration) -> String {
+pub(super) fn format_age(duration: std::time::Duration) -> String {
     let secs = duration.as_secs();
     if secs < 2 {
         "now".to_string()
@@ -591,4 +674,136 @@ fn format_age(duration: std::time::Duration) -> String {
     } else {
         format!("{}h", secs / 3600)
     }
+}
+
+/// Render the attached "recovered memories" box.
+///
+/// This is the separate panel that appears directly below the Overview panel
+/// when at least one memory was recovered (injected) this cycle. It shows a
+/// header line ("N memories recovered:") followed by one line per recovered
+/// memory item. When the injection event has no item details, a single
+/// summary line ("N memories injected") is shown instead.
+pub(super) fn render_recovered_memories_widget(
+    data: &InfoWidgetData,
+    inner: Rect,
+) -> Vec<Line<'static>> {
+    if inner.width == 0 || inner.height == 0 {
+        return Vec::new();
+    }
+    let Some(info) = &data.memory_info else {
+        return Vec::new();
+    };
+    let Some(activity) = info.activity.as_ref() else {
+        return Vec::new();
+    };
+
+    // Content width is the panel width (recovered memories render inline).
+    let max_width = inner.width as usize;
+    let mut lines: Vec<Line> = Vec::new();
+
+    // Collect injected items across recent events.
+    let mut items: Vec<&InjectedMemoryItem> = Vec::new();
+    let mut total_injected: usize = 0;
+    for event in &activity.recent_events {
+        if let MemoryEventKind::MemoryInjected {
+            count,
+            items: ev_items,
+            ..
+        } = &event.kind
+            && *count > 0
+        {
+            total_injected = total_injected.saturating_add(*count);
+            items.extend(ev_items.iter());
+        }
+    }
+    if total_injected == 0 && items.is_empty() {
+        return Vec::new();
+    }
+
+    if items.is_empty() {
+        // Single summary line — no item details available.
+        let label = format!(
+            "{} {} injected",
+            total_injected,
+            if total_injected == 1 {
+                "memory"
+            } else {
+                "memories"
+            }
+        );
+        lines.push(Line::from(vec![
+            Span::styled("↳ ", Style::default().fg(rgb(140, 210, 255))),
+            Span::styled(
+                truncate_with_ellipsis(&label, max_width.saturating_sub(2)),
+                Style::default().fg(rgb(160, 170, 180)),
+            ),
+        ]));
+    } else {
+        // Header line.
+        let header = format!("{} memories recovered:", items.len());
+        lines.push(Line::from(vec![
+            Span::styled("↳ ", Style::default().fg(rgb(140, 210, 255))),
+            Span::styled(
+                truncate_with_ellipsis(&header, max_width.saturating_sub(2)),
+                Style::default().fg(rgb(160, 170, 180)),
+            ),
+        ]));
+        // One or more lines per item (wrap text, max 150 chars per memory).
+        let content_width = max_width.saturating_sub(4); // "  • " prefix
+        for item in items {
+            if lines.len() >= inner.height as usize {
+                break;
+            }
+            // Truncate content to 150 chars.
+            let content = truncate_chars(&item.content, 150);
+            let full = format!("[{}] {}", item.section, content);
+            // Wrap into multiple lines that fit content_width.
+            let wrapped = wrap_text(&full, content_width);
+            for (i, line_text) in wrapped.iter().enumerate() {
+                if lines.len() >= inner.height as usize {
+                    break;
+                }
+                if i == 0 {
+                    lines.push(Line::from(vec![
+                        Span::styled("  • ", Style::default().fg(rgb(140, 210, 255))),
+                        Span::styled(line_text.clone(), Style::default().fg(rgb(150, 160, 170))),
+                    ]));
+                } else {
+                    lines.push(Line::from(vec![
+                        Span::styled("    ", Style::default()),
+                        Span::styled(line_text.clone(), Style::default().fg(rgb(150, 160, 170))),
+                    ]));
+                }
+            }
+        }
+    }
+
+    lines.truncate(inner.height as usize);
+    lines
+}
+
+/// Word-wrap text to fit within `max_chars` per line.
+pub(super) fn wrap_text(text: &str, max_chars: usize) -> Vec<String> {
+    if max_chars == 0 {
+        return vec![text.to_string()];
+    }
+    let mut result: Vec<String> = Vec::new();
+    for paragraph in text.split('\n') {
+        let mut current = String::new();
+        for word in paragraph.split_whitespace() {
+            if current.is_empty() {
+                current = word.to_string();
+            } else if current.chars().count() + 1 + word.chars().count() <= max_chars {
+                current.push(' ');
+                current.push_str(word);
+            } else {
+                result.push(std::mem::take(&mut current));
+                current = word.to_string();
+            }
+        }
+        if !current.is_empty() || result.is_empty() {
+            result.push(current);
+        }
+    }
+    result
 }

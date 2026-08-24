@@ -186,6 +186,9 @@ impl App {
             "compact-notifications" => {
                 "/compact-notifications\nShow whether swarm/file-activity notifications are compact.\n\n/compact-notifications on\nCollapse file-activity notifications to a single line (path · summary), dropping the intent and diff preview.\n\n/compact-notifications off\nRestore the full multi-line notification cards."
             }
+            "settings" => {
+                "/settings tps\nShow the current TPS interval mode.\n\n/settings tps <generation|total>\nSet the interval used for tokens-per-second calculation.\n\n  generation - only count model output-generation time (excludes tool execution and rate-limit waits)\n  total      - count the full wall-clock time between responses (includes tool execution, rate limits, and network overhead)"
+            }
             "show-agentgrep-output" => {
                 "/show-agentgrep-output\nShow whether full agentgrep search output renders inline in the transcript.\n\n/show-agentgrep-output on\nRender the full agentgrep search results inline beneath each agentgrep call instead of just the one-line summary.\n\n/show-agentgrep-output off\nShow only the compact one-line agentgrep summary."
             }
