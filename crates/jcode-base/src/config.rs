@@ -464,6 +464,12 @@ pub fn on_config_reloaded(listener: fn()) {
         .push(listener);
 }
 
+pub const DEFAULT_FILE_MENTION_REFRESH_TTL_SECS: u64 = 30;
+
+fn default_file_mention_refresh_ttl_secs() -> u64 {
+    DEFAULT_FILE_MENTION_REFRESH_TTL_SECS
+}
+
 /// Main configuration struct
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
@@ -548,6 +554,11 @@ pub struct Config {
 
     /// Global "launch a new jcode" hotkeys (macOS). Baked once by auto-import.
     pub launch_hotkeys: LaunchHotkeysConfig,
+
+    /// Base file mention index refresh TTL in seconds. Large workspaces use a
+    /// multiple of this value so expensive rebuilds happen less often.
+    #[serde(default = "default_file_mention_refresh_ttl_secs")]
+    pub file_mention_refresh_ttl_secs: u64,
 }
 
 /// Controls who owns autonomous wake execution.

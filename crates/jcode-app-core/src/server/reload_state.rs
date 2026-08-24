@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 #[cfg(target_os = "linux")]
+#[allow(dead_code)] // retained for future reload-handoff event polling
 const RELOAD_HANDOFF_EVENT_POLL_MS: i32 = 100;
 
 pub fn reload_marker_path() -> PathBuf {

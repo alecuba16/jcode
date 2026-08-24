@@ -214,6 +214,7 @@ mod macos {
     use std::mem;
 
     // libproc bindings
+    #[allow(dead_code)] // fd-info flavors retained for parity with libproc
     unsafe extern "C" {
         fn proc_pidinfo(
             pid: i32,
@@ -225,6 +226,12 @@ mod macos {
     }
 
     const PROC_PIDLISTFDS: i32 = 1;
+    #[allow(dead_code)] // fd-info flavors retained for parity with libproc
+    const PROC_PIDFDVNODEPATHINFO: i32 = 2;
+    #[allow(dead_code)] // fd-info flavors retained for parity with libproc
+    const PROC_PIDFDSOCKETINFO: i32 = 3;
+    #[allow(dead_code)] // fd-info flavors retained for parity with libproc
+    const PROC_PIDFDPIPEINFO: i32 = 6;
 
     #[repr(C)]
     struct proc_fdinfo {
@@ -330,13 +337,13 @@ mod macos {
         let num_threads = ret as usize / mem::size_of::<u64>();
 
         // Check each thread's state
-        for i in 0..num_threads {
+        for &tid in thread_ids.iter().take(num_threads) {
             let mut tinfo: proc_threadinfo = unsafe { mem::zeroed() };
             let ret = unsafe {
                 proc_pidinfo(
                     pid,
                     PROC_PIDTHREADINFO,
-                    thread_ids[i],
+                    tid,
                     &mut tinfo as *mut _ as *mut libc::c_void,
                     mem::size_of::<proc_threadinfo>() as i32,
                 )
