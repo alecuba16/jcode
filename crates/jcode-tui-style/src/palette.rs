@@ -746,6 +746,9 @@ mod light_theme_interaction {
         // `match_target` reads the global theme mode, so set it to match the
         // buffer pass being exercised.
         crate::theme_mode::set_theme_mode(ThemeMode::Light);
+        // Pin truecolor so `crate::color::rgb()` does not quantize through
+        // the xterm-256 palette, which would break exact RGB roundtripping.
+        crate::color::pin_truecolor_for_tests();
 
         // A dark red: exactly what a user would pick for errors on white.
         let chosen = (171, 60, 58);
