@@ -2374,9 +2374,26 @@ impl SessionPicker {
             self.maybe_refresh_live_presence();
             terminal.draw(|frame| {
                 self.render(frame);
+                // Apply explicit background for themes that define one.
+                let bg = jcode_tui_style::theme::background_color();
+                if bg != ratatui::style::Color::Reset {
+                    let buf = frame.buffer_mut();
+                    for cell in buf.content.iter_mut() {
+                        if cell.bg == ratatui::style::Color::Reset {
+                            cell.bg = bg;
+                        }
+                    }
+                }
                 // Standalone picker loop bypasses `ui::draw`; adapt for light
-                // terminal themes here (no-op on dark).
-                jcode_tui_style::adapt_buffer_for_display(frame.buffer_mut());
+                // terminal themes here (no-op on dark). Custom themes that
+                // declare their own palette opt out of the adapter so their
+                // colors are not luminance-flipped, but [display.colors]
+                // overrides still apply through the palette pass.
+                if jcode_tui_style::theme::active_theme_uses_terminal_adaptation() {
+                    jcode_tui_style::adapt_buffer_for_display(frame.buffer_mut());
+                } else {
+                    jcode_tui_style::palette::adapt_buffer_for_palette(frame.buffer_mut());
+                }
                 crate::tui::ui::adapt_buffer_for_emoji_preference(frame.buffer_mut());
             })?;
             if event::poll(Duration::from_millis(100))? {
