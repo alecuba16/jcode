@@ -2663,11 +2663,30 @@ pub fn draw(frame: &mut Frame, app: &dyn TuiState) {
         Ok(()) => {}
         Err(payload) => render_recovered_panic_frame(frame, &payload),
     }
-    // Adapt the finished frame for light backgrounds, then apply the user's
-    // configured colors, which must not be luminance-flipped. Working at the
-    // buffer level covers every widget and overlay without touching individual
-    // color call sites. See `palette::adapt_buffer_for_palette` for the ordering.
-    jcode_tui_style::adapt_buffer_for_theme(frame.buffer_mut());
+    // Apply an explicit background for themes that define one (e.g. "dark" on a
+    // white terminal). This fills every cell whose bg is Color::Reset with the
+    // theme's background color, so the app is readable regardless of the
+    // terminal's default background. Themes using Color::Reset (system) skip
+    // this and rely on the terminal's own background.
+    let bg = jcode_tui_style::theme::background_color();
+    if bg != Color::Reset {
+        let buf = frame.buffer_mut();
+        for cell in buf.content.iter_mut() {
+            if cell.bg == Color::Reset {
+                cell.bg = bg;
+            }
+        }
+    }
+    // Adapt the finished frame for light terminal backgrounds (no-op on dark),
+    // then apply the user's configured colors, which must not be
+    // luminance-flipped. Working at the buffer level covers every widget and
+    // overlay without touching individual color call sites. See
+    // `palette::adapt_buffer_for_palette` for the ordering. Custom themes that
+    // declare their own palette opt out of the terminal-adaptation pass so their
+    // colors are not luminance-flipped.
+    if jcode_tui_style::theme::active_theme_uses_terminal_adaptation() {
+        jcode_tui_style::adapt_buffer_for_theme(frame.buffer_mut());
+    }
     jcode_tui_style::palette::adapt_buffer_for_palette(frame.buffer_mut());
     adapt_buffer_for_emoji_preference(frame.buffer_mut());
     // Cache eviction/clearing can outlive the last visible image. Carry Kitty
