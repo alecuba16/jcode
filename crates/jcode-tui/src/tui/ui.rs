@@ -2667,11 +2667,32 @@ pub fn draw(frame: &mut Frame, app: &dyn TuiState) {
         Ok(()) => {}
         Err(payload) => render_recovered_panic_frame(frame, &payload),
     }
+    // Apply an explicit background for themes that define one (e.g. "dark" on a
+    // white terminal). This fills every cell whose bg is Color::Reset with the
+    // theme's background color, so the app is readable regardless of the
+    // terminal's default background. Themes using Color::Reset (system) skip
+    // this and rely on the terminal's own background.
+    let bg = jcode_tui_style::theme::background_color();
+    if bg != Color::Reset {
+        let buf = frame.buffer_mut();
+        for cell in buf.content.iter_mut() {
+            if cell.bg == Color::Reset {
+                cell.bg = bg;
+            }
+        }
+    }
     // Adapt the finished frame at buffer level so every widget and overlay
     // follows the same policy. User-configured colors remain exact.
     // Attribute explicit palette overrides before light-theme contrast repair
     // can make distinct muted source grays converge to the same rendered ink.
-    jcode_tui_style::adapt_buffer_for_display(frame.buffer_mut());
+    // Custom themes that declare their own palette opt out of the
+    // terminal-adaptation pass so their colors are not luminance-flipped,
+    // but [display.colors] overrides still apply through the palette pass.
+    if jcode_tui_style::theme::active_theme_uses_terminal_adaptation() {
+        jcode_tui_style::adapt_buffer_for_display(frame.buffer_mut());
+    } else {
+        jcode_tui_style::palette::adapt_buffer_for_palette(frame.buffer_mut());
+    }
     adapt_buffer_for_emoji_preference(frame.buffer_mut());
     // Cache eviction/clearing can outlive the last visible image. Carry Kitty
     // deletion commands on any completed frame so terminal-side pixel storage
