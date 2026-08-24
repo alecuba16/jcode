@@ -50,8 +50,8 @@ pub enum AppRuntimeMode {
 }
 
 mod auth;
-mod auth_remote;
 mod auth_account_picker_saved_accounts;
+mod auth_remote;
 mod catchup;
 mod commands;
 mod commands_colors;

@@ -46,6 +46,7 @@ pub(super) fn route_supports_reasoning_effort(api_method: &str) -> bool {
         Method::JcodeSubscription
         | Method::Copilot
         | Method::Cursor
+        | Method::CursorAcp
         | Method::Bedrock
         | Method::CodeAssistOAuth
         | Method::AntigravityHttps

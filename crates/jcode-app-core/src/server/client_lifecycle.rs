@@ -39,8 +39,8 @@ use super::comm_sync::{
     handle_comm_resync_plan, handle_comm_status, handle_comm_summary,
 };
 use super::provider_control::{
-    handle_cycle_model, handle_notify_auth_changed, handle_refresh_models,
-    handle_set_compaction_mode, handle_set_model, handle_set_premium_mode,
+    available_models_updated_event, handle_cycle_model, handle_notify_auth_changed,
+    handle_refresh_models, handle_set_compaction_mode, handle_set_model, handle_set_premium_mode,
     handle_set_reasoning_effort, handle_set_route, handle_set_service_tier, handle_set_transport,
     handle_switch_anthropic_account, handle_switch_openai_account,
     try_available_models_updated_event,
@@ -1672,9 +1672,6 @@ pub(super) async fn handle_client(
                                 &swarm_event_tx,
                             )
                             .await;
-                            if let Some(snapshot) = try_available_models_snapshot(&agent) {
-                                last_available_models_snapshot = Some(snapshot);
-                            }
                         } else {
                             crate::logging::warn(&format!(
                                 "Target-aware subscribe failed to bind {} from temporary {}; closing temporary client connection {}",
@@ -1741,9 +1738,6 @@ pub(super) async fn handle_client(
                         &swarm_event_tx,
                     )
                     .await;
-                    if let Some(snapshot) = try_available_models_snapshot(&agent) {
-                        last_available_models_snapshot = Some(snapshot);
-                    }
                 }
                 client_subscribed = true;
                 provisional_session = false;
@@ -1775,9 +1769,6 @@ pub(super) async fn handle_client(
                 // instead of leaving the graph blank until the next plan
                 // mutation broadcast.
                 send_swarm_plan_to_session(&client_session_id, &swarm_members, &swarm_plans).await;
-                if let Some(snapshot) = try_available_models_snapshot(&agent) {
-                    last_available_models_snapshot = Some(snapshot);
-                }
             }
 
             Request::GetModelCatalog { id } => {
@@ -1898,9 +1889,6 @@ pub(super) async fn handle_client(
                     &soft_interrupt_queues,
                 )
                 .await;
-                if let Some(snapshot) = try_available_models_snapshot(&agent) {
-                    last_available_models_snapshot = Some(snapshot);
-                }
             }
 
             Request::ResumeAllSessions { id } => {

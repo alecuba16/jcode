@@ -25,6 +25,44 @@ pub fn simplified_model_routes_for_picker(
     current_model: &str,
     display_models: impl IntoIterator<Item = String>,
 ) -> Vec<ModelRoute> {
+    // Cursor ACP advertises foundation models from multiple vendors
+    // (`claude-*`, `gpt-*`, `gemini-*`, ...) under one provider. The prefix
+    // heuristics below would split them into Anthropic/OpenAI/Gemini routes
+    // and synthesize local credential rows, hiding the real ACP route. When
+    // the active provider is Cursor ACP, label every advertised model as a
+    // Cursor ACP route so the picker matches `jcode model list -p cursor-acp`.
+    //
+    // Match both the runtime key ("cursor-acp") and the display name
+    // ("Cursor ACP") because the caller may pass either form depending on
+    // whether the value came from `Provider::name()` or `display_name()`.
+    if current_provider_name.eq_ignore_ascii_case(super::external::CURSOR_ACP_RUNTIME)
+        || current_provider_name.eq_ignore_ascii_case("Cursor ACP")
+    {
+        let routes: Vec<ModelRoute> = display_models
+            .into_iter()
+            .filter(|model| is_listable_model_name(model))
+            .map(|model| ModelRoute {
+                model,
+                provider: "Cursor ACP".to_string(),
+                api_method: super::external::CURSOR_ACP_RUNTIME.to_string(),
+                available: true,
+                detail: "Advertised by Cursor CLI ACP".to_string(),
+                cheapness: None,
+            })
+            .collect();
+        if routes.is_empty() && !current_model.is_empty() && current_model != "unknown" {
+            return vec![ModelRoute {
+                model: current_model.to_string(),
+                provider: "Cursor ACP".to_string(),
+                api_method: super::external::CURSOR_ACP_RUNTIME.to_string(),
+                available: true,
+                detail: "simplified catalog".to_string(),
+                cheapness: None,
+            }];
+        }
+        return routes;
+    }
+
     let auth = AuthStatus::check_fast();
     let mut routes = Vec::new();
 
@@ -116,7 +154,7 @@ pub fn simplified_model_routes_for_picker(
                         String::new(),
                     ),
                     Some("cursor") => (
-                        "Cursor".to_string(),
+                        "Cursor (API)".to_string(),
                         "cursor".to_string(),
                         auth.cursor != AuthState::NotConfigured,
                         String::new(),
@@ -234,6 +272,7 @@ pub(super) fn multiprovider_model_routes(provider: &MultiProvider) -> Vec<ModelR
     append_gemini_routes(provider, &mut routes);
     append_antigravity_routes(provider, &mut routes);
     append_cursor_routes(provider, &mut routes);
+    append_cursor_acp_routes(provider, &mut routes);
     append_bedrock_routes(provider, &mut routes);
 
     let has_openrouter_transport = provider.openrouter_provider().is_some();
@@ -594,13 +633,26 @@ fn append_cursor_routes(provider: &MultiProvider, routes: &mut Vec<ModelRoute>) 
         for model in cursor.available_models_display() {
             routes.push(ModelRoute {
                 model,
-                provider: "Cursor".to_string(),
+                // Distinguish the direct Cursor HTTPS API transport from the
+                // Cursor CLI ACP provider, which advertises its own routes as
+                // "Cursor ACP" via the external runtime registry.
+                provider: "Cursor (API)".to_string(),
                 api_method: "cursor".to_string(),
                 available: true,
                 detail: String::new(),
                 cheapness: None,
             });
         }
+    }
+}
+
+/// Cursor CLI ACP models. Cursor ACP is an external standalone provider that
+/// advertises foundation models from multiple vendors under one "Cursor ACP"
+/// label. Unlike the direct Cursor HTTPS API, it is not tied to jcode-managed
+/// auth and is instantiated through the external runtime registry.
+pub(super) fn append_cursor_acp_routes(provider: &MultiProvider, routes: &mut Vec<ModelRoute>) {
+    if let Some(cursor_acp) = provider.cursor_acp_provider() {
+        routes.extend(cursor_acp.model_routes());
     }
 }
 
@@ -867,6 +919,33 @@ pub fn remote_model_routes_fallback(
             .collect();
     }
 
+    // Cursor ACP advertises foundation models from multiple vendors
+    // (`claude-*`, `gpt-*`, `gemini-*`, ...) under one provider. The prefix
+    // heuristics below would split them into Anthropic/OpenAI/Gemini routes
+    // and synthesize local credential rows, hiding the real ACP route. When
+    // the remote provider is Cursor ACP, label every advertised model as a
+    // Cursor ACP route so the picker matches `jcode model list -p cursor-acp`.
+    // Same dual-match as `simplified_model_routes_for_picker`: the remote
+    // provider name may be the runtime key ("cursor-acp") or the display
+    // label ("Cursor ACP") depending on which code path built the snapshot.
+    if remote_provider_name.is_some_and(|name| {
+        name.eq_ignore_ascii_case(super::external::CURSOR_ACP_RUNTIME)
+            || name.eq_ignore_ascii_case("Cursor ACP")
+    }) {
+        return remote_available_entries
+            .iter()
+            .filter(|model| is_listable_model_name(model))
+            .map(|model| ModelRoute {
+                model: model.clone(),
+                provider: "Cursor ACP".to_string(),
+                api_method: super::external::CURSOR_ACP_RUNTIME.to_string(),
+                available: true,
+                detail: "Cursor CLI ACP routing · managed server-side".to_string(),
+                cheapness: None,
+            })
+            .collect();
+    }
+
     let auth = AuthStatus::check_fast();
     let mut routes = Vec::new();
     for model in remote_available_entries {
@@ -1074,8 +1153,18 @@ pub fn remote_model_routes_lightweight_fallback(
     let is_jcode_subscription = remote_provider_name.is_some_and(|name| {
         name.eq_ignore_ascii_case(crate::subscription_catalog::JCODE_PROVIDER_DISPLAY_NAME)
     });
+    let is_cursor_acp = remote_provider_name.is_some_and(|name| {
+        name.eq_ignore_ascii_case(super::external::CURSOR_ACP_RUNTIME)
+            || name.eq_ignore_ascii_case("Cursor ACP")
+    });
     let provider = remote_provider_name
-        .map(str::to_string)
+        .map(|name| {
+            if is_cursor_acp {
+                "Cursor ACP".to_string()
+            } else {
+                name.to_string()
+            }
+        })
         .unwrap_or_else(|| "remote".to_string());
     let mut routes = Vec::new();
     for model in remote_available_entries {
@@ -1087,12 +1176,16 @@ pub fn remote_model_routes_lightweight_fallback(
             provider: provider.clone(),
             api_method: if is_jcode_subscription {
                 crate::subscription_catalog::JCODE_ROUTE_API_METHOD.to_string()
+            } else if is_cursor_acp {
+                super::external::CURSOR_ACP_RUNTIME.to_string()
             } else {
                 "remote-catalog".to_string()
             },
             available: true,
             detail: if is_jcode_subscription {
                 "jcode subscription routing · managed server-side".to_string()
+            } else if is_cursor_acp {
+                "Cursor CLI ACP routing · managed server-side".to_string()
             } else {
                 "refreshing route details…".to_string()
             },

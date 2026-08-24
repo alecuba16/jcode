@@ -626,7 +626,58 @@ The above image is the first page of provider logins
 
 - **Native / first-party style providers:** `claude`, `openai`, `copilot`, `gemini`, `azure`, `alibaba-coding-plan`
 - **Aggregator / compatibility providers:** `openrouter`, `orcarouter`, `openai-compatible`
-- **Additional provider integrations:** `opencode`, `opencode-go`, `zai` / `kimi`, `302ai`, `baseten`, `cortecs`, `deepseek`, `firmware`, `huggingface`, `moonshotai`, `nebius`, `scaleway`, `stackit`, `groq`, `mistral`, `perplexity`, `togetherai`, `deepinfra`, `fireworks`, `novita`, `minimax`, `xai`, `lmstudio`, `ollama`, `chutes`, `cerebras`, `cursor`, `antigravity`, `google`
+- **Additional provider integrations:** `opencode`, `opencode-go`, `zai` / `kimi`, `302ai`, `baseten`, `cortecs`, `deepseek`, `firmware`, `huggingface`, `moonshotai`, `nebius`, `scaleway`, `stackit`, `groq`, `mistral`, `perplexity`, `togetherai`, `deepinfra`, `fireworks`, `minimax`, `xai`, `lmstudio`, `ollama`, `chutes`, `cerebras`, `cursor`, `antigravity`, `google`
+=======
+- **Additional provider integrations:** `opencode`, `opencode-go`, `zai` / `kimi`, `302ai`, `baseten`, `cortecs`, `deepseek`, `firmware`, `huggingface`, `moonshotai`, `nebius`, `scaleway`, `stackit`, `groq`, `mistral`, `perplexity`, `togetherai`, `deepinfra`, `fireworks`, `minimax`, `xai`, `lmstudio`, `ollama`, `chutes`, `cerebras`, `cursor`, `cursor-acp`, `antigravity`, `google`
+
+#### Cursor ACP provider
+
+`--provider cursor-acp` launches Cursor's `agent --force --trust acp` as a
+subprocess and communicates over JSON-RPC stdin/stdout. Cursor CLI owns
+authentication, tools, permissions, and model availability.
+
+**Settings:**
+
+| Setting | Env var | Default | Description |
+|---|---|---|---|
+| Executable path | `JCODE_CURSOR_ACP_PATH` | `agent` | Path to the Cursor CLI executable |
+| Model | `JCODE_CURSOR_ACP_MODEL` | *(from session/new)* | Validated against the ACP-advertised catalog |
+| Permission mode | `JCODE_CURSOR_ACP_PERMISSION` | `jcode` | `jcode` (safe: read/search auto-approved, execute/edit cancelled), `yolo` (auto-approve all), or a specific option ID (`allow-always`, `allow-once`, `reject-once`) |
+| Extra agent flags | `JCODE_CURSOR_ACP_EXTRA_ARGS` | `--force --trust` | Top-level flags before the `acp` subcommand |
+| Full arg list override | `JCODE_CURSOR_ACP_ARGS` | *(none)* | Replaces the entire argument list including `acp` |
+
+Config-file equivalent:
+
+```toml
+[acp]
+permission_mode = "jcode"  # or "yolo", "allow-always", etc.
+```
+
+**Functionality:**
+
+- **Model discovery:** Models are read from `session/new` and subsequent ACP
+  config updates — no static list. Resolution is deterministic: exact ID wins,
+  bare ID accepted only when one advertised variant matches, ambiguous/unsupported
+  IDs error.
+- **Context window:** Parsed from the model's `[context=N]` bracket setting
+  (e.g. `gpt-5.6-sol[context=272k]`); falls back to 200k when absent.
+- **Reasoning effort:** Read from `[reasoning=level]` bracket; settable via
+  `/effort` with levels `none`, `low`, `medium`, `high`, `max`.
+- **Token usage:** Reported via `usage_update` stream events
+  (`inputTokens`, `outputTokens`).
+- **Tool surfacing:** Tool calls and results are surfaced as
+  `ToolUseStart` → `ToolUseEnd` → `ToolResult` stream events, including
+  `exitCode`, `stdout`, `stderr` from `rawOutput`.
+- **Tool result persistence:** Provider-executed tool results are persisted to
+  the session before the native-tool retain filter, preventing orphaned
+  `ToolUse` blocks.
+- **Image support:** Detected from the `initialize` handshake capabilities.
+- **Permission modes:** `jcode` (safety classification: auto-allow read/search,
+  cancel execute/edit/fetch/other), `yolo` (auto-approve most permissive), or a
+  specific option ID.
+
+The ACP route is separate from `--provider cursor`, which remains the direct
+Cursor HTTPS provider.
 
 Jcode also supports easy multi-account switching. Ran out of tokens on your first ChatGPT Pro subscription? /account and quickly switch to your second. 
 

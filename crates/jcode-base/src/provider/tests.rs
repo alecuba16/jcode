@@ -215,11 +215,13 @@ fn test_multi_provider_with_openai() -> MultiProvider {
         antigravity: RwLock::new(None),
         gemini: RwLock::new(None),
         cursor: RwLock::new(None),
+        cursor_acp: RwLock::new(None),
         bedrock: RwLock::new(None),
         openrouter: RwLock::new(None),
         openai_compatible_profiles: RwLock::new(std::collections::HashMap::new()),
         active_openai_compatible_profile: RwLock::new(None),
         active: RwLock::new(ActiveProvider::OpenAI),
+        active_external: RwLock::new(None),
         use_claude_cli: false,
         startup_notices: RwLock::new(Vec::new()),
         initial_provider: None,
@@ -819,7 +821,10 @@ impl StubExternalRuntime {
     }
 
     fn cursor() -> Self {
-        Self::new("cursor", "Cursor", "cursor", cursor::AVAILABLE_MODELS)
+        // Mirrors the real jcode-provider-cursor-runtime CursorCliProvider,
+        // whose model_routes advertise the direct HTTPS API transport as
+        // "Cursor (API)" to distinguish it from the Cursor CLI ACP provider.
+        Self::new("cursor", "Cursor (API)", "cursor", cursor::AVAILABLE_MODELS)
     }
 
     fn antigravity() -> Self {
@@ -837,6 +842,18 @@ impl StubExternalRuntime {
             "GitHub Copilot",
             "copilot",
             copilot::FALLBACK_MODELS,
+        )
+    }
+
+    fn cursor_acp() -> Self {
+        // Mirrors the real jcode-provider-cursor-acp-runtime provider, which
+        // advertises foundation models from multiple vendors under one
+        // "Cursor ACP" label with the `cursor-acp` api_method.
+        Self::new(
+            "cursor-acp",
+            "Cursor ACP",
+            "cursor-acp",
+            &["claude-opus-5[thinking=true]", "gpt-5.3-codex[]"],
         )
     }
 
@@ -945,6 +962,10 @@ fn test_cursor_runtime() -> Arc<dyn Provider> {
     Arc::new(StubExternalRuntime::cursor())
 }
 
+fn test_cursor_acp_runtime() -> Arc<dyn Provider> {
+    Arc::new(StubExternalRuntime::cursor_acp())
+}
+
 fn test_antigravity_runtime() -> Arc<dyn Provider> {
     Arc::new(StubExternalRuntime::antigravity())
 }
@@ -972,6 +993,7 @@ fn register_test_external_runtimes() {
         test_openai_runtime() as Arc<dyn Provider>
     });
     external::register_external_provider(external::CURSOR_RUNTIME, test_cursor_runtime);
+    external::register_external_provider(external::CURSOR_ACP_RUNTIME, test_cursor_acp_runtime);
     external::register_external_provider(external::ANTIGRAVITY_RUNTIME, test_antigravity_runtime);
     external::register_external_provider(external::COPILOT_RUNTIME, test_copilot_runtime);
     // OpenRouter tests exercise the real runtime (profile-scoped catalogs,
@@ -1017,11 +1039,39 @@ fn test_multi_provider_with_cursor() -> MultiProvider {
         antigravity: RwLock::new(None),
         gemini: RwLock::new(None),
         cursor: RwLock::new(Some(test_cursor_runtime())),
+        cursor_acp: RwLock::new(None),
         bedrock: RwLock::new(None),
         openrouter: RwLock::new(None),
         openai_compatible_profiles: RwLock::new(std::collections::HashMap::new()),
         active_openai_compatible_profile: RwLock::new(None),
         active: RwLock::new(ActiveProvider::Cursor),
+        active_external: RwLock::new(None),
+        use_claude_cli: false,
+        startup_notices: RwLock::new(Vec::new()),
+        initial_provider: None,
+        routes_memo: std::sync::Mutex::new(None),
+        post_auth_refreshes_pending: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+    }
+}
+
+fn test_multi_provider_with_cursor_acp() -> MultiProvider {
+    MultiProvider {
+        claude: RwLock::new(None),
+        anthropic: RwLock::new(None),
+        openai: RwLock::new(None),
+        copilot_api: RwLock::new(None),
+        antigravity: RwLock::new(None),
+        gemini: RwLock::new(None),
+        cursor: RwLock::new(None),
+        cursor_acp: RwLock::new(Some(test_cursor_acp_runtime())),
+        bedrock: RwLock::new(None),
+        openrouter: RwLock::new(None),
+        openai_compatible_profiles: RwLock::new(std::collections::HashMap::new()),
+        active_openai_compatible_profile: RwLock::new(None),
+        // Cursor ACP is selected via the external active-provider mechanism,
+        // not via ActiveProvider; use a neutral default for the picker test.
+        active: RwLock::new(ActiveProvider::OpenAI),
+        active_external: RwLock::new(None),
         use_claude_cli: false,
         startup_notices: RwLock::new(Vec::new()),
         initial_provider: None,
@@ -1204,3 +1254,4 @@ fn profile_catalog_cache_needs_refresh_for_missing_cache() {
         );
     });
 }
+include!("tests/catalog_cursor_acp.rs");

@@ -379,8 +379,7 @@ fn test_remote_cached_oauth_only_claude_route_gains_api_key_route_in_picker() {
     // the picker must add the claude-api route instead of trusting the stale
     // single-route cache forever.
     with_temp_jcode_home(|| {
-        let _api_key_guard =
-            AnthropicApiKeyGuard(std::env::var("ANTHROPIC_API_KEY").ok());
+        let _api_key_guard = AnthropicApiKeyGuard(std::env::var("ANTHROPIC_API_KEY").ok());
         crate::env::set_var("ANTHROPIC_API_KEY", "sk-ant-test-key");
         crate::auth::AuthStatus::invalidate_cache();
 
@@ -406,19 +405,18 @@ fn test_remote_cached_oauth_only_claude_route_gains_api_key_route_in_picker() {
             .entries
             .iter()
             .filter(|entry| {
-                entry.name == "claude-fable-5"
-                    || entry.name.starts_with("claude-fable-5 (")
+                entry.name == "claude-fable-5" || entry.name.starts_with("claude-fable-5 (")
             })
             .collect::<Vec<_>>();
         assert!(!fable_entries.is_empty(), "fable should be in the picker");
         assert!(
-            fable_entries.iter().any(|entry| entry.options.iter().any(
-                |option| option.api_method == "claude-api" && option.available
-            )),
+            fable_entries.iter().any(|entry| entry
+                .options
+                .iter()
+                .any(|option| option.api_method == "claude-api" && option.available)),
             "stale oauth-only cached route should be augmented with claude-api, got {:?}",
             fable_entries
         );
-
     });
 }
 
@@ -457,9 +455,7 @@ fn test_remote_jcode_subscription_catalog_is_not_augmented_with_local_auth_route
 
         let expected = crate::subscription_catalog::curated_models()
             .iter()
-            .filter(|model| {
-                crate::subscription_catalog::JcodeTier::Plus.allows(model.min_tier)
-            })
+            .filter(|model| crate::subscription_catalog::JcodeTier::Plus.allows(model.min_tier))
             .map(|model| model.id)
             .collect::<std::collections::BTreeSet<_>>();
         assert_eq!(app.remote_model_options.len(), expected.len());
@@ -474,6 +470,81 @@ fn test_remote_jcode_subscription_catalog_is_not_augmented_with_local_auth_route
                 .map(|route| route.model.as_str())
                 .collect::<std::collections::BTreeSet<_>>(),
             expected
+        );
+    });
+}
+
+#[test]
+fn test_remote_cursor_acp_catalog_is_not_augmented_with_local_credential_routes() {
+    with_temp_jcode_home(|| {
+        // Simulate local Anthropic/OpenAI/Gemini credentials being present.
+        // Without the ACP guard, the prefix-based extension would synthesize
+        // duplicate claude-api/openai-oauth/gemini routes for ACP-advertised
+        // foundation models.
+        let previous_anthropic_key = std::env::var_os("ANTHROPIC_API_KEY");
+        crate::env::set_var("ANTHROPIC_API_KEY", "sk-ant-test-key");
+        let previous_openai_key = std::env::var_os("OPENAI_API_KEY");
+        crate::env::set_var("OPENAI_API_KEY", "sk-test-openai-key");
+        crate::auth::AuthStatus::invalidate_cache();
+
+        let mut app = create_test_app();
+        app.is_remote = true;
+        app.remote_provider_name = Some(crate::provider::external::CURSOR_ACP_RUNTIME.to_string());
+        app.remote_available_entries = vec![
+            "claude-opus-5[thinking=true,budget_tokens=10000]".to_string(),
+            "gpt-5.3-codex[]".to_string(),
+            "gemini-3.1-pro[]".to_string(),
+            "grok-4.5[...]".to_string(),
+            "default[]".to_string(),
+        ];
+        // Server-sent routes: all correctly labeled "Cursor ACP".
+        app.remote_model_options = app
+            .remote_available_entries
+            .iter()
+            .map(|model| crate::provider::ModelRoute {
+                model: model.clone(),
+                provider: "Cursor ACP".to_string(),
+                api_method: crate::provider::external::CURSOR_ACP_RUNTIME.to_string(),
+                available: true,
+                detail: "Cursor CLI ACP routing · managed server-side".to_string(),
+                cheapness: None,
+            })
+            .collect();
+
+        app.open_model_picker();
+
+        // Restore env.
+        match previous_anthropic_key {
+            Some(value) => crate::env::set_var("ANTHROPIC_API_KEY", value),
+            None => crate::env::remove_var("ANTHROPIC_API_KEY"),
+        }
+        match previous_openai_key {
+            Some(value) => crate::env::set_var("OPENAI_API_KEY", value),
+            None => crate::env::remove_var("OPENAI_API_KEY"),
+        }
+        crate::auth::AuthStatus::invalidate_cache();
+
+        // The picker should show exactly the 5 server-sent routes, all labeled
+        // "Cursor ACP", with no duplicate Anthropic/OpenAI/Gemini rows.
+        assert_eq!(
+            app.remote_model_options.len(),
+            5,
+            "ACP routes should not be augmented with local credential routes"
+        );
+        assert!(
+            app.remote_model_options.iter().all(|route| {
+                route.provider == "Cursor ACP"
+                    && route.api_method == crate::provider::external::CURSOR_ACP_RUNTIME
+            }),
+            "every route should remain Cursor ACP after opening the picker"
+        );
+        assert!(
+            !app.remote_model_options.iter().any(|route| {
+                route.provider == "Anthropic"
+                    || route.provider == "OpenAI"
+                    || route.provider == "Gemini"
+            }),
+            "no local credential routes should be synthesized for ACP models"
         );
     });
 }
@@ -663,9 +734,7 @@ fn test_remote_hydrated_catalog_adds_entitled_jcode_subscription_routes() {
             .collect::<Vec<_>>();
         let expected = crate::subscription_catalog::curated_models()
             .iter()
-            .filter(|model| {
-                crate::subscription_catalog::JcodeTier::Plus.allows(model.min_tier)
-            })
+            .filter(|model| crate::subscription_catalog::JcodeTier::Plus.allows(model.min_tier))
             .map(|model| model.id)
             .collect::<std::collections::BTreeSet<_>>();
         assert_eq!(jcode_routes.len(), expected.len());
@@ -688,10 +757,9 @@ fn test_remote_hydrated_catalog_adds_entitled_jcode_subscription_routes() {
         }));
         assert!(app.remote_model_options.iter().all(|route| {
             route.provider != crate::subscription_catalog::JCODE_PROVIDER_DISPLAY_NAME
-                || crate::subscription_catalog::find_curated_model(&route.model)
-                    .is_some_and(|model| {
-                        crate::subscription_catalog::JcodeTier::Plus.allows(model.min_tier)
-                    })
+                || crate::subscription_catalog::find_curated_model(&route.model).is_some_and(
+                    |model| crate::subscription_catalog::JcodeTier::Plus.allows(model.min_tier),
+                )
         }));
     });
 }
@@ -960,7 +1028,8 @@ fn test_handle_key_super_left_right_move_to_edges() {
         app.handle_key(KeyCode::Left, KeyModifiers::SUPER).unwrap();
         assert_eq!(app.cursor_pos(), before);
 
-        app.handle_key(KeyCode::Home, KeyModifiers::empty()).unwrap();
+        app.handle_key(KeyCode::Home, KeyModifiers::empty())
+            .unwrap();
         assert_eq!(app.cursor_pos(), 0);
 
         app.handle_key(KeyCode::End, KeyModifiers::empty()).unwrap();
@@ -1150,7 +1219,9 @@ fn test_submit_input_commits_pending_streaming_assistant_text_before_user_messag
             id: "tool_read".to_string(),
             name: "read".to_string(),
             input: serde_json::json!({"file_path": "src/main.rs"}),
-            intent: None, thought_signature: None, },
+            intent: None,
+            thought_signature: None,
+        },
     ));
     app.bump_display_messages_version();
     app.streaming.streaming_text = "Here is the final paragraph".to_string();
@@ -1760,7 +1831,10 @@ fn test_model_picker_effort_variant_selection_stages_effort_in_remote_mode() {
     app.handle_key(KeyCode::Enter, KeyModifiers::empty())
         .unwrap();
 
-    assert!(app.inline_interactive_state.is_none(), "picker should close");
+    assert!(
+        app.inline_interactive_state.is_none(),
+        "picker should close"
+    );
     assert!(
         app.pending_route_selection.is_some(),
         "model switch should be staged for the remote dispatcher"
@@ -1852,7 +1926,10 @@ fn test_model_picker_plain_selection_stages_no_effort_in_remote_mode() {
     app.handle_key(KeyCode::Enter, KeyModifiers::empty())
         .unwrap();
 
-    assert!(app.inline_interactive_state.is_none(), "picker should close");
+    assert!(
+        app.inline_interactive_state.is_none(),
+        "picker should close"
+    );
     assert!(
         app.pending_reasoning_effort.is_none(),
         "plain rows must not override the server's effort"
@@ -1924,10 +2001,7 @@ fn test_model_switch_notice_omits_placeholder_route_details() {
             .map(|(text, _)| text.clone())
             .expect("a model switch notice should be set");
         assert!(!notice.contains("remote-catalog"), "got {notice}");
-        assert!(
-            !notice.contains("refreshing route details"),
-            "got {notice}"
-        );
+        assert!(!notice.contains("refreshing route details"), "got {notice}");
         assert!(notice.starts_with("Model → "), "got {notice}");
         assert!(!notice.contains(" via "), "got {notice}");
     });
@@ -1998,7 +2072,10 @@ fn test_catalog_update_rebuilds_open_model_picker_with_real_routes() {
             .as_ref()
             .expect("picker should still be open after the catalog update");
         assert!(
-            picker.entries.iter().any(|entry| entry.name.starts_with(model)),
+            picker
+                .entries
+                .iter()
+                .any(|entry| entry.name.starts_with(model)),
             "rebuilt picker should still list the model"
         );
         assert!(
