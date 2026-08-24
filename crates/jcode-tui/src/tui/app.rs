@@ -49,9 +49,18 @@ pub enum AppRuntimeMode {
     TestHarness,
 }
 
+const MODEL_CONFIG_PERSIST_DEBOUNCE: Duration = Duration::from_millis(500);
+
+#[derive(Debug, Clone)]
+struct PendingModelConfigPersist {
+    model_spec: String,
+    provider_key: Option<String>,
+    due_at: Instant,
+}
+
 mod auth;
-mod auth_remote;
 mod auth_account_picker_saved_accounts;
+mod auth_remote;
 mod catchup;
 mod commands;
 mod commands_colors;
@@ -1422,6 +1431,16 @@ pub struct App {
     // prompts submitted in this window are held so the first request cannot race
     // the model switch and use stale provider/model state.
     remote_model_switch_in_flight: bool,
+    // When a user-initiated remote model switch is in flight, this stores the
+    // model spec (route-prefixed) so that after the server confirms via
+    // ModelChanged, we can persist it to config.toml. Set by the model picker
+    // and /model command in remote mode; cleared when the switch completes or
+    // fails. Empty for failover/auth switches which must not override the
+    // user's configured default.
+    pending_persist_model_spec: Option<String>,
+    // Debounced config.toml write for user-initiated model switches. Rapid model
+    // cycling replaces this pending write and only the final choice is persisted.
+    pending_model_config_persist: Option<PendingModelConfigPersist>,
     pending_prompt_after_model_switch: Option<input::PreparedInput>,
     // A manually submitted prompt that arrived before the remote session's
     // bootstrap History payload was applied. Submitting in that window is racy:

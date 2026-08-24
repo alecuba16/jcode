@@ -2248,6 +2248,7 @@ pub(in crate::tui::app) fn handle_server_event(
         } => {
             app.remote_model_switch_in_flight = false;
             if let Some(err) = error {
+                app.pending_persist_model_spec = None;
                 if let Some(prepared) = app.pending_prompt_after_model_switch.take() {
                     super::input_dispatch::restore_prepared_remote_input(app, prepared);
                 }
@@ -2273,6 +2274,25 @@ pub(in crate::tui::app) fn handle_server_event(
                     app.remote_provider_name = Some(pname.clone());
                 }
                 app.invalidate_model_picker_cache();
+                // Persist user-initiated remote switches (picker, /model) to
+                // config.toml now that the server confirmed the model change.
+                // Failover/auth switches never set pending_persist_model_spec,
+                // so they are correctly skipped.
+                if let Some(spec) = app.pending_persist_model_spec.take() {
+                    let remote_provider_name = app
+                        .remote_provider_name
+                        .as_deref()
+                        .unwrap_or("")
+                        .to_string();
+                    let session_provider_key = app.session.provider_key.clone();
+                    let provider_key =
+                        crate::provider::MultiProvider::session_provider_key_after_model_switch(
+                            &spec,
+                            &remote_provider_name,
+                            session_provider_key.as_deref(),
+                        );
+                    app.persist_model_switch_to_config(&spec, provider_key.as_deref());
+                }
                 if !app.auth_catalog_refresh_pending {
                     app.push_display_message(DisplayMessage::system(format!(
                         "✓ Switched to model: {}",

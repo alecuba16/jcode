@@ -3710,7 +3710,12 @@ impl App {
                             self.session.route_api_method =
                                 Some(route_selection.api_method.clone());
                             self.pending_route_selection = Some(route_selection);
-                            self.pending_model_switch = Some(spec);
+                            self.pending_model_switch = Some(spec.clone());
+                            // Stage the route spec for config persistence
+                            // after the server confirms the switch. This
+                            // is only set for user-initiated picker switches,
+                            // not for failover/auth switches.
+                            self.pending_persist_model_spec = Some(spec);
                             // In remote mode `self.provider` is a local
                             // stand-in, so applying the picked effort variant
                             // to it does not reach the server. Stage it so the
@@ -3739,6 +3744,17 @@ impl App {
                                     self.session.route_api_method =
                                         Some(route_selection.api_method.clone());
                                     let _ = self.session.save();
+                                    // Persist the user's picker choice to
+                                    // config.toml so it survives relaunch /
+                                    // new sessions, just like cycle_model
+                                    // and /model <name> do. Pass the spec
+                                    // verbatim and the resolved provider_key
+                                    // (computed above from the route).
+                                    let persist_provider_key = self.session.provider_key.clone();
+                                    self.persist_model_switch_to_config(
+                                        &spec,
+                                        persist_provider_key.as_deref(),
+                                    );
                                     crate::logging::event_info(
                                         "model_picker_select_applied",
                                         vec![
