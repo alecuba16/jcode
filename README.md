@@ -296,7 +296,20 @@ The side panel is a place for auxiliary information. Tell your jcode agent to lo
 
 To make this possible, I created a new mermaid rendering library to render diagrams 1800x faster. It has no browser or Typescript dependency. See https://github.com/1jehuang/mermaid-rs-renderer
 
-To show you important information without taking space away from the screen that could be used for responses, I developed info widgets. Info widgets will only ever take up the negative space on the screen to show you information, and will get out of the way if there isn't any. 
+To show you important information without taking space away from the screen that could be used for responses, I developed info widgets. Info widgets will only ever take up the negative space on the screen to show you information, and will get out of the way if there isn't any.
+
+### File mentions (`@file` completion)
+
+Type `@` in the input box to trigger file-path completion. A popup lists workspace files ranked by **frecency** (frequency + recency decay): files you have selected before rank higher, and the score is `frequency / (1 + days_since_last_open)`. Frecency history persists to `~/.jcode/file_frecency.jsonl` (capped at 1000 entries) so ranking carries across sessions.
+
+The index uses a two-layer strategy:
+
+| Layer | Source | When built |
+|-------|--------|-----------|
+| Base | `git ls-files --cached --others --exclude-standard` | Background task with adaptive TTL (30 s–2 min) |
+| Lazy | `fs::read_dir` on demand | When a query points inside a gitignored directory |
+
+Matching is case-insensitive and substring-based (a `CharBag` pre-filter narrows candidates before a regex pass). Selected files appear as inline chips in the input box; backspace on a chip deletes the whole path token rather than one character at a time. Binary files are filtered out of results.
 
 Jcode can render at over a thousand fps. Your monitor will not have the refresh rate to show you, but this means you will not have silly flicker problems. 
 
