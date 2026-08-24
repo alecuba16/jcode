@@ -630,6 +630,56 @@ The above image is the first page of provider logins
 
 Jcode also supports easy multi-account switching. Ran out of tokens on your first ChatGPT Pro subscription? /account and quickly switch to your second. 
 
+### Auto-retry backoff (`auto_retry_base_delay_secs`, `auto_retry_max_attempts`)
+
+When a request fails with a transient error (e.g. `429 Too Many Requests`), jcode retries automatically with a linear backoff: `base_delay * attempt_number`. By default the base delay is 2s and the maximum number of attempts is 3, so retries happen at 2s, 4s, 6s before giving up.
+
+These defaults are too aggressive for shared gateways that return 429 without a `retry-after` header. You can change them globally, per provider, or with environment variables. This applies to all providers, not just OpenAI-compatible ones.
+
+**Global defaults** — set in `[provider]` in `config.toml`:
+
+```toml
+[provider]
+auto_retry_base_delay_secs = 5   # gentler backoff (default: 2)
+auto_retry_max_attempts = 8        # keep trying longer (default: 3)
+```
+
+**Per-provider override** — set in `[providers.<name>]`. When the provider is active, its value takes precedence over the global default:
+
+```toml
+[providers.my-shared-gateway]
+auto_retry_base_delay_secs = 10
+auto_retry_max_attempts = 10
+```
+
+**Environment variables** — take highest precedence over both config sources:
+
+```bash
+export JCODE_AUTO_RETRY_BASE_DELAY_SECS=10
+export JCODE_AUTO_RETRY_MAX_ATTEMPTS=10
+```
+
+**Precedence** (highest to lowest):
+
+1. `JCODE_AUTO_RETRY_BASE_DELAY_SECS` / `JCODE_AUTO_RETRY_MAX_ATTEMPTS` environment variables
+2. `[providers.<name>]` per-provider override (when that provider is active)
+3. `[provider]` global default
+
+The backoff is linear: the Nth retry waits `base_delay * N` seconds. If the gateway provides a `retry-after` time in the error message, jcode uses that instead of the linear backoff.
+
+### Inverted sidecar fallback & set-as-sidecar shortcut
+
+The memory sidecar's auto-select order is now **Claude first** (haiku, dedicated fast/cheap OAuth path), then OpenAI (GPT-5.6 Luna at reasoning=none), then the active agent provider via `complete_simple`. Previously OpenAI was preferred. If you have both Claude and Codex credentials, the sidecar now uses Claude.
+
+In the `/model` picker, **Ctrl+S** sets the highlighted model as the memory sidecar model (persisted to `config.toml` via `memory_model` under `[agents]`). The existing shortcuts remain: **Ctrl+O** sets the default model, **Ctrl+N** toggles favorite, **Shift+Tab** cycles favorites.
+
+| Shortcut | Action |
+|----------|--------|
+| `Ctrl+O` | Set selected model as default |
+| `Ctrl+S` | Set selected model as memory sidecar model |
+| `Ctrl+N` | Toggle favorite on selected model |
+| `Shift+Tab` | Cycle favorite models |
+
 ---
 
 ## Customizability / Self-Dev

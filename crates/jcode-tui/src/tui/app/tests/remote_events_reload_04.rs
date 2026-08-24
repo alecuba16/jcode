@@ -193,7 +193,7 @@ fn test_remote_error_with_retryable_pending_schedules_retry() {
     assert!(retry_notice.content.contains("Connection lost - retrying"));
     assert!(retry_notice.content.contains(&format!(
         "attempt 1/{}",
-        App::AUTO_RETRY_MAX_ATTEMPTS
+        app.effective_auto_retry_max_attempts()
     )));
     assert!(retry_notice.content.contains("Remote request failed"));
 }
@@ -693,7 +693,7 @@ fn test_schedule_pending_remote_retry_respects_retry_limit() {
         is_system: true,
         system_reminder: None,
         auto_retry: true,
-        retry_attempts: App::AUTO_RETRY_MAX_ATTEMPTS,
+        retry_attempts: app.effective_auto_retry_max_attempts(),
         retry_at: None,
     });
 

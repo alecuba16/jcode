@@ -193,6 +193,17 @@ pub(super) async fn handle_tick(app: &mut App, remote: &mut RemoteConnection) ->
         && Instant::now() >= reset_time
     {
         app.rate_limit_reset = None;
+        if !app.effective_auto_retry_enabled() {
+            app.rate_limit_pending_message = None;
+            if matches!(app.status, ProcessingStatus::WaitingForNetwork { .. }) {
+                app.status = ProcessingStatus::Idle;
+                app.status_detail = None;
+            }
+            app.push_display_message(DisplayMessage::system(
+                "Auto-retry disabled; not resending pending remote message.".to_string(),
+            ));
+            return true;
+        }
         if !app.is_processing
             && let Some(pending) = app.rate_limit_pending_message.clone()
         {
