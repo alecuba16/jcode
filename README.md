@@ -296,7 +296,20 @@ The side panel is a place for auxiliary information. Tell your jcode agent to lo
 
 To make this possible, I created a new mermaid rendering library to render diagrams 1800x faster. It has no browser or Typescript dependency. See https://github.com/1jehuang/mermaid-rs-renderer
 
-To show you important information without taking space away from the screen that could be used for responses, I developed info widgets. Info widgets will only ever take up the negative space on the screen to show you information, and will get out of the way if there isn't any. 
+To show you important information without taking space away from the screen that could be used for responses, I developed info widgets. Info widgets will only ever take up the negative space on the screen to show you information, and will get out of the way if there isn't any.
+
+### Overview panel
+
+The **Overview** is a compact info widget that merges several status signals into a single panel that adapts to available space:
+
+| Section | What it shows |
+|---------|---------------|
+| Model & auth | Active model, auth method (API key / OAuth), upstream provider, connection type |
+| Memory | Memory count and recovered/injected memories rendered inline |
+| Swarm | Active swarm session count and subagent/member status |
+| Usage | Cost and token throughput |
+
+When space is tight the Overview collapses to its most important lines and expands back as room frees up, with hysteresis so the layout does not jitter. The memory section shows `0 memories` when empty (but enabled) and `Memory disabled` when the sidecar is off; when memories were injected during the turn, their content is wrapped inline below the count. Swarm shows a `0 sessions` line when no swarm is active. The auth indicator appends the upstream provider (`via <name>`) and connection type in brackets when available.
 
 Jcode can render at over a thousand fps. Your monitor will not have the refresh rate to show you, but this means you will not have silly flicker problems. 
 

@@ -8,15 +8,25 @@ pub(super) fn render_swarm_widget(data: &InfoWidgetData, inner: Rect) -> Vec<Lin
         return Vec::new();
     };
 
-    // Dock mode: this session manages agents, render the compact two-line
-    // summary (agents tally + task-graph node bar).
+    // Dock mode: this session manages agents. Show compact summary line plus
+    // individual agent status lines so the coordinator can see each agent's
+    // name and lifecycle status directly in the Overview panel.
     if !info.managed_members.is_empty() {
-        return crate::tui::info_widget::swarm_gallery::render_swarm_compact_lines(
+        let mut lines = crate::tui::info_widget::swarm_gallery::render_swarm_compact_lines(
             &info.managed_members,
             info.plan_progress,
             inner.width as usize,
             inner.height as usize,
         );
+        // Append individual agent lines if there is vertical space.
+        let max_agents = inner.height.saturating_sub(lines.len() as u16).min(8) as usize;
+        let max_name_len = inner.width.saturating_sub(8) as usize;
+        if max_agents > 0 {
+            for member in info.managed_members.iter().take(max_agents) {
+                lines.push(swarm_member_line(member, max_name_len));
+            }
+        }
+        return lines;
     }
 
     let mut lines: Vec<Line> = vec![render_swarm_stats_line(info)];
@@ -36,24 +46,16 @@ pub(super) fn render_swarm_widget(data: &InfoWidgetData, inner: Rect) -> Vec<Lin
     let max_names = inner.height.saturating_sub(lines.len() as u16) as usize;
     let max_name_len = inner.width.saturating_sub(6) as usize;
     if !info.members.is_empty() {
-        for member in info.members.iter().take(max_names.min(3)) {
+        for member in info.members.iter().take(max_names.min(8)) {
             lines.push(swarm_member_line(member, max_name_len));
         }
     } else {
-        for name in info.session_names.iter().take(max_names.min(3)) {
+        for name in info.session_names.iter().take(max_names.min(8)) {
             lines.push(render_swarm_name_line(name, max_name_len));
         }
     }
 
     lines
-}
-
-pub(super) fn render_background_widget(data: &InfoWidgetData, inner: Rect) -> Vec<Line<'static>> {
-    let Some(info) = &data.background_info else {
-        return Vec::new();
-    };
-
-    render_background_lines(info, inner.width as usize)
 }
 
 pub(super) fn render_background_compact(info: &BackgroundInfo) -> Vec<Line<'static>> {
@@ -111,21 +113,25 @@ fn render_swarm_stats_line(info: &SwarmInfo) -> Line<'static> {
     let mut stats_parts: Vec<Span> =
         vec![Span::styled("🐝 ", Style::default().fg(rgb(255, 200, 100)))];
 
+    let mut segments: Vec<String> = Vec::new();
+
     if info.session_count > 0 {
-        stats_parts.push(Span::styled(
-            format!("{}s", info.session_count),
-            Style::default().fg(rgb(160, 160, 170)),
-        ));
+        let s = if info.session_count == 1 { "" } else { "s" };
+        segments.push(format!("{} session{}", info.session_count, s));
     }
     if let Some(clients) = info.client_count {
-        if info.session_count > 0 {
-            stats_parts.push(Span::styled(" · ", Style::default().fg(rgb(100, 100, 110))));
-        }
-        stats_parts.push(Span::styled(
-            format!("{}c", clients),
-            Style::default().fg(rgb(160, 160, 170)),
-        ));
+        let c = if clients == 1 { "" } else { "s" };
+        segments.push(format!("{} client{}", clients, c));
     }
+
+    if segments.is_empty() {
+        segments.push("Swarm active".to_string());
+    }
+
+    stats_parts.push(Span::styled(
+        segments.join(" · "),
+        Style::default().fg(rgb(160, 160, 170)),
+    ));
 
     Line::from(stats_parts)
 }

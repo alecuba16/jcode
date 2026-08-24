@@ -334,6 +334,11 @@ fn pinned_todo_band_renders_below_sticky_prompt_without_separator() {
     let _render_lock = crate::tui::ui::render_state_test_lock();
     let _pin = PinTodosEnvGuard::enable();
     let mut app = create_test_app();
+    // Disable the overscroll status line so the Overview widget renders the
+    // same way as before the default changed from `Overscroll` to `On`.
+    // With `On`, `status_line_active` flips the Overview into a single-section
+    // mode that grabs the top rows, truncating the pinned todo band text.
+    app.overscroll_status_mode = crate::config::OverscrollStatusMode::Off;
     let session_id = app.session.id.clone();
     crate::todo::save_todos(
         &session_id,

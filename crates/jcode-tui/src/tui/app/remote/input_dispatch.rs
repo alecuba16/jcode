@@ -354,6 +354,7 @@ pub(in crate::tui::app) fn finish_remote_split_launch(app: &mut App) {
     app.processing_started = None;
     app.clear_visible_turn_started();
     app.last_stream_activity = None;
+    app.record_turn_tps();
     app.reset_streaming_tps();
     app.current_message_id = None;
 }

@@ -1863,14 +1863,43 @@ fn test_info_widget_local_gemini_shows_oauth_auth_method() {
     .expect("write gemini tokens");
     crate::auth::AuthStatus::invalidate_cache();
 
+    // Verify tokens are readable directly from the file we wrote. The file
+    // path was computed under the lock above, so reading the file directly is
+    // race-free regardless of `JCODE_HOME` swaps by parallel tests.
+    let raw = std::fs::read_to_string(&path).expect("read gemini tokens file");
+    let parsed: serde_json::Value = serde_json::from_str(&raw).expect("parse gemini tokens json");
+    assert_eq!(parsed["access_token"], "at-123");
+    assert_eq!(parsed["refresh_token"], "rt-456");
+
+    // The global auth cache is keyed by `JCODE_HOME`, which is a process-global
+    // env var. A parallel test that does not hold `lock_test_env()` can briefly
+    // swap or remove `JCODE_HOME` between our `set_var` and the internal
+    // `check_fast_nonblocking()` probe inside `info_widget_data`, causing the
+    // probe to read tokens from the wrong directory and return Unknown. To stay
+    // deterministic (never accept Unknown) while tolerating this narrow race,
+    // we retry a few times: each attempt re-sets `JCODE_HOME` and invalidates
+    // the cache so the probe re-reads under our isolated home.
     let app = create_gemini_test_app();
-    let data = crate::tui::TuiState::info_widget_data(&app);
+    let mut data = crate::tui::TuiState::info_widget_data(&app);
+    for _ in 0..3 {
+        if data.auth_method == crate::tui::info_widget::AuthMethod::GeminiOAuth {
+            break;
+        }
+        crate::env::set_var("JCODE_HOME", temp.path());
+        crate::auth::AuthStatus::invalidate_cache();
+        data = crate::tui::TuiState::info_widget_data(&app);
+    }
 
     assert_eq!(data.provider_name.as_deref(), Some("gemini"));
     assert_eq!(data.model.as_deref(), Some("gemini-2.5-pro"));
+    // The retry loop above ensures we never accept Unknown: either a retry
+    // succeeded with GeminiOAuth, or the final attempt is still not GeminiOAuth
+    // and the assertion below fails, which surfaces the cache race instead of
+    // hiding it.
     assert_eq!(
         data.auth_method,
-        crate::tui::info_widget::AuthMethod::GeminiOAuth
+        crate::tui::info_widget::AuthMethod::GeminiOAuth,
+        "auth method should be GeminiOAuth for local gemini with valid tokens"
     );
     assert!(data.usage_info.is_none());
 
@@ -2486,5 +2515,76 @@ fn test_credential_failure_breaker_resets_on_turn_success() {
     assert_eq!(
         app.consecutive_credential_failures, 0,
         "a successful turn must reset the credential-failure streak"
+    );
+}
+
+/// `display.overscroll_status = "off"` must keep both `status_line_active` and
+/// `status_line_pinned` false so the fixed status line and the merged Overview
+/// widget never appear.
+#[test]
+fn test_info_widget_overscroll_status_off_hides_status_line() {
+    let mut app = create_test_app();
+    app.overscroll_status_mode = crate::config::OverscrollStatusMode::Off;
+
+    let data = crate::tui::TuiState::info_widget_data(&app);
+    assert!(
+        !data.status_line_active,
+        "off mode: status_line_active must be false"
+    );
+    assert!(
+        !data.status_line_pinned,
+        "off mode: status_line_pinned must be false"
+    );
+}
+
+/// `display.overscroll_status = "on"` must set both `status_line_active` and
+/// `status_line_pinned` true so the status line is permanently visible and the
+/// Overview widget is the single fixed widget.
+#[test]
+fn test_info_widget_overscroll_status_on_pins_status_line() {
+    let mut app = create_test_app();
+    app.overscroll_status_mode = crate::config::OverscrollStatusMode::On;
+
+    let data = crate::tui::TuiState::info_widget_data(&app);
+    assert!(
+        data.status_line_active,
+        "on mode: status_line_active must be true"
+    );
+    assert!(
+        data.status_line_pinned,
+        "on mode: status_line_pinned must be true"
+    );
+}
+
+/// `display.overscroll_status = "overscroll"` must start with the status line
+/// hidden (no scroll gesture yet) and only reveal it after the user scrolls
+/// past the bottom. `status_line_pinned` stays false because the reveal is
+/// transient, not a permanent layout element.
+#[test]
+fn test_info_widget_overscroll_status_overscroll_is_elastic() {
+    let mut app = create_test_app();
+    app.overscroll_status_mode = crate::config::OverscrollStatusMode::Overscroll;
+
+    // Before any overscroll gesture, the status line is hidden.
+    let data = crate::tui::TuiState::info_widget_data(&app);
+    assert!(
+        !data.status_line_active,
+        "overscroll mode: status_line_active must be false before a gesture"
+    );
+    assert!(
+        !data.status_line_pinned,
+        "overscroll mode: status_line_pinned must always be false"
+    );
+
+    // Simulate the user scrolling past the bottom to reveal the status line.
+    app.register_chat_overscroll();
+    let data = crate::tui::TuiState::info_widget_data(&app);
+    assert!(
+        data.status_line_active,
+        "overscroll mode: status_line_active must be true after a gesture"
+    );
+    assert!(
+        !data.status_line_pinned,
+        "overscroll mode: status_line_pinned must stay false even after a gesture"
     );
 }

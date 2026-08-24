@@ -1,98 +1,37 @@
-use super::text::{truncate_chars, truncate_smart};
+use super::text::truncate_chars;
 use super::{AuthMethod, InfoWidgetData};
 use crate::tui::color_support::rgb;
 use ratatui::prelude::*;
 
-pub(super) fn render_model_widget(data: &InfoWidgetData, inner: Rect) -> Vec<Line<'static>> {
+pub(super) fn render_model_info(data: &InfoWidgetData, inner: Rect) -> Vec<Line<'static>> {
     let Some(model) = &data.model else {
         return Vec::new();
     };
 
-    let mut lines: Vec<Line> = Vec::new();
-
     let short_name = crate::tui::session_facts::pretty_model(model);
     let max_len = inner.width.saturating_sub(2) as usize;
+    let mut lines: Vec<Line> = Vec::new();
 
-    let mut spans = vec![
-        Span::styled("⚡ ", Style::default().fg(rgb(140, 180, 255))),
-        Span::styled(
-            truncate_smart(&short_name, max_len.saturating_sub(2)),
-            Style::default().fg(rgb(255, 150, 200)).bold(),
-        ),
-    ];
-
-    append_model_runtime_metadata(&mut spans, data);
-
-    lines.push(Line::from(spans));
-
-    if data.session_count.is_some() || data.session_name.is_some() {
-        let mut parts = Vec::new();
-
-        if let Some(sessions) = data.session_count {
-            parts.push(format!(
-                "{} session{}",
-                sessions,
-                if sessions == 1 { "" } else { "s" }
-            ));
-        }
-
-        if let Some(name) = data.session_name.as_deref()
-            && !name.trim().is_empty()
-        {
-            parts.push(name.to_string());
-        }
-
-        if !parts.is_empty() {
-            let detail = truncate_smart(&parts.join(" · "), max_len.saturating_sub(2));
-            lines.push(Line::from(vec![Span::styled(
-                detail,
-                Style::default().fg(rgb(140, 140, 150)),
-            )]));
-        }
-    }
-
-    // Current working directory.
-    if let Some(dir) = data
-        .working_dir
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-    {
-        let display = home_relative_dir(dir);
-        let mut dir_spans = vec![
-            Span::styled(" ", Style::default().fg(rgb(140, 180, 255))),
-            Span::styled(
-                truncate_smart(&display, max_len.saturating_sub(2)),
-                Style::default().fg(rgb(140, 140, 150)),
-            ),
-        ];
-        if let Some(branch) = data
-            .git_info
-            .as_ref()
-            .map(|g| g.branch.trim())
-            .filter(|b| !b.is_empty())
-        {
-            dir_spans.push(Span::styled(
-                format!("  {}", truncate_chars(branch, 24)),
-                Style::default().fg(rgb(150, 170, 140)),
-            ));
-        }
-        lines.push(Line::from(dir_spans));
-    }
-
+    // Line 1: Provider (bold white) + ⚡[tier] + upstream provider if present
     if let Some(provider) = data
         .provider_name
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty())
     {
-        let mut provider_spans = vec![
-            Span::styled("☁ ", Style::default().fg(rgb(140, 180, 255))),
-            Span::styled(
-                provider.to_lowercase(),
-                Style::default().fg(rgb(140, 180, 255)),
-            ),
-        ];
+        let mut provider_spans = vec![Span::styled(
+            provider.to_lowercase(),
+            Style::default().fg(rgb(255, 255, 255)).bold(),
+        )];
+        // Service tier right after provider — OpenAI-only badge; other
+        // providers do not report OpenAI service tiers and must not show it.
+        let is_openai = provider.to_ascii_lowercase().starts_with("openai");
+        if is_openai && let Some(tier) = data.service_tier.as_deref().and_then(short_service_tier) {
+            provider_spans.push(Span::styled(
+                format!(" ⚡[{tier}]"),
+                Style::default().fg(rgb(200, 140, 255)).bold(),
+            ));
+        }
         if let Some(upstream) = data.upstream_provider.as_deref().map(str::trim)
             && !upstream.is_empty()
         {
@@ -108,21 +47,48 @@ pub(super) fn render_model_widget(data: &InfoWidgetData, inner: Rect) -> Vec<Lin
         lines.push(Line::from(provider_spans));
     }
 
-    if let Some(connection) = data
-        .connection_type
+    // Line 2: (effort) + model name (blue) + native compaction
+    let mut spans: Vec<Span> = Vec::new();
+
+    // Effort indicator before model name
+    if let Some(effort) = data
+        .reasoning_effort
         .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
+        .and_then(short_reasoning_effort)
     {
-        lines.push(Line::from(vec![
-            Span::styled("↔ ", Style::default().fg(rgb(140, 180, 255))),
-            Span::styled(
-                connection.to_lowercase(),
-                Style::default().fg(rgb(140, 180, 255)),
-            ),
-        ]));
+        spans.push(Span::styled(
+            format!("({effort}) "),
+            Style::default().fg(rgb(255, 200, 100)),
+        ));
     }
 
+    let model_text = if short_name.chars().count() > max_len {
+        format!(
+            "{}...",
+            truncate_chars(&short_name, max_len.saturating_sub(3))
+        )
+    } else {
+        short_name
+    };
+    spans.push(Span::styled(
+        model_text,
+        Style::default().fg(rgb(140, 180, 255)),
+    ));
+
+    if let Some(mode) = &data.native_compaction_mode {
+        let label = if let Some(tokens) = data.native_compaction_threshold_tokens {
+            format!("native {} @ {}k", mode, tokens / 1000)
+        } else {
+            format!("native {}", mode)
+        };
+        spans.push(Span::styled(" ", Style::default()));
+        spans.push(Span::styled(label, Style::default().fg(rgb(120, 210, 230))));
+    }
+
+    lines.push(Line::from(spans));
+
+    // Auth method on a separate line if present, with connection type
+    // appended in brackets (light gray) when available.
     if data.auth_method != AuthMethod::Unknown {
         let (icon, label, color) = match data.auth_method {
             AuthMethod::ApiKey => ("🔑", "API Key", rgb(180, 180, 190)),
@@ -136,146 +102,61 @@ pub(super) fn render_model_widget(data: &InfoWidgetData, inner: Rect) -> Vec<Lin
             AuthMethod::GeminiOAuth => ("🔐", "OAuth", rgb(120, 190, 255)),
             AuthMethod::Unknown => unreachable!(),
         };
-
+        let mut auth_spans = vec![
+            Span::styled(format!("{} ", icon), Style::default().fg(color)),
+            Span::styled(label, Style::default().fg(rgb(140, 140, 150))),
+        ];
         if let Some(ref upstream) = data.upstream_provider {
-            lines.push(Line::from(vec![
-                Span::styled(format!("{} ", icon), Style::default().fg(color)),
-                Span::styled(label, Style::default().fg(rgb(140, 140, 150))),
-                Span::styled(" via ", Style::default().fg(rgb(100, 100, 110))),
-                Span::styled(upstream.clone(), Style::default().fg(rgb(200, 180, 100))),
-            ]));
-        } else {
-            lines.push(Line::from(vec![
-                Span::styled(format!("{} ", icon), Style::default().fg(color)),
-                Span::styled(label, Style::default().fg(rgb(140, 140, 150))),
-            ]));
+            auth_spans.push(Span::styled(
+                " via ",
+                Style::default().fg(rgb(100, 100, 110)),
+            ));
+            auth_spans.push(Span::styled(
+                upstream.clone(),
+                Style::default().fg(rgb(200, 180, 100)),
+            ));
         }
+        if let Some(connection) = data
+            .connection_type
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            auth_spans.push(Span::styled(
+                format!(" [{}]", connection.to_lowercase()),
+                Style::default().fg(rgb(100, 100, 110)),
+            ));
+        }
+        lines.push(Line::from(auth_spans));
     }
 
-    if let Some(tps) = data.tokens_per_second
-        && tps.is_finite()
-        && tps > 0.1
-    {
-        lines.push(Line::from(vec![
-            Span::styled("⏱ ", Style::default().fg(rgb(140, 180, 255))),
-            Span::styled(
-                format!("{:.1} t/s", tps),
-                Style::default().fg(rgb(140, 140, 150)),
-            ),
-        ]));
-    }
+    // Note: session count/name is now shown in line 1 of the info panel
+    // (render_sections), not here, to avoid duplication.
 
     lines
 }
 
-pub(super) fn render_model_info(data: &InfoWidgetData, inner: Rect) -> Vec<Line<'static>> {
-    let Some(model) = &data.model else {
-        return Vec::new();
-    };
+/// Render only the supplementary model info not shown in the status line:
+/// native compaction mode. Service tier is already shown inline on the
+/// model name line. Used when `status_line_active` suppresses the full
+/// `render_model_info`.
+pub(super) fn render_model_info_supplementary(
+    data: &InfoWidgetData,
+    _inner: Rect,
+) -> Vec<Line<'static>> {
+    let mut lines: Vec<Line<'static>> = Vec::new();
 
-    let short_name = crate::tui::session_facts::pretty_model(model);
-    let max_len = inner.width.saturating_sub(2) as usize;
-
-    let mut spans = vec![Span::styled(
-        if short_name.chars().count() > max_len {
-            format!(
-                "{}...",
-                truncate_chars(&short_name, max_len.saturating_sub(3))
-            )
-        } else {
-            short_name
-        },
-        Style::default().fg(rgb(180, 180, 190)).bold(),
-    )];
-
-    append_model_runtime_metadata(&mut spans, data);
-
+    // Native compaction mode.
     if let Some(mode) = &data.native_compaction_mode {
         let label = if let Some(tokens) = data.native_compaction_threshold_tokens {
             format!("native {} @ {}k", mode, tokens / 1000)
         } else {
             format!("native {}", mode)
         };
-        spans.push(Span::styled(" ", Style::default()));
-        spans.push(Span::styled(label, Style::default().fg(rgb(120, 210, 230))));
-    }
-
-    let mut lines = vec![Line::from(spans)];
-
-    let has_provider = data
-        .provider_name
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .is_some();
-    let has_auth = data.auth_method != AuthMethod::Unknown;
-
-    if has_provider || has_auth {
-        let mut detail_spans: Vec<Span> = Vec::new();
-
-        if let Some(provider) = data
-            .provider_name
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-        {
-            detail_spans.push(Span::styled(
-                provider.to_lowercase(),
-                Style::default().fg(rgb(140, 180, 255)),
-            ));
-        }
-
-        if has_auth {
-            let (icon, label, _color) = match data.auth_method {
-                AuthMethod::ApiKey => ("🔑", "API Key", rgb(180, 180, 190)),
-                AuthMethod::AnthropicOAuth => ("🔐", "OAuth", rgb(255, 160, 100)),
-                AuthMethod::AnthropicApiKey => ("🔑", "API Key", rgb(180, 180, 190)),
-                AuthMethod::OpenAIOAuth => ("🔐", "OAuth", rgb(100, 200, 180)),
-                AuthMethod::OpenAIApiKey => ("🔑", "API Key", rgb(180, 180, 190)),
-                AuthMethod::OpenRouterApiKey => ("🔑", "API Key", rgb(140, 180, 255)),
-                AuthMethod::OpenCodeApiKey => ("🔑", "API Key", rgb(140, 180, 255)),
-                AuthMethod::CopilotOAuth => ("🔐", "OAuth", rgb(110, 200, 140)),
-                AuthMethod::GeminiOAuth => ("🔐", "OAuth", rgb(120, 190, 255)),
-                AuthMethod::Unknown => unreachable!(),
-            };
-            if !detail_spans.is_empty() {
-                detail_spans.push(Span::styled(" · ", Style::default().fg(rgb(80, 80, 90))));
-            }
-            detail_spans.push(Span::styled(
-                format!("{} {}", icon, label),
-                Style::default().fg(rgb(140, 140, 150)),
-            ));
-        }
-
-        if !detail_spans.is_empty() {
-            lines.push(Line::from(detail_spans));
-        }
-    }
-
-    if data.session_count.is_some() || data.session_name.is_some() {
-        let mut parts = Vec::new();
-
-        if let Some(sessions) = data.session_count {
-            parts.push(format!(
-                "{} session{}",
-                sessions,
-                if sessions == 1 { "" } else { "s" }
-            ));
-        }
-
-        if let Some(name) = data.session_name.as_deref()
-            && !name.trim().is_empty()
-        {
-            parts.push(name.to_string());
-        }
-
-        if !parts.is_empty() {
-            let detail = truncate_smart(&parts.join(" · "), max_len.saturating_sub(2));
-            lines.push(Line::from(vec![Span::styled(
-                detail,
-                Style::default().fg(rgb(140, 140, 150)),
-            )]));
-        }
+        lines.push(Line::from(vec![
+            Span::styled("📦 ", Style::default().fg(rgb(120, 210, 230))),
+            Span::styled(label, Style::default().fg(rgb(120, 210, 230))),
+        ]));
     }
 
     lines
@@ -318,32 +199,6 @@ pub(crate) fn shorten_model_name(model: &str) -> String {
         format!("{}…", crate::util::truncate_str(model, 14))
     } else {
         model.to_string()
-    }
-}
-
-fn append_model_runtime_metadata(spans: &mut Vec<Span<'static>>, data: &InfoWidgetData) {
-    if let Some(effort) = data
-        .reasoning_effort
-        .as_deref()
-        .and_then(short_reasoning_effort)
-    {
-        spans.push(Span::styled(" ", Style::default()));
-        spans.push(Span::styled(
-            format!("({effort})"),
-            Style::default().fg(rgb(255, 200, 100)),
-        ));
-    }
-
-    let is_openai = data
-        .provider_name
-        .as_deref()
-        .is_some_and(|provider| provider.trim().to_ascii_lowercase().starts_with("openai"));
-    if is_openai && let Some(tier) = data.service_tier.as_deref().and_then(short_service_tier) {
-        spans.push(Span::styled(" ", Style::default()));
-        spans.push(Span::styled(
-            format!("[{tier}]"),
-            Style::default().fg(rgb(200, 140, 255)).bold(),
-        ));
     }
 }
 
@@ -411,6 +266,7 @@ mod tests {
             usage_info: None,
             usage_display_used: false,
             tokens_per_second: None,
+            avg_tokens_per_second: None,
             provider_name: None,
             auth_method: crate::tui::info_widget::AuthMethod::Unknown,
             upstream_provider: None,
@@ -424,6 +280,10 @@ mod tests {
             compaction_info: None,
             is_compacting: false,
             git_info: None,
+            status_line_active: false,
+            status_line_pinned: false,
+            mcp_servers: Vec::new(),
+            available_skills: Vec::new(),
         }
     }
 
@@ -439,16 +299,23 @@ mod tests {
     }
 
     #[test]
-    fn model_widget_and_overview_show_same_runtime_metadata() {
+    fn overview_shows_runtime_metadata() {
         let rect = Rect::new(0, 0, 40, 8);
         let mut data = data();
         data.provider_name = Some("openai".to_string());
 
-        let independent = first_line_text(render_model_widget(&data, rect));
-        let overview = first_line_text(render_model_info(&data, rect));
+        let lines = render_model_info(&data, rect);
+        let overview = lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join(" | ");
 
-        assert!(independent.contains("(hi)"));
-        assert!(independent.contains("[fast]"));
         assert!(overview.contains("(hi)"));
         assert!(overview.contains("[fast]"));
     }
@@ -462,12 +329,12 @@ mod tests {
 
         for (tier, badge) in [(Some("priority"), "[fast]"), (Some("flex"), "[flex]")] {
             data.service_tier = tier.map(str::to_string);
-            assert!(first_line_text(render_model_widget(&data, rect)).contains(badge));
+            assert!(first_line_text(render_model_info(&data, rect)).contains(badge));
             assert!(first_line_text(render_model_info(&data, rect)).contains(badge));
         }
         for tier in [None, Some("off"), Some("default")] {
             data.service_tier = tier.map(str::to_string);
-            assert!(!first_line_text(render_model_widget(&data, rect)).contains("[fast]"));
+            assert!(!first_line_text(render_model_info(&data, rect)).contains("[fast]"));
             assert!(!first_line_text(render_model_info(&data, rect)).contains("[fast]"));
         }
     }
@@ -479,7 +346,7 @@ mod tests {
         data.model = Some("deepseek-v4-flash".to_string());
         data.provider_name = Some("deepseek".to_string());
 
-        assert!(!first_line_text(render_model_widget(&data, rect)).contains("[fast]"));
+        assert!(!first_line_text(render_model_info(&data, rect)).contains("[fast]"));
         assert!(!first_line_text(render_model_info(&data, rect)).contains("[fast]"));
     }
 }

@@ -226,6 +226,14 @@ prompt_entry_animation = true
 #   "off"        - never shown
 # overscroll_status = "overscroll"
 
+# TPS (tokens per second) interval mode:
+#   "generation" - only count model output-generation time, excluding tool
+#                  execution and rate-limit waits (default)
+#   "total"       - count the full wall-clock time between responses, including
+#                  tool execution, rate limits, and network overhead so the
+#                  effective throughput reflects what the user experiences
+# tps_interval = "generation"
+
 # Disable specific animation variants by name.
 # Examples: ["donut"] or ["donut", "orbit_rings"]
 # Legacy aliases such as "three_rings" and "gyroscope" are still accepted.

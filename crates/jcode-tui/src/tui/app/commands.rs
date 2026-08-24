@@ -323,6 +323,8 @@ pub(super) fn activate_auto_poke_local(app: &mut App) {
             app.streaming.streaming_total_output_tokens = 0;
             app.streaming.streaming_tps_observed_output_tokens = 0;
             app.streaming.streaming_tps_observed_elapsed = std::time::Duration::ZERO;
+            app.streaming.last_displayed_tps = None;
+            app.streaming.streaming_total_tps_start = None;
             app.processing_started = Some(Instant::now());
             app.visible_turn_started = Some(Instant::now());
             app.pending_turn = true;
@@ -3299,12 +3301,69 @@ fn handle_reasoning_display_command(app: &mut App, trimmed: &str) -> bool {
     true
 }
 
+/// Handle `/settings tps` to view or change the TPS interval mode.
+///
+/// Modes:
+/// - `generation` (default): only counts model output-generation time,
+///   excluding tool execution and rate-limit waits.
+/// - `total`: counts the full wall-clock time between responses, including
+///   tool execution, rate limits, and network overhead so the effective
+///   throughput reflects what the user actually experiences.
+fn handle_tps_interval_command(app: &mut App, trimmed: &str) -> bool {
+    let rest = match trimmed
+        .strip_prefix("/settings tps")
+        .or_else(|| trimmed.strip_prefix("/setting tps"))
+    {
+        Some(r) => r.trim(),
+        None => return false,
+    };
+
+    if rest.is_empty() || matches!(rest, "show" | "status") {
+        let current = crate::config::config().display.tps_interval;
+        app.push_display_message(DisplayMessage::system(format!(
+            "TPS interval mode: {}.\n\n\
+             Modes:\n\
+             \x20\x20• generation - only count model output-generation time (excludes tool execution and rate-limit waits)\n\
+             \x20\x20• total - count the full wall-clock time between responses (includes tool execution, rate limits, and network overhead)\n\n\
+             Use /settings tps <generation|total> to change it.",
+            current.label()
+        )));
+        return true;
+    }
+
+    let Some(mode) = crate::config::TpsIntervalMode::parse(rest) else {
+        app.push_display_message(DisplayMessage::error(
+            "Usage: /settings tps (show), then generation or total".to_string(),
+        ));
+        return true;
+    };
+
+    app.set_status_notice(format!("TPS interval: {}", mode.label()));
+    match crate::config::Config::set_tps_interval(mode) {
+        Ok(()) => app.push_display_message(DisplayMessage::system(format!(
+            "Saved TPS interval: {}. Applied to this session immediately.",
+            mode.label()
+        ))),
+        Err(error) => app.push_display_message(DisplayMessage::error(format!(
+            "Applied TPS interval {} for this session, but failed to save it as the default: {}",
+            mode.label(),
+            error
+        ))),
+    }
+
+    true
+}
+
 pub(super) fn handle_config_command(app: &mut App, trimmed: &str) -> bool {
     if handle_alignment_command(app, trimmed) {
         return true;
     }
 
     if handle_reasoning_display_command(app, trimmed) {
+        return true;
+    }
+
+    if handle_tps_interval_command(app, trimmed) {
         return true;
     }
 

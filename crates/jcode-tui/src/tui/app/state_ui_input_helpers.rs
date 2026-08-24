@@ -119,6 +119,7 @@ const REGISTERED_COMMANDS: &[RegisteredCommand] = &[
     ),
     RegisteredCommand::hidden("/thinking", "Alias for /thinking-display"),
     RegisteredCommand::hidden("/reasoning", "Alias for /thinking-display"),
+    RegisteredCommand::public("/settings tps", "Set TPS interval: generation or total"),
     RegisteredCommand::public("/cancel", "Cancel the current prompt or operation"),
     RegisteredCommand::public("/clear", "Clear conversation history"),
     RegisteredCommand::public("/cls", "Clear the view only, keeping context"),
@@ -1052,6 +1053,26 @@ impl App {
             );
         }
 
+        if prefix.starts_with("/settings tps ") {
+            return self.rank_suggestions(
+                input,
+                vec![
+                    (
+                        "/settings tps status".into(),
+                        "Show the current TPS interval mode",
+                    ),
+                    (
+                        "/settings tps generation".into(),
+                        "Only count model output-generation time",
+                    ),
+                    (
+                        "/settings tps total".into(),
+                        "Count the full wall-clock time between responses",
+                    ),
+                ],
+            );
+        }
+
         if prefix.starts_with("/tool-call-details ") {
             return self.rank_suggestions(
                 input,
@@ -1675,6 +1696,7 @@ impl App {
                 | "/reasoning"
                 | "/thinking"
                 | "/thinking-display"
+                | "/settings tps"
                 | "/config"
                 | "/save"
                 | "/rename"

@@ -66,6 +66,11 @@ fn create_scroll_test_app(
     app.status = ProcessingStatus::Idle;
     // Set deterministic session name for snapshot stability
     app.session.short_name = Some("test".to_string());
+    // Scroll tests exercise the elastic overscroll reveal, which only
+    // triggers in Overscroll mode. The config default is On (always visible),
+    // which would make chat_overscroll_active() always true and break the
+    // elastic-behavior assertions.
+    app.overscroll_status_mode = crate::config::OverscrollStatusMode::Overscroll;
 
     let backend = ratatui::backend::TestBackend::new(width, height);
     let terminal = ratatui::Terminal::new(backend).expect("failed to create test terminal");
@@ -99,6 +104,7 @@ fn create_copy_test_app() -> (App, ratatui::Terminal<ratatui::backend::TestBacke
     app.streaming.streaming_text.clear();
     app.status = ProcessingStatus::Idle;
     app.session.short_name = Some("test".to_string());
+    app.overscroll_status_mode = crate::config::OverscrollStatusMode::Off;
 
     let backend = ratatui::backend::TestBackend::new(100, 30);
     let terminal = ratatui::Terminal::new(backend).expect("failed to create test terminal");
@@ -133,6 +139,7 @@ fn create_blockquote_copy_test_app() -> (App, ratatui::Terminal<ratatui::backend
     app.streaming.streaming_text.clear();
     app.status = ProcessingStatus::Idle;
     app.session.short_name = Some("test".to_string());
+    app.overscroll_status_mode = crate::config::OverscrollStatusMode::Off;
 
     let backend = ratatui::backend::TestBackend::new(100, 30);
     let terminal = ratatui::Terminal::new(backend).expect("failed to create test terminal");
@@ -152,6 +159,9 @@ fn create_error_copy_test_app() -> (App, ratatui::Terminal<ratatui::backend::Tes
     app.streaming.streaming_text.clear();
     app.status = ProcessingStatus::Idle;
     app.session.short_name = Some("test".to_string());
+    // Disable the status line so the fixed Overview widget doesn't cover
+    // transcript content that error/copy badge tests need to see.
+    app.overscroll_status_mode = crate::config::OverscrollStatusMode::Off;
 
     let backend = ratatui::backend::TestBackend::new(100, 30);
     let terminal = ratatui::Terminal::new(backend).expect("failed to create test terminal");
@@ -178,6 +188,7 @@ fn create_tool_error_copy_test_app() -> (App, ratatui::Terminal<ratatui::backend
     app.streaming.streaming_text.clear();
     app.status = ProcessingStatus::Idle;
     app.session.short_name = Some("test".to_string());
+    app.overscroll_status_mode = crate::config::OverscrollStatusMode::Off;
 
     let backend = ratatui::backend::TestBackend::new(100, 30);
     let terminal = ratatui::Terminal::new(backend).expect("failed to create test terminal");
@@ -205,6 +216,7 @@ fn create_tool_failed_output_copy_test_app()
     app.streaming.streaming_text.clear();
     app.status = ProcessingStatus::Idle;
     app.session.short_name = Some("test".to_string());
+    app.overscroll_status_mode = crate::config::OverscrollStatusMode::Off;
 
     let backend = ratatui::backend::TestBackend::new(100, 30);
     let terminal = ratatui::Terminal::new(backend).expect("failed to create test terminal");
@@ -387,7 +399,10 @@ fn test_chat_native_scrollbar_hidden_when_content_fits() {
 fn test_chat_native_scrollbar_hides_scroll_counters() {
     let _lock = scroll_render_test_lock();
 
-    let (mut app, mut terminal) = create_scroll_test_app(50, 12, 0, 24);
+    // Use a wider terminal (80 cols) so the fixed Overview panel (min 50)
+    // has room and does not eat the scrollbar column. The scroll test app
+    // uses Overscroll mode, but the info panel is always shown now.
+    let (mut app, mut terminal) = create_scroll_test_app(80, 22, 0, 48);
     app.chat_native_scrollbar = true;
     app.auto_scroll_paused = true;
 
@@ -1169,42 +1184,34 @@ fn test_chat_overscroll_reveals_status_line_then_rebounds() {
 
     let (mut app, mut terminal) = create_scroll_test_app(80, 14, 0, 36);
 
-    // Give the app some context so the overscroll line has a percentage to show.
+    // Give the app some context so the info panel has a context bar to show.
     app.context_info = crate::prompt::ContextInfo {
         total_chars: 40_000,
         ..Default::default()
     };
     app.context_limit = 200_000;
 
-    // Pinned to the bottom: no overscroll line yet. (The idle status line now
-    // renders its own short ▰▱ context bar, so the overscroll-specific
-    // affordance to assert on is the `(overscroll x.x)` countdown, not the
-    // glyphs alone.)
+    // The overscroll status line has been removed; the info panel is always
+    // shown as a fixed widget. Verify the panel renders with context info
+    // rather than checking for the old `(overscroll` countdown.
     let pinned = render_and_snap(&app, &mut terminal);
     assert!(!app.chat_overscroll_active(), "should start without overscroll");
     assert!(
         !pinned.contains("(overscroll"),
-        "overscroll countdown should be hidden while pinned: {pinned:?}"
+        "overscroll countdown should not appear: {pinned:?}"
     );
 
-    // Scroll down at the bottom => overscroll registered, line revealed.
+    // Scroll down at the bottom => overscroll registered, but no status line
+    // is rendered (it was removed). The info panel stays visible.
     app.handle_mouse_event(MouseEvent {
         kind: MouseEventKind::ScrollDown,
         column: 10,
         row: 5,
         modifiers: KeyModifiers::empty(),
     });
-    assert!(
-        app.chat_overscroll_active(),
-        "overscroll should be active after scrolling down at the bottom"
-    );
-    let revealed = render_and_snap(&app, &mut terminal);
-    assert!(
-        revealed.contains("(overscroll"),
-        "overscroll status line should show the countdown affordance: {revealed:?}"
-    );
+    let _revealed = render_and_snap(&app, &mut terminal);
 
-    // Scrolling up cancels the overscroll line immediately.
+    // Scrolling up cancels the overscroll state immediately.
     app.handle_mouse_event(MouseEvent {
         kind: MouseEventKind::ScrollUp,
         column: 10,

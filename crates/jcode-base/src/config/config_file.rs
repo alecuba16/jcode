@@ -245,6 +245,18 @@ impl Config {
         Ok(())
     }
 
+    /// Update the persisted TPS interval mode preference.
+    pub fn set_tps_interval(mode: TpsIntervalMode) -> anyhow::Result<()> {
+        let mut cfg = Self::load();
+        cfg.display.tps_interval = mode;
+        cfg.save()?;
+        crate::logging::info(&format!(
+            "Saved display.tps_interval to config: {}",
+            mode.as_str()
+        ));
+        Ok(())
+    }
+
     /// Update the persisted pinned-todos preference.
     pub fn set_pin_todos(pin: bool) -> anyhow::Result<()> {
         let mut cfg = Self::load_for_update()?;

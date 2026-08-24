@@ -30,7 +30,7 @@ use helpers::*;
 use jcode_tui_messages::DisplayMessage;
 use ratatui::DefaultTerminal;
 use std::cell::RefCell;
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -50,8 +50,8 @@ pub enum AppRuntimeMode {
 }
 
 mod auth;
-mod auth_remote;
 mod auth_account_picker_saved_accounts;
+mod auth_remote;
 mod catchup;
 mod commands;
 mod commands_colors;
@@ -807,6 +807,25 @@ struct StreamingProgress {
     streaming_tps_observed_output_tokens: u64,
     /// Streaming-only elapsed time corresponding to streaming_tps_observed_output_tokens.
     streaming_tps_observed_elapsed: Duration,
+    /// Last tokens/sec value shown in the info panel.
+    ///
+    /// `compute_streaming_tps` returns `None` during brief gaps early in a
+    /// stream (elapsed < 0.1s, no tokens yet) or when no new output-token
+    /// sample has arrived. Without a hold, the t/s line flickers on and off.
+    /// This caches the last computed value while still streaming so the panel
+    /// stays stable; it is cleared when the turn ends (status leaves
+    /// `Streaming`).
+    last_displayed_tps: Option<f32>,
+    /// Wall-clock turn start for the "total" TPS interval mode.
+    ///
+    /// Set when the first output token of a turn arrives and never paused
+    /// (unlike `streaming_tps_start`). Used as the denominator for t/s when
+    /// `display.tps_interval = "total"` so tool execution, rate-limit waits,
+    /// and network overhead are all factored into the effective throughput.
+    streaming_total_tps_start: Option<Instant>,
+    /// Rolling buffer of per-turn t/s values (one entry per completed turn).
+    /// Used to compute the average t/s shown in the info panel.
+    tps_history: VecDeque<f32>,
 }
 
 /// Accumulated session cost and cached per-model pricing.

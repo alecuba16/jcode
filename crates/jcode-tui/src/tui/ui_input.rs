@@ -1915,13 +1915,14 @@ pub(super) fn draw_notification(frame: &mut Frame, app: &dyn TuiState, area: Rec
 /// access method, reasoning level, and context usage percentage, with a live
 /// `(overscroll x.x)` countdown pinned to the right so users can see the line
 /// is temporary and rebounds away on its own.
+#[allow(dead_code)] // Overscroll status line removed; retained for potential re-use.
 pub(super) fn draw_overscroll_status(frame: &mut Frame, app: &dyn TuiState, area: Rect) {
     if area.height == 0 || area.width == 0 {
         return;
     }
     let data = app.info_widget_data();
 
-    let sep = || Span::styled(" · ", Style::default().fg(rgb(100, 100, 110)));
+    let sep = || Span::styled(" · ", Style::default().fg(rgb(120, 120, 140)));
 
     // The countdown is the priority affordance: it explains the line exists and
     // is going away. Build it first so it always gets space on the right edge.
@@ -1953,7 +1954,7 @@ pub(super) fn draw_overscroll_status(frame: &mut Frame, app: &dyn TuiState, area
         {
             spans.push(Span::styled(
                 format!(" {}", effort),
-                Style::default().fg(rgb(140, 140, 150)),
+                Style::default().fg(rgb(160, 160, 180)),
             ));
         }
     }
@@ -1996,6 +1997,77 @@ pub(super) fn draw_overscroll_status(frame: &mut Frame, app: &dyn TuiState, area
             Style::default().fg(rgb(140, 140, 150)),
         ));
         spans.extend(overscroll_context_bar(used, limit, 10));
+    }
+
+    // Usage info: cost for API-key providers, subscription % for OAuth.
+    if let Some(info) = &data.usage_info
+        && info.available
+    {
+        match info.provider {
+            crate::tui::info_widget::UsageProvider::CostBased => {
+                if !spans.is_empty() {
+                    spans.push(sep());
+                }
+                spans.push(Span::styled(
+                    format!("${:.4}", info.total_cost),
+                    Style::default().fg(rgb(180, 180, 190)).bold(),
+                ));
+                spans.push(Span::styled(
+                    format!(
+                        " {}+{}",
+                        overscroll_format_tokens(info.input_tokens as usize),
+                        overscroll_format_tokens(info.output_tokens as usize)
+                    ),
+                    Style::default().fg(rgb(140, 140, 150)),
+                ));
+            }
+            crate::tui::info_widget::UsageProvider::Copilot => {
+                if !spans.is_empty() {
+                    spans.push(sep());
+                }
+                spans.push(Span::styled(
+                    format!(
+                        "{}+{} tok",
+                        overscroll_format_tokens(info.input_tokens as usize),
+                        overscroll_format_tokens(info.output_tokens as usize)
+                    ),
+                    Style::default().fg(rgb(140, 140, 150)),
+                ));
+            }
+            _ => {
+                let pct = info.max_usage_pct();
+                if pct > 0 {
+                    if !spans.is_empty() {
+                        spans.push(sep());
+                    }
+                    let color = if pct >= 80 {
+                        rgb(255, 110, 110)
+                    } else if pct >= 50 {
+                        rgb(255, 200, 100)
+                    } else {
+                        rgb(110, 210, 140)
+                    };
+                    spans.push(Span::styled(
+                        format!("{}% limit", pct),
+                        Style::default().fg(color),
+                    ));
+                }
+            }
+        }
+    }
+
+    // Tokens per second while streaming.
+    if let Some(tps) = data.tokens_per_second
+        && tps.is_finite()
+        && tps > 0.1
+    {
+        if !spans.is_empty() {
+            spans.push(sep());
+        }
+        spans.push(Span::styled(
+            format!("{:.1} t/s", tps),
+            Style::default().fg(rgb(140, 180, 255)),
+        ));
     }
 
     // Working directory last, shown as a home-relative path, with the git
@@ -2075,6 +2147,7 @@ pub(super) fn draw_overscroll_status(frame: &mut Frame, app: &dyn TuiState, area
 
 /// Truncate a list of spans to at most `max_width` display columns, appending a
 /// single-cell ellipsis when content is dropped. Preserves per-span styling.
+#[allow(dead_code)]
 fn overscroll_truncate_spans(spans: Vec<Span<'static>>, max_width: usize) -> Vec<Span<'static>> {
     use unicode_width::UnicodeWidthStr;
     if max_width == 0 {
