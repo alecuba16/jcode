@@ -254,6 +254,18 @@ impl Config {
         Ok(())
     }
 
+    /// Update the persisted risk-gate-enabled preference.
+    pub fn set_risk_gate_enabled(enabled: bool) -> anyhow::Result<()> {
+        let mut cfg = Self::load();
+        cfg.provider.risk_gate_enabled = enabled;
+        cfg.save()?;
+        crate::logging::info(&format!(
+            "Saved provider.risk_gate_enabled to config: {}",
+            enabled
+        ));
+        Ok(())
+    }
+
     /// Update the persisted show-agentgrep-output preference.
     pub fn set_show_agentgrep_output(show: bool) -> anyhow::Result<()> {
         let mut cfg = Self::load_for_update()?;

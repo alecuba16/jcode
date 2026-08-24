@@ -1261,6 +1261,16 @@ pub struct ProviderConfig {
     /// Maximum exponential-backoff delay between transient-error retries.
     /// Default: 30 seconds. Overridable via `JCODE_RETRY_BACKOFF_CAP_SECS`.
     pub retry_backoff_cap_secs: u64,
+    /// Whether the destructive-command risk gate is enabled.
+    /// When enabled (default), the bash tool refuses catastrophic commands
+    /// and requires justification for risky ones. When disabled, all commands
+    /// run without the gate. Overridable via `JCODE_RISK_GATE_ENABLED`.
+    #[serde(default = "default_risk_gate_enabled")]
+    pub risk_gate_enabled: bool,
+}
+
+fn default_risk_gate_enabled() -> bool {
+    true
 }
 
 impl Default for ProviderConfig {
@@ -1282,6 +1292,7 @@ impl Default for ProviderConfig {
             stream_idle_timeout_secs: 180,
             max_retries: 8,
             retry_backoff_cap_secs: 30,
+            risk_gate_enabled: true,
         }
     }
 }

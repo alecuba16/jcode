@@ -15,6 +15,17 @@ pub(super) fn destructive_command_refusal(
     justification: Option<&str>,
     working_dir: Option<std::path::PathBuf>,
 ) -> Option<String> {
+    // Check if the risk gate is enabled via config or env override.
+    // Env takes precedence: JCODE_RISK_GATE_ENABLED=false disables the gate.
+    if let Ok(raw) = std::env::var("JCODE_RISK_GATE_ENABLED") {
+        match raw.trim().to_lowercase().as_str() {
+            "0" | "false" | "no" | "off" => return None,
+            _ => {}
+        }
+    } else if !crate::config::Config::load().provider.risk_gate_enabled {
+        return None;
+    }
+
     let mut risk_ctx = jcode_command_risk::RiskContext::from_env(working_dir);
     // Assess the same scratch path that the child shell actually receives.
     #[cfg(not(windows))]

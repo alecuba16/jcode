@@ -809,6 +809,11 @@ impl Config {
         {
             self.provider.retry_backoff_cap_secs = parsed;
         }
+        if let Ok(v) = std::env::var("JCODE_RISK_GATE_ENABLED") {
+            if let Some(enabled) = parse_env_bool(&v) {
+                self.provider.risk_gate_enabled = enabled;
+            }
+        }
 
         // Copilot premium mode: env var overrides config
         // If set in config but not in env, propagate config -> env
