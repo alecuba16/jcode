@@ -383,7 +383,25 @@ Useful environment overrides for these endpoints:
 
 - `JCODE_STREAM_IDLE_TIMEOUT_SECS` — raise the base streaming idle timeout (default 180s) for slow reasoning models that think silently before emitting tokens. High reasoning efforts scale this automatically (high 2x, xhigh 3x, max 4x). Also settable as `[provider] stream_idle_timeout_secs` in `config.toml`.
 - Per-model `context_window` (alias `context_limit`) in a `[[providers.<name>.models]]` entry — set the context window when the endpoint has no usable `/v1/models` response, so jcode does not fall back to the generic 200k default.
+- Per-model `display_name` (alias `name`) in `[[providers.<name>.models]]` — human-friendly name shown in the `/model` picker instead of the raw model id.
+- Per-model `max_output_tokens` (alias `output_limit`) — override the max output tokens sent in the request body for that model.
+- Per-model `reasoning` (bool) — enable or force-disable the reasoning effort ladder (`/effort` picker) for a model. `true` enables it on gateways that are not auto-detected as reasoning-capable; `false` force-disables it even on models that would otherwise auto-qualify (DeepSeek-family or GPT-family reasoning models).
+- Per-model `cost` — input/output/cache_read/cache_write USD per million tokens, surfaced in the picker cost overlay.
+- Provider-level `display_name` — overrides the raw profile key as the provider label in the `/model` picker.
 - `extra_body` — inject non-standard top-level fields into every chat/completions request body for backends that require them. See [Extra request-body fields](#extra-request-body-fields-extra_body) below.
+
+**Per-model and provider-level settings summary:**
+
+| Setting | Scope | Description |
+|---------|-------|-------------|
+| `display_name` (alias `name`) | per-model / provider | Human-friendly label shown in the `/model` picker |
+| `context_window` (alias `context_limit`) | per-model | Override the context window when no `/v1/models` response is available |
+| `max_output_tokens` (alias `output_limit`) | per-model | Override max output tokens in the request body |
+| `reasoning` | per-model | `true` enables the `/effort` ladder; `false` force-disables it |
+| `cost` | per-model | `{ input, output, cache_read, cache_write }` USD per 1M tokens, shown in the picker |
+| `display_name` | provider | Override the raw profile key as the provider label in the picker |
+
+> **Note on Mistral:** `reasoning: true` sends the `reasoning_effort` field in the request body. Mistral only accepts this field for `mistral-small-*` models. Other Mistral models (e.g. `mistral-large-latest`, `mistral-medium-latest`) will reject it with a 422 error. Magistral models reason natively and do not need the parameter.
 
 For details on self-hosting, local runtimes, and the exact config file shape, see below.
 
@@ -454,9 +472,8 @@ base_url = "https://llm.example.com/v1"
 api_key_env = "JCODE_PROVIDER_MY_API_API_KEY"
 env_file = "provider-my-api.env"
 default_model = "my-model-id"
-# Optional: prevent model names such as `gpt-5-*` from automatically enabling
-# `reasoning_effort` on gateways that reject it.
 disable_reasoning_heuristics = true
+display_name = "My Custom API"
 
 [[providers.my-api.models]]
 id = "my-model-id"
@@ -465,6 +482,9 @@ context_window = 128000
 # `reasoning = false` on an individual model to disable it instead.
 reasoning = true
 reasoning_effort = "high"
+display_name = "My Model"
+max_output_tokens = 8192
+cost = { input = 0.15, output = 0.60, cache_read = 0.015 }
 ```
 
 Anthropic Messages-compatible gateways use the same named-profile surface with

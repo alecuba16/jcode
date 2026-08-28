@@ -902,6 +902,8 @@ pub fn maybe_schedule_standard_openrouter_catalog_refresh(context: &'static str)
 pub struct OpenRouterProvider {
     client: Client,
     model: Arc<RwLock<String>>,
+    /// Cached lowercase model key for hot-path per-model capability lookups.
+    model_key: Arc<RwLock<String>>,
     reasoning_effort: Arc<RwLock<Option<String>>>,
     api_base: String,
     auth: ProviderAuth,
@@ -925,6 +927,25 @@ pub struct OpenRouterProvider {
     /// Explicit per-model image-input capability from named-provider `models[].input`.
     /// Missing entries mean unspecified and preserve the provider-level fallback.
     static_image_input_support: HashMap<String, bool>,
+    /// Per-model display names from named-provider `models[].display_name`.
+    /// Used by `available_models_display` so the picker shows the user-configured
+    /// alias instead of the raw upstream id (opencode `name` field parity).
+    static_model_display_names: HashMap<String, String>,
+    /// Reverse lookup: display name (lowercased) -> raw model id. Populated
+    /// alongside `static_model_display_names` so `set_model` can convert the
+    /// display-name alias the picker sends back to the raw id the upstream
+    /// API expects.
+    static_display_name_to_id: HashMap<String, String>,
+    /// Per-model reasoning support from named-provider `models[].reasoning`.
+    /// `Some(true)` enables the effort ladder for that model even when the
+    /// provider-level flag is unset (opencode `reasoning: bool` parity).
+    static_model_reasoning: HashMap<String, bool>,
+    /// Per-model max output tokens from named-provider `models[].max_output_tokens`
+    /// (opencode `limit.output` parity). Overrides the runtime's default.
+    static_model_max_output_tokens: HashMap<String, u32>,
+    /// Provider-level display name from named-provider `display_name`.
+    /// Overrides the raw profile id in `runtime_display_name`.
+    display_name: Option<String>,
     send_openrouter_headers: bool,
     /// Stable per-conversation identifier sent as `x-opencode-session` to
     /// OpenCode (Zen / Go) endpoints, which require it for routing (issue #1167).
@@ -951,21 +972,70 @@ impl OpenRouterProvider {
         matches!(profile_id, Some(id) if id.eq_ignore_ascii_case("zai"))
     }
 
+    /// Per-model `reasoning` override from named-provider config.
+    /// Returns `Some(true)` when the model is explicitly flagged as reasoning-
+    /// capable, `Some(false)` when disabled, and `None` when unspecified (fall
+    /// back to the provider-level detection). Mirrors opencode's per-model
+    /// `reasoning: bool`.
+    fn normalized_model_key(model: &str) -> String {
+        model.trim().to_ascii_lowercase()
+    }
+
+    fn model_reasoning_override_for_key(&self, model_key: &str) -> Option<bool> {
+        self.static_model_reasoning.get(model_key).copied()
+    }
+
+    fn max_output_tokens_for_key(&self, model_key: &str) -> Option<u32> {
+        self.static_model_max_output_tokens
+            .get(model_key)
+            .copied()
+            .or(self.max_tokens)
+    }
+
+    /// Resolve a model identifier that may be a display-name alias back to the
+    /// raw upstream id. The picker shows display names from
+    /// `models[].display_name`, and `set_model` receives whatever the picker
+    /// sent. Without this reverse lookup the display name would leak to the
+    /// upstream API and be rejected as an invalid model id.
+    fn resolve_display_name_to_id(&self, model: &str) -> String {
+        let key = model.trim().to_ascii_lowercase();
+        if let Some(raw_id) = self.static_display_name_to_id.get(&key) {
+            return raw_id.clone();
+        }
+        model.trim().to_string()
+    }
+
     /// DeepSeek-family models accept the DeepSeek-style top-level
     /// `reasoning_effort` request field regardless of which OpenAI-compatible
     /// gateway serves them (issue #352: profiles like opencode-go serve
     /// DeepSeek V4 but were rejected by the profile-id-only check).
-    fn model_is_deepseek_family(model: &str) -> bool {
-        model.trim().to_ascii_lowercase().contains("deepseek")
+    fn model_key_is_deepseek_family(model_key: &str) -> bool {
+        model_key.contains("deepseek")
     }
 
     /// Does this runtime accept the DeepSeek-style `reasoning_effort` field?
-    /// Priority: explicit named-profile config override, then the dedicated
-    /// deepseek profile, then the active model family for direct compat
-    /// endpoints (never for real OpenRouter, which uses unified reasoning).
+    /// Priority: per-model `reasoning` override (only for DeepSeek-family
+    /// models), then explicit named-profile config override, then the
+    /// dedicated deepseek profile, then the active model family for direct
+    /// compat endpoints (never for real OpenRouter, which uses unified
+    /// reasoning).
+    ///
+    /// The per-model `reasoning` override is `Some(true)`/`Some(false)`, but it
+    /// only forces *this* DeepSeek path on for DeepSeek-family models. A
+    /// `reasoning: true` on a GPT-family model must enable the OpenAI ladder
+    /// instead, so we gate the override on the model family here and in
+    /// `supports_openai_reasoning_effort`.
     pub(crate) fn supports_deepseek_reasoning_effort(&self) -> bool {
-        if self.model_reasoning_support() == Some(false) {
-            return false;
+        let model_key = self.model_key_snapshot();
+        if let Some(per_model) = self.model_reasoning_override_for_key(&model_key) {
+            // Per-model override is authoritative for reasoning support, but
+            // it does not change *which* effort ladder applies: a DeepSeek
+            // model gets the DeepSeek ladder, a GPT-family model gets the
+            // OpenAI ladder. `false` force-disables this path either way.
+            if !per_model {
+                return false;
+            }
+            return Self::model_key_is_deepseek_family(&model_key);
         }
         if let Some(explicit) = self.reasoning_effort_support {
             return explicit;
@@ -978,30 +1048,44 @@ impl OpenRouterProvider {
                 self.profile_id.as_deref(),
                 self.send_openrouter_headers,
             )
-            && Self::model_is_deepseek_family(&self.model_snapshot())
+            && Self::model_key_is_deepseek_family(&model_key)
     }
 
     /// GPT-family reasoning models (gpt-5.x, codex variants, o-series) accept
     /// the standard OpenAI `reasoning_effort` request field on any
     /// OpenAI-compatible gateway that proxies them (e.g. OpenCode Zen serving
     /// `gpt-5.3-codex-spark`). Real OpenRouter uses unified reasoning instead.
-    fn model_is_openai_reasoning_family(model: &str) -> bool {
-        let model = model.trim().to_ascii_lowercase();
-        model.starts_with("gpt-5")
-            || model.contains("codex")
-            || model.starts_with("o1")
-            || model.starts_with("o3")
-            || model.starts_with("o4")
-            || model.starts_with("o5")
+    fn model_key_is_openai_reasoning_family(model_key: &str) -> bool {
+        model_key.starts_with("gpt-5")
+            || model_key.contains("codex")
+            || model_key.starts_with("o1")
+            || model_key.starts_with("o3")
+            || model_key.starts_with("o4")
+            || model_key.starts_with("o5")
     }
 
     /// Does this runtime accept the OpenAI-style `reasoning_effort` field for
     /// the active model? Only for direct compat endpoints serving GPT-family
     /// reasoning models, and only when no explicit config override or
     /// DeepSeek-style support already applies.
+    ///
+    /// The per-model `reasoning` override mirrors the gating in
+    /// `supports_deepseek_reasoning_effort`: `false` force-disables this path,
+    /// `true` enables it only for GPT-family models (DeepSeek-family models
+    /// get the DeepSeek ladder instead).
     pub(crate) fn supports_openai_reasoning_effort(&self) -> bool {
-        if let Some(explicit) = self.model_reasoning_support() {
-            return explicit;
+        let model_key = self.model_key_snapshot();
+        if let Some(per_model) = self.model_reasoning_override_for_key(&model_key) {
+            if !per_model {
+                return false;
+            }
+            // `reasoning: true` enables the OpenAI `reasoning_effort` ladder for
+            // any model that is not DeepSeek-family (DeepSeek models get the
+            // DeepSeek ladder via `supports_deepseek_reasoning_effort`). This
+            // covers GPT-family reasoning models *and* generic custom models
+            // on OpenAI-compatible gateways that accept the standard
+            // `reasoning_effort` field but don't match the family auto-detection.
+            return !Self::model_key_is_deepseek_family(&model_key);
         }
         if self.reasoning_effort_support == Some(false) {
             return false;
@@ -1014,18 +1098,18 @@ impl OpenRouterProvider {
                 self.profile_id.as_deref(),
                 self.send_openrouter_headers,
             )
-            && Self::model_is_openai_reasoning_family(&self.model_snapshot())
+            && Self::model_key_is_openai_reasoning_family(&model_key)
     }
 
-    fn model_snapshot(&self) -> String {
-        self.model
+    fn model_key_snapshot(&self) -> String {
+        self.model_key
             .try_read()
-            .map(|model| model.clone())
+            .map(|model_key| model_key.clone())
             .unwrap_or_default()
     }
 
     fn model_reasoning_config(&self) -> Option<&(Option<bool>, Option<String>)> {
-        let model = self.model_snapshot().trim().to_ascii_lowercase();
+        let model = self.model_key_snapshot().trim().to_ascii_lowercase();
         self.static_reasoning_config.get(&model)
     }
 
@@ -1067,28 +1151,59 @@ impl OpenRouterProvider {
     /// Initial reasoning effort at construction. Named/compat profiles that
     /// support effort honor the user's configured `openai_reasoning_effort`
     /// (issue #352: previously hardcoded to None so the config was ignored).
+    ///
+    /// The per-model `reasoning` override (opencode `reasoning: bool`) also
+    /// enables effort for the default model even when the provider-level flag
+    /// is unset. The configured effort is normalized with the ladder that
+    /// actually applies to the default model (DeepSeek vs OpenAI), so a
+    /// `minimal`/`xhigh` value is not silently dropped for GPT-family or
+    /// generic models.
     fn initial_reasoning_effort(
         reasoning_effort_support: Option<bool>,
         profile_id: Option<&str>,
+        model_key: &str,
+        per_model_reasoning: Option<bool>,
     ) -> Option<String> {
-        let supported = reasoning_effort_support.unwrap_or(
+        let provider_supported = reasoning_effort_support.unwrap_or(
             Self::profile_supports_reasoning_effort(profile_id)
                 || Self::profile_supports_openai_reasoning_effort(profile_id),
         );
+        // The per-model override mirrors supports_deepseek/openai_reasoning_effort:
+        // `Some(false)` force-disables, `Some(true)` enables for the matching family.
+        let deepseek_family = Self::model_key_is_deepseek_family(model_key);
+        let openai_family = Self::model_key_is_openai_reasoning_family(model_key);
+        let supported = match per_model_reasoning {
+            Some(false) => false,
+            Some(true) => true,
+            None => provider_supported,
+        };
         if !supported {
             return None;
         }
-        jcode_base::config::config()
+        let raw = jcode_base::config::config()
             .provider
             .openai_reasoning_effort
-            .as_deref()
-            .and_then(|effort| {
-                if Self::profile_supports_openai_reasoning_effort(profile_id) {
-                    Self::normalize_openai_reasoning_effort(effort)
-                } else {
-                    Self::normalize_reasoning_effort(effort)
-                }
-            })
+            .as_deref()?;
+        // Normalize with the ladder that will actually be used at request time
+        // so OpenAI-only rungs (minimal, xhigh) are not rejected for non-DeepSeek
+        // models. If reasoning is enabled purely via the per-model override on a
+        // non-DeepSeek model, the OpenAI ladder applies (see
+        // supports_openai_reasoning_effort).
+        if per_model_reasoning == Some(true) && !deepseek_family {
+            Self::normalize_openai_reasoning_effort(raw)
+        } else if per_model_reasoning == Some(true) && deepseek_family {
+            Self::normalize_reasoning_effort(raw)
+        } else if !provider_supported && deepseek_family {
+            // Auto-detected DeepSeek model on a direct compat endpoint.
+            Self::normalize_reasoning_effort(raw)
+        } else if !provider_supported && openai_family {
+            // Auto-detected GPT-family model on a direct compat endpoint.
+            Self::normalize_openai_reasoning_effort(raw)
+        } else if Self::profile_supports_openai_reasoning_effort(profile_id) {
+            Self::normalize_openai_reasoning_effort(raw)
+        } else {
+            Self::normalize_reasoning_effort(raw)
+        }
     }
 
     fn profile_rejects_image_input(profile_id: Option<&str>) -> bool {
@@ -1256,6 +1371,12 @@ impl OpenRouterProvider {
             return jcode_base::subscription_catalog::JCODE_PROVIDER_DISPLAY_NAME.to_string();
         }
 
+        // User-configured `display_name` from the named-provider profile wins
+        // over the built-in catalog and the raw profile id.
+        if let Some(display) = self.display_name.as_deref() {
+            return display.to_string();
+        }
+
         // Direct OpenAI-compatible profile (NVIDIA NIM, DeepSeek, Z.AI, ...).
         if let Some(profile_id) = self.profile_id.as_deref() {
             if let Some(profile) = openai_compatible_profile_by_id(profile_id) {
@@ -1304,14 +1425,21 @@ impl OpenRouterProvider {
         }
 
         let provider_label = self
-            .profile_id
+            .display_name
             .as_deref()
-            .map(|profile_id| {
-                openai_compatible_profile_by_id(profile_id)
-                    .map(|profile| profile.display_name.to_string())
-                    .unwrap_or_else(|| profile_id.to_string())
-            })
-            .unwrap_or_else(|| "OpenAI-compatible".to_string());
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(ToString::to_string)
+            .unwrap_or_else(|| {
+                self.profile_id
+                    .as_deref()
+                    .map(|profile_id| {
+                        openai_compatible_profile_by_id(profile_id)
+                            .map(|profile| profile.display_name.to_string())
+                            .unwrap_or_else(|| profile_id.to_string())
+                    })
+                    .unwrap_or_else(|| "OpenAI-compatible".to_string())
+            });
         let api_method = self
             .profile_id
             .as_deref()
@@ -1384,6 +1512,7 @@ impl OpenRouterProvider {
             .default_model
             .clone()
             .unwrap_or_else(|| DEFAULT_MODEL.to_string());
+        let model_key = Self::normalized_model_key(&model);
         let static_models = profile
             .models
             .iter()
@@ -1434,10 +1563,81 @@ impl OpenRouterProvider {
                 ))
             })
             .collect::<HashMap<_, _>>();
+        let static_model_display_names = profile
+            .models
+            .iter()
+            .filter_map(|model| {
+                let id = model.id.trim();
+                if id.is_empty() {
+                    return None;
+                }
+                model
+                    .display_name
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|v| !v.is_empty())
+                    .map(|display| (id.to_ascii_lowercase(), display.to_string()))
+            })
+            .collect::<HashMap<_, _>>();
+        let static_display_name_to_id = profile
+            .models
+            .iter()
+            .filter_map(|model| {
+                let id = model.id.trim();
+                if id.is_empty() {
+                    return None;
+                }
+                model
+                    .display_name
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|v| !v.is_empty())
+                    .map(|display| (display.to_ascii_lowercase(), id.to_string()))
+            })
+            .collect::<HashMap<_, _>>();
+        let static_model_reasoning = profile
+            .models
+            .iter()
+            .filter_map(|model| {
+                let id = model.id.trim();
+                if id.is_empty() {
+                    return None;
+                }
+                model
+                    .reasoning
+                    .map(|reasoning| (id.to_ascii_lowercase(), reasoning))
+            })
+            .collect::<HashMap<_, _>>();
+        let default_model_reasoning = static_model_reasoning.get(&model_key).copied();
+        let static_model_max_output_tokens = profile
+            .models
+            .iter()
+            .filter_map(|model| {
+                let id = model.id.trim();
+                if id.is_empty() {
+                    return None;
+                }
+                model
+                    .max_output_tokens
+                    .map(|limit| (id.to_ascii_lowercase(), limit as u32))
+            })
+            .collect::<HashMap<_, _>>();
+        let display_name = profile
+            .display_name
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(ToString::to_string);
         let provider = Self {
             client: jcode_provider_core::shared_http_client(),
-            model: Arc::new(RwLock::new(model)),
-            reasoning_effort: Arc::new(RwLock::new(None)),
+            model: Arc::new(RwLock::new(model.clone())),
+            model_key: Arc::new(RwLock::new(model_key.clone())),
+            reasoning_effort: Arc::new(RwLock::new(Self::initial_reasoning_effort(
+                profile.supports_reasoning_effort,
+                Some(profile_name),
+                &model_key,
+                default_model_reasoning,
+            ))),
             api_base,
             auth,
             supports_provider_features: matches!(
@@ -1466,6 +1666,11 @@ impl OpenRouterProvider {
             static_models,
             static_context_limits,
             static_image_input_support,
+            static_model_display_names,
+            static_display_name_to_id,
+            static_model_reasoning,
+            static_model_max_output_tokens,
+            display_name,
             send_openrouter_headers: false,
             conversation_id: new_conversation_id(),
             models_cache: Arc::new(RwLock::new(ModelsCache::default())),
@@ -1654,10 +1859,13 @@ impl OpenRouterProvider {
 
         Ok(Self {
             client: jcode_provider_core::shared_http_client(),
-            model: Arc::new(RwLock::new(model)),
+            model: Arc::new(RwLock::new(model.clone())),
+            model_key: Arc::new(RwLock::new(Self::normalized_model_key(&model))),
             reasoning_effort: Arc::new(RwLock::new(Self::initial_reasoning_effort(
                 None,
                 profile_id.as_deref(),
+                &Self::normalized_model_key(&model),
+                None,
             ))),
             api_base,
             auth,
@@ -1672,6 +1880,11 @@ impl OpenRouterProvider {
             static_models,
             static_context_limits,
             static_image_input_support: HashMap::new(),
+            static_model_display_names: HashMap::new(),
+            static_display_name_to_id: HashMap::new(),
+            static_model_reasoning: HashMap::new(),
+            static_model_max_output_tokens: HashMap::new(),
+            display_name: None,
             send_openrouter_headers,
             conversation_id: new_conversation_id(),
             models_cache: Arc::new(RwLock::new(ModelsCache::default())),
@@ -1699,6 +1912,7 @@ impl OpenRouterProvider {
         Ok(Self {
             client: jcode_provider_core::shared_http_client(),
             model: Arc::new(RwLock::new(DEFAULT_MODEL.to_string())),
+            model_key: Arc::new(RwLock::new(Self::normalized_model_key(DEFAULT_MODEL))),
             reasoning_effort: Arc::new(RwLock::new(None)),
             api_base: DEFAULT_API_BASE.to_string(),
             auth: ProviderAuth::AuthorizationBearer {
@@ -1716,6 +1930,11 @@ impl OpenRouterProvider {
             static_models: Vec::new(),
             static_context_limits: HashMap::new(),
             static_image_input_support: HashMap::new(),
+            static_model_display_names: HashMap::new(),
+            static_display_name_to_id: HashMap::new(),
+            static_model_reasoning: HashMap::new(),
+            static_model_max_output_tokens: HashMap::new(),
+            display_name: None,
             send_openrouter_headers: true,
             conversation_id: new_conversation_id(),
             models_cache: Arc::new(RwLock::new(ModelsCache::default())),
@@ -1770,10 +1989,13 @@ impl OpenRouterProvider {
 
         Ok(Self {
             client: jcode_provider_core::shared_http_client(),
-            model: Arc::new(RwLock::new(model)),
+            model: Arc::new(RwLock::new(model.clone())),
+            model_key: Arc::new(RwLock::new(Self::normalized_model_key(&model))),
             reasoning_effort: Arc::new(RwLock::new(Self::initial_reasoning_effort(
                 None,
                 Some(&resolved.id),
+                &Self::normalized_model_key(&model),
+                None,
             ))),
             api_base,
             auth,
@@ -1788,6 +2010,11 @@ impl OpenRouterProvider {
             static_models,
             static_context_limits,
             static_image_input_support: HashMap::new(),
+            static_model_display_names: HashMap::new(),
+            static_display_name_to_id: HashMap::new(),
+            static_model_reasoning: HashMap::new(),
+            static_model_max_output_tokens: HashMap::new(),
+            display_name: None,
             send_openrouter_headers: false,
             conversation_id: new_conversation_id(),
             models_cache: Arc::new(RwLock::new(ModelsCache::default())),
@@ -1980,6 +2207,7 @@ impl OpenRouterProvider {
             let provider = OpenRouterProvider {
                 client,
                 model: Arc::new(RwLock::new(model_name.clone())),
+                model_key: Arc::new(RwLock::new(Self::normalized_model_key(&model_name))),
                 reasoning_effort: Arc::new(RwLock::new(None)),
                 api_base,
                 auth,
@@ -1994,6 +2222,11 @@ impl OpenRouterProvider {
                 static_models: Vec::new(),
                 static_context_limits: HashMap::new(),
                 static_image_input_support: HashMap::new(),
+                static_model_display_names: HashMap::new(),
+                static_display_name_to_id: HashMap::new(),
+                static_model_reasoning: HashMap::new(),
+                static_model_max_output_tokens: HashMap::new(),
+                display_name: None,
                 send_openrouter_headers: true,
                 conversation_id: new_conversation_id(),
                 models_cache: Arc::new(RwLock::new(ModelsCache::default())),

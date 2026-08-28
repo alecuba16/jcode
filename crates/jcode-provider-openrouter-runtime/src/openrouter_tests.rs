@@ -694,6 +694,7 @@ fn kimi_for_coding_tool_call_message_includes_reasoning_content() {
         supports_provider_features: false,
         supports_model_catalog: false,
         model: Arc::new(RwLock::new("kimi-for-coding".to_string())),
+        model_key: Arc::new(RwLock::new("kimi-for-coding".to_string())),
         ..make_custom_compatible_provider()
     };
 
@@ -788,6 +789,7 @@ fn direct_compatible_deepseek_tool_call_replays_reasoning_content() {
         supports_provider_features: false,
         supports_model_catalog: false,
         model: Arc::new(RwLock::new("deepseek-v4-flash-free".to_string())),
+        model_key: Arc::new(RwLock::new("deepseek-v4-flash-free".to_string())),
         ..make_custom_compatible_provider()
     };
 
@@ -1272,6 +1274,7 @@ fn make_provider() -> OpenRouterProvider {
     OpenRouterProvider {
         client: jcode_provider_core::shared_http_client(),
         model: Arc::new(RwLock::new(DEFAULT_MODEL.to_string())),
+        model_key: Arc::new(RwLock::new(DEFAULT_MODEL.to_ascii_lowercase())),
         reasoning_effort: Arc::new(RwLock::new(None)),
         api_base: DEFAULT_API_BASE.to_string(),
         auth: ProviderAuth::AuthorizationBearer {
@@ -1289,6 +1292,11 @@ fn make_provider() -> OpenRouterProvider {
         static_models: Vec::new(),
         static_context_limits: HashMap::new(),
         static_image_input_support: HashMap::new(),
+        static_model_display_names: HashMap::new(),
+        static_display_name_to_id: HashMap::new(),
+        static_model_reasoning: HashMap::new(),
+        static_model_max_output_tokens: HashMap::new(),
+        display_name: None,
         send_openrouter_headers: true,
         conversation_id: new_conversation_id(),
         models_cache: Arc::new(RwLock::new(ModelsCache::default())),
@@ -1304,6 +1312,7 @@ fn make_custom_compatible_provider() -> OpenRouterProvider {
     OpenRouterProvider {
         client: jcode_provider_core::shared_http_client(),
         model: Arc::new(RwLock::new(DEFAULT_MODEL.to_string())),
+        model_key: Arc::new(RwLock::new(DEFAULT_MODEL.to_ascii_lowercase())),
         reasoning_effort: Arc::new(RwLock::new(None)),
         api_base: "https://compat.example.test/v1".to_string(),
         auth: ProviderAuth::AuthorizationBearer {
@@ -1321,6 +1330,11 @@ fn make_custom_compatible_provider() -> OpenRouterProvider {
         static_models: Vec::new(),
         static_context_limits: HashMap::new(),
         static_image_input_support: HashMap::new(),
+        static_model_display_names: HashMap::new(),
+        static_display_name_to_id: HashMap::new(),
+        static_model_reasoning: HashMap::new(),
+        static_model_max_output_tokens: HashMap::new(),
+        display_name: None,
         send_openrouter_headers: false,
         conversation_id: new_conversation_id(),
         models_cache: Arc::new(RwLock::new(ModelsCache::default())),
@@ -1441,7 +1455,7 @@ fn direct_zai_profile_applies_configured_effort_on_construction_and_model_switch
         .as_deref()
         .and_then(OpenRouterProvider::normalize_openai_reasoning_effort);
     assert_eq!(
-        OpenRouterProvider::initial_reasoning_effort(None, Some("zai")),
+        OpenRouterProvider::initial_reasoning_effort(None, Some("zai"), "glm-5.3-flash", None),
         configured
     );
 
@@ -1532,6 +1546,7 @@ fn openrouter_chat_request_sends_unified_reasoning_effort() {
     let provider = OpenRouterProvider {
         api_base,
         model: Arc::new(RwLock::new("anthropic/claude-sonnet-4.6".to_string())),
+        model_key: Arc::new(RwLock::new("anthropic/claude-sonnet-4.6".to_string())),
         supports_model_catalog: false,
         ..make_provider()
     };
@@ -1643,6 +1658,7 @@ async fn live_openrouter_unified_reasoning_smoke() -> Result<()> {
                 label: configured_api_key_name(),
             },
             model: Arc::new(RwLock::new(model.clone())),
+            model_key: Arc::new(RwLock::new(model.trim().to_ascii_lowercase())),
             max_tokens: Some(max_tokens),
             ..make_provider()
         };
@@ -1690,6 +1706,7 @@ fn direct_deepseek_chat_request_sends_reasoning_effort() {
     let provider = OpenRouterProvider {
         api_base,
         model: Arc::new(RwLock::new("deepseek-v4-pro".to_string())),
+        model_key: Arc::new(RwLock::new("deepseek-v4-pro".to_string())),
         profile_id: Some("deepseek".to_string()),
         supports_provider_features: false,
         supports_model_catalog: false,
@@ -1748,6 +1765,7 @@ fn direct_openai_compatible_chat_request_preserves_max_reasoning_effort() {
     let provider = OpenRouterProvider {
         api_base,
         model: Arc::new(RwLock::new("gpt-5.5".to_string())),
+        model_key: Arc::new(RwLock::new("gpt-5.5".to_string())),
         supports_provider_features: false,
         supports_model_catalog: false,
         send_openrouter_headers: false,
@@ -1811,6 +1829,7 @@ fn openai_compatible_model_catalog_refresh_calls_models_endpoint_and_updates_dis
     let provider = OpenRouterProvider {
         api_base,
         model: Arc::new(RwLock::new("live-login-flow-model".to_string())),
+        model_key: Arc::new(RwLock::new("live-login-flow-model".to_string())),
         auth: ProviderAuth::AuthorizationBearer {
             token: "sk-live-catalog".to_string(),
             label: "OPENAI_COMPAT_API_KEY".to_string(),
@@ -1865,6 +1884,7 @@ fn openai_compatible_model_catalog_refresh_calls_models_endpoint_and_updates_dis
     let fresh_provider = OpenRouterProvider {
         api_base: provider.api_base.clone(),
         model: Arc::new(RwLock::new("live-login-flow-model".to_string())),
+        model_key: Arc::new(RwLock::new("live-login-flow-model".to_string())),
         auth: provider.auth.clone(),
         supports_provider_features: false,
         supports_model_catalog: true,
@@ -2027,6 +2047,7 @@ fn named_openai_compatible_model_context_window_overrides_default() {
             reasoning: None,
             reasoning_effort: None,
             input: Vec::new(),
+            ..Default::default()
         }],
         ..Default::default()
     };
@@ -2056,6 +2077,7 @@ fn named_profile_context_window_survives_provider_qualified_model() {
             reasoning: None,
             reasoning_effort: None,
             input: Vec::new(),
+            ..Default::default()
         }],
         ..Default::default()
     };
@@ -2256,6 +2278,7 @@ fn test_background_refresh_is_throttled_between_attempts() {
 fn test_kimi_routing_uses_endpoints_or_fallback() {
     let provider = OpenRouterProvider {
         model: Arc::new(RwLock::new("moonshotai/kimi-k2.5".to_string())),
+        model_key: Arc::new(RwLock::new("moonshotai/kimi-k2.5".to_string())),
         ..make_provider()
     };
 
@@ -2281,6 +2304,7 @@ fn observed_session_provider_pin_sticks_without_fallbacks() {
     let model = "anthropic/claude-sonnet-4.6";
     let provider = OpenRouterProvider {
         model: Arc::new(RwLock::new(model.to_string())),
+        model_key: Arc::new(RwLock::new(model.trim().to_ascii_lowercase())),
         provider_pin: Arc::new(Mutex::new(Some(ProviderPin {
             model: model.to_string(),
             provider: "anthropic".to_string(),
@@ -2319,6 +2343,7 @@ fn observed_pin_yields_to_explicit_user_routing_order() {
     };
     let provider = OpenRouterProvider {
         model: Arc::new(RwLock::new(model.to_string())),
+        model_key: Arc::new(RwLock::new(model.trim().to_ascii_lowercase())),
         provider_routing: Arc::new(RwLock::new(base)),
         provider_pin: Arc::new(Mutex::new(Some(ProviderPin {
             model: model.to_string(),
@@ -2819,6 +2844,81 @@ reasoning_effort = "high"
             .get("chat_template_kwargs")
             .and_then(|v| v.get("reasoning_effort")),
         Some(&serde_json::json!("high"))
+    );
+}
+
+/// Verify that all new per-model and provider-level fields deserialize from
+/// TOML in the shape documented in the README, including serde aliases.
+#[test]
+fn named_provider_config_deserializes_per_model_fields_and_aliases() {
+    // Parse the model entry directly; the [[providers.my-api.models]] array
+    // syntax requires the outer config table, but the model struct itself
+    // can be parsed from a flat TOML fragment.
+    let model_toml = r#"
+id = "my-model-id"
+context_window = 128000
+display_name = "My Model"
+max_output_tokens = 8192
+reasoning = true
+cost = { input = 0.15, output = 0.60, cache_read = 0.015 }
+"#;
+    let model: jcode_base::config::NamedProviderModelConfig =
+        toml::from_str(model_toml).expect("parse model toml");
+    assert_eq!(model.id, "my-model-id");
+    assert_eq!(model.display_name.as_deref(), Some("My Model"));
+    assert_eq!(model.context_window, Some(128_000));
+    assert_eq!(model.max_output_tokens, Some(8192));
+    assert_eq!(model.reasoning, Some(true));
+    let cost = model.cost.expect("cost should be present");
+    assert_eq!(cost.input, Some(0.15));
+    assert_eq!(cost.output, Some(0.60));
+    assert_eq!(cost.cache_read, Some(0.015));
+    assert!(cost.cache_write.is_none());
+
+    // Verify the `name` alias for display_name works.
+    let alias_toml = r#"
+id = "aliased-model"
+name = "Aliased Display Name"
+max_output_tokens = 4096
+"#;
+    let model: jcode_base::config::NamedProviderModelConfig =
+        toml::from_str(alias_toml).expect("parse alias toml");
+    assert_eq!(
+        model.display_name.as_deref(),
+        Some("Aliased Display Name"),
+        "name alias should populate display_name"
+    );
+    assert_eq!(model.max_output_tokens, Some(4096));
+
+    // Verify the `output_limit` alias for max_output_tokens works.
+    let output_limit_toml = r#"
+id = "limit-model"
+output_limit = 16384
+"#;
+    let model: jcode_base::config::NamedProviderModelConfig =
+        toml::from_str(output_limit_toml).expect("parse output_limit alias");
+    assert_eq!(
+        model.max_output_tokens,
+        Some(16384),
+        "output_limit alias should populate max_output_tokens"
+    );
+
+    // Verify the `cache-write` alias (kebab-case) for cache_write works.
+    let cost_alias_toml = r#"
+input = 0.20
+output = 0.80
+cache-read = 0.02
+cache-write = 0.10
+"#;
+    let cost: jcode_base::config::ModelCostConfig =
+        toml::from_str(cost_alias_toml).expect("parse cost alias toml");
+    assert_eq!(cost.input, Some(0.20));
+    assert_eq!(cost.output, Some(0.80));
+    assert_eq!(cost.cache_read, Some(0.02));
+    assert_eq!(
+        cost.cache_write,
+        Some(0.10),
+        "cache-write alias should populate cache_write"
     );
 }
 
@@ -3448,5 +3548,915 @@ fn opencode_session_header_is_sent_on_the_wire_only_to_opencode_hosts() {
     assert!(
         !raw.contains("x-opencode-session"),
         "non-opencode host received the header:\n{raw}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Per-model display_name, reasoning, max_output_tokens, and provider
+// display_name (opencode parity) tests.
+// ---------------------------------------------------------------------------
+
+fn make_per_model_test_profile() -> jcode_base::config::NamedProviderConfig {
+    jcode_base::config::NamedProviderConfig {
+        base_url: "http://localhost:8080/v1".to_string(),
+        auth: jcode_base::config::NamedProviderAuth::None,
+        default_model: Some("raw-model-id".to_string()),
+        display_name: Some("My Custom Provider".to_string()),
+        models: vec![
+            jcode_base::config::NamedProviderModelConfig {
+                id: "raw-model-id".to_string(),
+                display_name: Some("Friendly Name".to_string()),
+                reasoning: Some(true),
+                max_output_tokens: Some(8192),
+                cost: Some(jcode_base::config::ModelCostConfig {
+                    input: Some(0.15),
+                    output: Some(0.60),
+                    cache_read: Some(0.015),
+                    cache_write: None,
+                }),
+                ..Default::default()
+            },
+            jcode_base::config::NamedProviderModelConfig {
+                id: "plain-model".to_string(),
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    }
+}
+
+#[test]
+fn named_provider_display_name_overrides_runtime_display_name() {
+    let _lock = ENV_LOCK.lock();
+    let _namespace = EnvVarGuard::remove("JCODE_OPENROUTER_CACHE_NAMESPACE");
+    let profile = make_per_model_test_profile();
+    let provider =
+        OpenRouterProvider::new_named_openai_compatible("custom", &profile).expect("provider");
+    assert_eq!(provider.runtime_display_name(), "My Custom Provider");
+}
+
+#[test]
+fn named_provider_model_display_name_appears_in_available_models_display() {
+    let _lock = ENV_LOCK.lock();
+    let _namespace = EnvVarGuard::remove("JCODE_OPENROUTER_CACHE_NAMESPACE");
+    let mut profile = make_per_model_test_profile();
+    profile.model_catalog = false;
+    let provider =
+        OpenRouterProvider::new_named_openai_compatible("custom", &profile).expect("provider");
+    let models = provider.available_models_display();
+    assert!(
+        models.iter().any(|m| m == "Friendly Name"),
+        "display name alias should appear in available_models_display; got: {models:?}"
+    );
+    assert!(
+        !models.iter().any(|m| m == "raw-model-id"),
+        "raw model id should be replaced by display name; got: {models:?}"
+    );
+}
+
+#[test]
+fn named_provider_model_display_name_appears_in_model_routes() {
+    let _lock = ENV_LOCK.lock();
+    let _namespace = EnvVarGuard::remove("JCODE_OPENROUTER_CACHE_NAMESPACE");
+    let profile = make_per_model_test_profile();
+    let provider =
+        OpenRouterProvider::new_named_openai_compatible("custom", &profile).expect("provider");
+    let routes = provider.model_routes();
+    assert!(
+        routes.iter().any(|r| r.model == "Friendly Name"
+            && r.provider == "My Custom Provider"
+            && r.api_method == "openai-compatible:custom"),
+        "route should carry display name and provider label; got: {routes:?}"
+    );
+}
+
+#[test]
+fn named_provider_per_model_reasoning_enables_effort_ladder() {
+    let _lock = ENV_LOCK.lock();
+    let _namespace = EnvVarGuard::remove("JCODE_OPENROUTER_CACHE_NAMESPACE");
+    let mut profile = make_per_model_test_profile();
+    profile.model_catalog = false;
+    let provider =
+        OpenRouterProvider::new_named_openai_compatible("custom", &profile).expect("provider");
+    // The model (`raw-model-id`) has `reasoning = true` on a non-DeepSeek,
+    // non-GPT-family gateway. Before the fix this fell through to no ladder;
+    // now the per-model override enables the OpenAI ladder for any non-DeepSeek
+    // model.
+    let efforts = provider.available_efforts();
+    assert!(
+        !efforts.is_empty(),
+        "per-model reasoning=true should enable effort ladder even on non-DeepSeek gateway"
+    );
+    assert!(
+        provider.supports_any_reasoning_effort(),
+        "per-model reasoning=true should make supports_any_reasoning_effort true"
+    );
+    // A non-DeepSeek model with `reasoning: true` must get the OpenAI ladder
+    // (which includes `minimal` and `xhigh`), not the DeepSeek ladder (which
+    // has neither). This is the core regression guard.
+    assert!(
+        efforts.contains(&"minimal"),
+        "non-DeepSeek model with reasoning=true should get OpenAI ladder (has minimal); got: {efforts:?}"
+    );
+    assert!(
+        efforts.contains(&"xhigh"),
+        "non-DeepSeek model with reasoning=true should get OpenAI ladder (has xhigh); got: {efforts:?}"
+    );
+    assert!(
+        provider.supports_openai_reasoning_effort(),
+        "non-DeepSeek model with reasoning=true should support OpenAI reasoning effort"
+    );
+    assert!(
+        !provider.supports_deepseek_reasoning_effort(),
+        "non-DeepSeek model should not support DeepSeek reasoning effort even with reasoning=true"
+    );
+}
+
+#[test]
+fn named_provider_plain_model_without_reasoning_has_no_effort_ladder() {
+    let _lock = ENV_LOCK.lock();
+    let _namespace = EnvVarGuard::remove("JCODE_OPENROUTER_CACHE_NAMESPACE");
+    let mut profile = make_per_model_test_profile();
+    profile.default_model = Some("plain-model".to_string());
+    profile.model_catalog = false;
+    let provider =
+        OpenRouterProvider::new_named_openai_compatible("custom", &profile).expect("provider");
+    // plain-model has no reasoning override and is not a DeepSeek/GPT family
+    // model, so the effort ladder should be empty.
+    assert!(
+        provider.available_efforts().is_empty(),
+        "plain model without reasoning should have empty effort ladder; got: {:?}",
+        provider.available_efforts()
+    );
+}
+
+#[test]
+fn named_provider_per_model_max_output_tokens_appears_in_request() {
+    let _lock = ENV_LOCK.lock();
+    let _namespace = EnvVarGuard::remove("JCODE_OPENROUTER_CACHE_NAMESPACE");
+    let (api_base, request_rx) = spawn_single_response_chat_server();
+    let mut profile = make_per_model_test_profile();
+    profile.model_catalog = false;
+    profile.base_url = api_base;
+    let provider =
+        OpenRouterProvider::new_named_openai_compatible("custom", &profile).expect("provider");
+
+    let messages = vec![Message {
+        role: Role::User,
+        content: vec![ContentBlock::Text {
+            text: "hello".to_string(),
+            cache_control: None,
+        }],
+        timestamp: None,
+        tool_duration_ms: None,
+    }];
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+    rt.block_on(async {
+        let stream = provider
+            .complete(&messages, &[], "", None)
+            .await
+            .expect("stream starts");
+        futures::pin_mut!(stream);
+        while let Some(event) = stream.next().await {
+            if event.is_err() {
+                break;
+            }
+        }
+    });
+
+    let request = request_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("capture request");
+    let body = parse_captured_request_body(&request);
+    assert_eq!(
+        body.get("max_tokens").and_then(|v| v.as_u64()),
+        Some(8192),
+        "per-model max_output_tokens should be sent as max_tokens; got: {request}"
+    );
+}
+
+#[test]
+fn named_provider_cost_config_converts_to_route_cheapness() {
+    let _lock = ENV_LOCK.lock();
+    let _namespace = EnvVarGuard::remove("JCODE_OPENROUTER_CACHE_NAMESPACE");
+    let profile = make_per_model_test_profile();
+    let provider =
+        OpenRouterProvider::new_named_openai_compatible("custom", &profile).expect("provider");
+    let routes = provider.model_routes();
+    let route = routes
+        .iter()
+        .find(|r| r.model == "Friendly Name")
+        .expect("route with display name should exist");
+    // model_routes() on the runtime currently returns cheapness: None; the
+    // cost-derived cheapness is attached in catalog_routes. This test
+    // verifies the cost config is properly parsed and available in the
+    // profile config.
+    let cost = profile
+        .models
+        .iter()
+        .find(|m| m.id == "raw-model-id")
+        .and_then(|m| m.cost.as_ref())
+        .expect("cost config should be present");
+    assert_eq!(cost.input, Some(0.15));
+    assert_eq!(cost.output, Some(0.60));
+    assert_eq!(cost.cache_read, Some(0.015));
+    assert!(route.available);
+}
+
+/// Regression: when a model has `display_name` configured, the picker shows the
+/// alias but `set_model` must convert it back to the raw upstream id so the API
+/// request body uses the identifier the endpoint expects.
+#[test]
+fn named_provider_set_model_resolves_display_name_to_raw_id() {
+    let _lock = ENV_LOCK.lock();
+    let _namespace = EnvVarGuard::remove("JCODE_OPENROUTER_CACHE_NAMESPACE");
+    let mut profile = make_per_model_test_profile();
+    profile.model_catalog = false;
+    let provider =
+        OpenRouterProvider::new_named_openai_compatible("custom", &profile).expect("provider");
+
+    // Simulate the picker sending the display-name alias through set_model.
+    provider.set_model("Friendly Name").expect("set_model");
+
+    // The internal model field must hold the raw id, not the display alias.
+    assert_eq!(
+        provider.model(),
+        "raw-model-id",
+        "set_model should resolve display name back to raw model id"
+    );
+}
+
+/// Regression: `reasoning = false` on a DeepSeek-family model should
+/// force-disable the effort ladder, not fall through to auto-detection.
+#[test]
+fn named_provider_per_model_reasoning_false_force_disables_deepseek() {
+    let _lock = ENV_LOCK.lock();
+    let _namespace = EnvVarGuard::remove("JCODE_OPENROUTER_CACHE_NAMESPACE");
+    let mut profile = jcode_base::config::NamedProviderConfig {
+        base_url: "http://localhost:8080/v1".to_string(),
+        auth: jcode_base::config::NamedProviderAuth::None,
+        default_model: Some("deepseek-chat".to_string()),
+        models: vec![jcode_base::config::NamedProviderModelConfig {
+            id: "deepseek-chat".to_string(),
+            reasoning: Some(false),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    profile.model_catalog = false;
+    let provider =
+        OpenRouterProvider::new_named_openai_compatible("custom", &profile).expect("provider");
+
+    assert!(
+        !provider.supports_deepseek_reasoning_effort(),
+        "reasoning=false should force-disable DeepSeek reasoning even on a DeepSeek model"
+    );
+    assert!(
+        !provider.supports_any_reasoning_effort(),
+        "reasoning=false should make supports_any_reasoning_effort false"
+    );
+    assert!(
+        provider.available_efforts().is_empty(),
+        "reasoning=false on DeepSeek model should produce empty effort ladder; got: {:?}",
+        provider.available_efforts()
+    );
+}
+
+/// Regression: `reasoning = false` on a GPT-family reasoning model should
+/// force-disable the OpenAI reasoning effort ladder.
+#[test]
+fn named_provider_per_model_reasoning_false_force_disables_openai() {
+    let _lock = ENV_LOCK.lock();
+    let _namespace = EnvVarGuard::remove("JCODE_OPENROUTER_CACHE_NAMESPACE");
+    let mut profile = jcode_base::config::NamedProviderConfig {
+        base_url: "http://localhost:8080/v1".to_string(),
+        auth: jcode_base::config::NamedProviderAuth::None,
+        default_model: Some("gpt-5.3-codex".to_string()),
+        models: vec![jcode_base::config::NamedProviderModelConfig {
+            id: "gpt-5.3-codex".to_string(),
+            reasoning: Some(false),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    profile.model_catalog = false;
+    let provider =
+        OpenRouterProvider::new_named_openai_compatible("custom", &profile).expect("provider");
+
+    assert!(
+        !provider.supports_openai_reasoning_effort(),
+        "reasoning=false should force-disable OpenAI reasoning even on a GPT-family model"
+    );
+    assert!(
+        !provider.supports_any_reasoning_effort(),
+        "reasoning=false should make supports_any_reasoning_effort false"
+    );
+}
+
+/// Regression for the core bug: a GPT-family model with `reasoning: true` on a
+/// generic OpenAI-compatible profile must use the OpenAI effort ladder, not the
+/// DeepSeek ladder. Before the fix, `supports_deepseek_reasoning_effort`
+/// returned `true` first (because the per-model override was checked there
+/// before `supports_openai_reasoning_effort`), so the picker showed the
+/// DeepSeek ladder (no `minimal`/`xhigh`) and the request body used the
+/// DeepSeek `reasoning_effort` wire format.
+#[test]
+fn named_provider_per_model_reasoning_true_on_gpt_model_uses_openai_ladder() {
+    let _lock = ENV_LOCK.lock();
+    let _namespace = EnvVarGuard::remove("JCODE_OPENROUTER_CACHE_NAMESPACE");
+    let mut profile = jcode_base::config::NamedProviderConfig {
+        base_url: "http://localhost:8080/v1".to_string(),
+        auth: jcode_base::config::NamedProviderAuth::None,
+        default_model: Some("gpt-5.3-codex".to_string()),
+        models: vec![jcode_base::config::NamedProviderModelConfig {
+            id: "gpt-5.3-codex".to_string(),
+            reasoning: Some(true),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    profile.model_catalog = false;
+    let provider =
+        OpenRouterProvider::new_named_openai_compatible("custom", &profile).expect("provider");
+
+    let efforts = provider.available_efforts();
+    assert!(
+        efforts.contains(&"minimal"),
+        "GPT-family model with reasoning=true must use OpenAI ladder (has minimal); got: {efforts:?}"
+    );
+    assert!(
+        efforts.contains(&"xhigh"),
+        "GPT-family model with reasoning=true must use OpenAI ladder (has xhigh); got: {efforts:?}"
+    );
+    assert!(
+        provider.supports_openai_reasoning_effort(),
+        "GPT-family model with reasoning=true should support OpenAI reasoning effort"
+    );
+    assert!(
+        !provider.supports_deepseek_reasoning_effort(),
+        "GPT-family model with reasoning=true must NOT use DeepSeek reasoning effort"
+    );
+}
+
+/// A DeepSeek-family model with `reasoning: true` must get the DeepSeek ladder
+/// (which has `max` but not `minimal`/`xhigh`), not the OpenAI ladder.
+#[test]
+fn named_provider_per_model_reasoning_true_on_deepseek_model_uses_deepseek_ladder() {
+    let _lock = ENV_LOCK.lock();
+    let _namespace = EnvVarGuard::remove("JCODE_OPENROUTER_CACHE_NAMESPACE");
+    let mut profile = jcode_base::config::NamedProviderConfig {
+        base_url: "http://localhost:8080/v1".to_string(),
+        auth: jcode_base::config::NamedProviderAuth::None,
+        default_model: Some("deepseek-chat".to_string()),
+        models: vec![jcode_base::config::NamedProviderModelConfig {
+            id: "deepseek-chat".to_string(),
+            reasoning: Some(true),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    profile.model_catalog = false;
+    let provider =
+        OpenRouterProvider::new_named_openai_compatible("custom", &profile).expect("provider");
+
+    let efforts = provider.available_efforts();
+    assert!(
+        efforts.contains(&"max"),
+        "DeepSeek model with reasoning=true must use DeepSeek ladder (has max); got: {efforts:?}"
+    );
+    assert!(
+        !efforts.contains(&"minimal"),
+        "DeepSeek ladder should not have minimal; got: {efforts:?}"
+    );
+    assert!(
+        !efforts.contains(&"xhigh"),
+        "DeepSeek ladder should not have xhigh; got: {efforts:?}"
+    );
+    assert!(
+        provider.supports_deepseek_reasoning_effort(),
+        "DeepSeek model with reasoning=true should support DeepSeek reasoning effort"
+    );
+    assert!(
+        !provider.supports_openai_reasoning_effort(),
+        "DeepSeek model with reasoning=true must NOT use OpenAI reasoning effort"
+    );
+}
+
+/// `reasoning: true` on a generic (non-DeepSeek, non-GPT) model must enable the
+/// OpenAI `reasoning_effort` ladder. This is the common custom-provider case:
+/// the user points at an OpenAI-compatible gateway with a model id that does
+/// not match auto-detection and explicitly declares `reasoning: true`.
+#[test]
+fn named_provider_per_model_reasoning_true_sends_effort_in_request_body() {
+    let _lock = ENV_LOCK.lock();
+    let _namespace = EnvVarGuard::remove("JCODE_OPENROUTER_CACHE_NAMESPACE");
+    let (api_base, request_rx) = spawn_single_response_chat_server();
+    let mut profile = jcode_base::config::NamedProviderConfig {
+        base_url: api_base,
+        auth: jcode_base::config::NamedProviderAuth::None,
+        default_model: Some("custom-gateway-model".to_string()),
+        models: vec![jcode_base::config::NamedProviderModelConfig {
+            id: "custom-gateway-model".to_string(),
+            reasoning: Some(true),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    profile.model_catalog = false;
+    let provider =
+        OpenRouterProvider::new_named_openai_compatible("custom", &profile).expect("provider");
+    provider
+        .set_reasoning_effort("high")
+        .expect("reasoning=true should make high effort accepted");
+
+    let messages = vec![Message {
+        role: Role::User,
+        content: vec![ContentBlock::Text {
+            text: "hello".to_string(),
+            cache_control: None,
+        }],
+        timestamp: None,
+        tool_duration_ms: None,
+    }];
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+    rt.block_on(async {
+        let stream = provider
+            .complete(&messages, &[], "", None)
+            .await
+            .expect("stream starts");
+        futures::pin_mut!(stream);
+        while let Some(event) = stream.next().await {
+            if event.is_err() {
+                break;
+            }
+        }
+    });
+
+    let request = request_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("capture request");
+    assert!(
+        request.contains(r#""reasoning_effort":"high""#),
+        "reasoning=true should cause reasoning_effort=high in request body; got: {request}"
+    );
+}
+
+/// `set_reasoning_effort` must accept the `minimal` rung (OpenAI-only) for a
+/// non-DeepSeek model with `reasoning: true`. Before the fix, the DeepSeek
+/// ladder (which lacks `minimal`) was used, so `set_reasoning_effort("minimal")`
+/// would bail.
+#[test]
+fn named_provider_per_model_reasoning_true_accepts_minimal_effort() {
+    let _lock = ENV_LOCK.lock();
+    let _namespace = EnvVarGuard::remove("JCODE_OPENROUTER_CACHE_NAMESPACE");
+    let mut profile = jcode_base::config::NamedProviderConfig {
+        base_url: "http://localhost:8080/v1".to_string(),
+        auth: jcode_base::config::NamedProviderAuth::None,
+        default_model: Some("custom-gateway-model".to_string()),
+        models: vec![jcode_base::config::NamedProviderModelConfig {
+            id: "custom-gateway-model".to_string(),
+            reasoning: Some(true),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    profile.model_catalog = false;
+    let provider =
+        OpenRouterProvider::new_named_openai_compatible("custom", &profile).expect("provider");
+    provider
+        .set_reasoning_effort("minimal")
+        .expect("minimal should be accepted on the OpenAI ladder for a non-DeepSeek model with reasoning=true");
+    assert_eq!(
+        provider.reasoning_effort().as_deref(),
+        Some("minimal"),
+        "reasoning_effort getter should return the accepted minimal effort"
+    );
+}
+
+/// Switching the active model via `set_model` must update the per-model effort
+/// detection. A profile with a reasoning model and a plain model: effort is
+/// available on the reasoning model, then disappears after switching to the
+/// plain model.
+#[test]
+fn named_provider_set_model_updates_per_model_effort_detection() {
+    let _lock = ENV_LOCK.lock();
+    let _namespace = EnvVarGuard::remove("JCODE_OPENROUTER_CACHE_NAMESPACE");
+    let mut profile = make_per_model_test_profile();
+    profile.model_catalog = false;
+    let provider =
+        OpenRouterProvider::new_named_openai_compatible("custom", &profile).expect("provider");
+
+    // raw-model-id has reasoning=true -> effort ladder available.
+    assert!(
+        provider.supports_any_reasoning_effort(),
+        "raw-model-id should have effort support via reasoning=true"
+    );
+
+    // Switch to plain-model which has no reasoning override.
+    provider.set_model("plain-model").expect("set_model");
+    assert!(
+        !provider.supports_any_reasoning_effort(),
+        "plain-model has no reasoning override and is not auto-detected; effort should be gone"
+    );
+    assert!(
+        provider.available_efforts().is_empty(),
+        "plain-model should have empty effort ladder after set_model"
+    );
+
+    // Switch back to the reasoning model -> effort returns.
+    provider
+        .set_model("raw-model-id")
+        .expect("set_model back to reasoning model");
+    assert!(
+        provider.supports_any_reasoning_effort(),
+        "switching back to reasoning model should re-enable effort"
+    );
+}
+
+/// A stored reasoning effort must be cleared when switching from a model that
+/// supports reasoning to one that does not. Otherwise the stale effort leaks
+/// into the next request as an unsupported value.
+#[test]
+fn named_provider_switching_to_non_reasoning_model_clears_stored_effort() {
+    let _lock = ENV_LOCK.lock();
+    let _namespace = EnvVarGuard::remove("JCODE_OPENROUTER_CACHE_NAMESPACE");
+    let mut profile = make_per_model_test_profile();
+    profile.model_catalog = false;
+    let provider =
+        OpenRouterProvider::new_named_openai_compatible("custom", &profile).expect("provider");
+
+    provider
+        .set_reasoning_effort("high")
+        .expect("set high on reasoning model");
+    assert_eq!(
+        provider.reasoning_effort().as_deref(),
+        Some("high"),
+        "effort should be stored before switching"
+    );
+
+    provider.set_model("plain-model").expect("set_model");
+    assert!(
+        provider.reasoning_effort().is_none(),
+        "stored effort should be cleared after switching to a non-reasoning model"
+    );
+}
+
+/// `set_reasoning_effort` must reject an effort rung that is valid on the OpenAI
+/// ladder but not on the DeepSeek ladder when the active model is DeepSeek with
+/// `reasoning: true`. This confirms the DeepSeek ladder is actually selected.
+#[test]
+fn named_provider_deepseek_with_reasoning_true_rejects_minimal_effort() {
+    let _lock = ENV_LOCK.lock();
+    let _namespace = EnvVarGuard::remove("JCODE_OPENROUTER_CACHE_NAMESPACE");
+    let mut profile = jcode_base::config::NamedProviderConfig {
+        base_url: "http://localhost:8080/v1".to_string(),
+        auth: jcode_base::config::NamedProviderAuth::None,
+        default_model: Some("deepseek-chat".to_string()),
+        models: vec![jcode_base::config::NamedProviderModelConfig {
+            id: "deepseek-chat".to_string(),
+            reasoning: Some(true),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    profile.model_catalog = false;
+    let provider =
+        OpenRouterProvider::new_named_openai_compatible("custom", &profile).expect("provider");
+
+    let result = provider.set_reasoning_effort("minimal");
+    assert!(
+        result.is_err(),
+        "minimal is not on the DeepSeek ladder; set_reasoning_effort should reject it; got: {result:?}"
+    );
+}
+
+/// The per-model `reasoning: true` override must cause the configured
+/// `openai_reasoning_effort` to be loaded at construction time even when the
+/// provider-level `supports_reasoning_effort` is unset. Without the fix,
+/// `initial_reasoning_effort` only checked the provider-level flag and ignored
+/// the per-model override, so the user's configured default effort was lost.
+#[test]
+fn named_provider_per_model_reasoning_loads_initial_effort_from_config() {
+    let _lock = ENV_LOCK.lock();
+    let _effort = EnvVarGuard::set("JCODE_OPENAI_REASONING_EFFORT", "high");
+    let _namespace = EnvVarGuard::remove("JCODE_OPENROUTER_CACHE_NAMESPACE");
+    jcode_base::config::invalidate_config_cache();
+
+    let mut profile = jcode_base::config::NamedProviderConfig {
+        base_url: "http://localhost:8080/v1".to_string(),
+        auth: jcode_base::config::NamedProviderAuth::None,
+        default_model: Some("custom-model".to_string()),
+        models: vec![jcode_base::config::NamedProviderModelConfig {
+            id: "custom-model".to_string(),
+            reasoning: Some(true),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    profile.model_catalog = false;
+    let provider =
+        OpenRouterProvider::new_named_openai_compatible("custom", &profile).expect("provider");
+
+    assert_eq!(
+        provider.reasoning_effort().as_deref(),
+        Some("high"),
+        "per-model reasoning=true should load configured openai_reasoning_effort at startup"
+    );
+
+    jcode_base::config::invalidate_config_cache();
+}
+
+/// When the per-model override enables reasoning on a non-DeepSeek model, the
+/// initial effort must be normalized with the OpenAI ladder so OpenAI-only
+/// rungs like `minimal` survive. Before the fix, `initial_reasoning_effort`
+/// always used the DeepSeek normalizer, which rejects `minimal`.
+#[test]
+fn named_provider_per_model_reasoning_loads_minimal_initial_effort() {
+    let _lock = ENV_LOCK.lock();
+    let _effort = EnvVarGuard::set("JCODE_OPENAI_REASONING_EFFORT", "minimal");
+    let _namespace = EnvVarGuard::remove("JCODE_OPENROUTER_CACHE_NAMESPACE");
+    jcode_base::config::invalidate_config_cache();
+
+    let mut profile = jcode_base::config::NamedProviderConfig {
+        base_url: "http://localhost:8080/v1".to_string(),
+        auth: jcode_base::config::NamedProviderAuth::None,
+        default_model: Some("custom-model".to_string()),
+        models: vec![jcode_base::config::NamedProviderModelConfig {
+            id: "custom-model".to_string(),
+            reasoning: Some(true),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    profile.model_catalog = false;
+    let provider =
+        OpenRouterProvider::new_named_openai_compatible("custom", &profile).expect("provider");
+
+    assert_eq!(
+        provider.reasoning_effort().as_deref(),
+        Some("minimal"),
+        "minimal must survive normalization with the OpenAI ladder for a non-DeepSeek model with reasoning=true"
+    );
+
+    jcode_base::config::invalidate_config_cache();
+}
+
+/// When the per-model override enables reasoning on a DeepSeek model, the
+/// initial effort must be normalized with the DeepSeek ladder so DeepSeek-only
+/// rungs like `max` survive and OpenAI-only rungs like `minimal` are rejected.
+#[test]
+fn named_provider_per_model_reasoning_deepseek_normalizes_with_deepseek_ladder() {
+    let _lock = ENV_LOCK.lock();
+    let _effort = EnvVarGuard::set("JCODE_OPENAI_REASONING_EFFORT", "max");
+    let _namespace = EnvVarGuard::remove("JCODE_OPENROUTER_CACHE_NAMESPACE");
+    jcode_base::config::invalidate_config_cache();
+
+    let mut profile = jcode_base::config::NamedProviderConfig {
+        base_url: "http://localhost:8080/v1".to_string(),
+        auth: jcode_base::config::NamedProviderAuth::None,
+        default_model: Some("deepseek-chat".to_string()),
+        models: vec![jcode_base::config::NamedProviderModelConfig {
+            id: "deepseek-chat".to_string(),
+            reasoning: Some(true),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    profile.model_catalog = false;
+    let provider =
+        OpenRouterProvider::new_named_openai_compatible("custom", &profile).expect("provider");
+
+    assert_eq!(
+        provider.reasoning_effort().as_deref(),
+        Some("max"),
+        "max must survive normalization with the DeepSeek ladder for a DeepSeek model with reasoning=true"
+    );
+
+    jcode_base::config::invalidate_config_cache();
+}
+
+/// `reasoning: false` per-model must prevent loading the initial effort even
+/// when `openai_reasoning_effort` is configured and the model would otherwise
+/// auto-detect as a reasoning model (e.g. DeepSeek-family).
+#[test]
+fn named_provider_per_model_reasoning_false_blocks_initial_effort() {
+    let _lock = ENV_LOCK.lock();
+    let _effort = EnvVarGuard::set("JCODE_OPENAI_REASONING_EFFORT", "high");
+    let _namespace = EnvVarGuard::remove("JCODE_OPENROUTER_CACHE_NAMESPACE");
+    jcode_base::config::invalidate_config_cache();
+
+    let mut profile = jcode_base::config::NamedProviderConfig {
+        base_url: "http://localhost:8080/v1".to_string(),
+        auth: jcode_base::config::NamedProviderAuth::None,
+        default_model: Some("deepseek-chat".to_string()),
+        models: vec![jcode_base::config::NamedProviderModelConfig {
+            id: "deepseek-chat".to_string(),
+            reasoning: Some(false),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    profile.model_catalog = false;
+    let provider =
+        OpenRouterProvider::new_named_openai_compatible("custom", &profile).expect("provider");
+
+    assert!(
+        provider.reasoning_effort().is_none(),
+        "reasoning=false should block initial effort even with openai_reasoning_effort configured"
+    );
+    assert!(
+        !provider.supports_any_reasoning_effort(),
+        "reasoning=false should disable effort support entirely"
+    );
+
+    jcode_base::config::invalidate_config_cache();
+}
+
+/// Switching models via the display-name alias must update the per-model effort
+/// detection, the same as switching by raw id. The picker sends display names
+/// back through `set_model`, so `resolve_display_name_to_id` + `model_key`
+/// update must work together to pick up the new model's reasoning override.
+#[test]
+fn named_provider_set_model_via_display_name_updates_effort_detection() {
+    let _lock = ENV_LOCK.lock();
+    let _namespace = EnvVarGuard::remove("JCODE_OPENROUTER_CACHE_NAMESPACE");
+    let mut profile = make_per_model_test_profile();
+    profile.model_catalog = false;
+    let provider =
+        OpenRouterProvider::new_named_openai_compatible("custom", &profile).expect("provider");
+
+    // raw-model-id (alias "Friendly Name") has reasoning=true.
+    assert!(
+        provider.supports_any_reasoning_effort(),
+        "initial model should have effort support via reasoning=true"
+    );
+
+    // Switch to plain-model via its raw id (no display name configured).
+    provider.set_model("plain-model").expect("set_model");
+    assert!(
+        !provider.supports_any_reasoning_effort(),
+        "plain-model should have no effort after switching by raw id"
+    );
+
+    // Switch back via the display-name alias, not the raw id. This must still
+    // update model_key and re-enable effort detection.
+    provider
+        .set_model("Friendly Name")
+        .expect("set_model via display name");
+    assert_eq!(
+        provider.model(),
+        "raw-model-id",
+        "display name should resolve to raw id"
+    );
+    assert!(
+        provider.supports_any_reasoning_effort(),
+        "switching back via display name should re-enable effort detection"
+    );
+}
+
+/// Switching from an OpenAI-ladder model to a DeepSeek-ladder model must clear
+/// a stored OpenAI-only effort (e.g. `minimal`) since it is not on the DeepSeek
+/// ladder. The stored-effort cleanup in `set_model` uses `available_efforts()`
+/// after the model_key is updated, so the new ladder determines validity.
+#[test]
+fn named_provider_switching_to_deepseek_clears_openai_only_effort() {
+    let _lock = ENV_LOCK.lock();
+    let _namespace = EnvVarGuard::remove("JCODE_OPENROUTER_CACHE_NAMESPACE");
+    let mut profile = jcode_base::config::NamedProviderConfig {
+        base_url: "http://localhost:8080/v1".to_string(),
+        auth: jcode_base::config::NamedProviderAuth::None,
+        default_model: Some("gpt-5.3-codex".to_string()),
+        models: vec![
+            jcode_base::config::NamedProviderModelConfig {
+                id: "gpt-5.3-codex".to_string(),
+                reasoning: Some(true),
+                ..Default::default()
+            },
+            jcode_base::config::NamedProviderModelConfig {
+                id: "deepseek-chat".to_string(),
+                reasoning: Some(true),
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    };
+    profile.model_catalog = false;
+    let provider =
+        OpenRouterProvider::new_named_openai_compatible("custom", &profile).expect("provider");
+
+    // Set minimal, which is valid on the OpenAI ladder.
+    provider
+        .set_reasoning_effort("minimal")
+        .expect("minimal is valid for GPT model with OpenAI ladder");
+    assert_eq!(
+        provider.reasoning_effort().as_deref(),
+        Some("minimal"),
+        "minimal should be stored"
+    );
+
+    // Switch to deepseek-chat which has the DeepSeek ladder (no minimal).
+    provider.set_model("deepseek-chat").expect("set_model");
+
+    // The stored minimal must be cleared because it is not on the DeepSeek ladder.
+    assert!(
+        provider.reasoning_effort().is_none(),
+        "minimal should be cleared after switching to a DeepSeek model that lacks it"
+    );
+    assert!(
+        provider.supports_deepseek_reasoning_effort(),
+        "deepseek model should use DeepSeek reasoning effort"
+    );
+    assert!(
+        !provider.available_efforts().contains(&"minimal"),
+        "DeepSeek ladder should not have minimal"
+    );
+}
+
+/// Regression test: Mistral accepts the top-level `reasoning_effort` field for
+/// `mistral-small-*` models. The `strict_openai_schema_endpoint` check (which
+/// blocks `reasoning_content` and `thinking`) must NOT block
+/// `reasoning_effort`. A previous attempt wrongly suppressed it for all
+/// Mistral models, breaking the feature. This test verifies that
+/// `reasoning_effort` is present in the request body when a user sets
+/// `reasoning: true` on a `mistral-small-latest` model on a Mistral-profiled
+/// provider (issue #708).
+#[test]
+fn named_provider_mistral_small_with_reasoning_sends_reasoning_effort() {
+    let _lock = ENV_LOCK.lock();
+    let _namespace = EnvVarGuard::remove("JCODE_OPENROUTER_CACHE_NAMESPACE");
+    let (api_base, request_rx) = spawn_single_response_chat_server();
+    let mut profile = jcode_base::config::NamedProviderConfig {
+        base_url: api_base,
+        auth: jcode_base::config::NamedProviderAuth::None,
+        default_model: Some("mistral-small-latest".to_string()),
+        models: vec![jcode_base::config::NamedProviderModelConfig {
+            id: "mistral-small-latest".to_string(),
+            reasoning: Some(true),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    profile.model_catalog = false;
+    // Profile name "mistral" triggers strict_openai_schema_endpoint, which
+    // blocks reasoning_content and thinking but must NOT block reasoning_effort.
+    let provider =
+        OpenRouterProvider::new_named_openai_compatible("mistral", &profile).expect("provider");
+    provider
+        .set_reasoning_effort("high")
+        .expect("reasoning=true should accept high effort");
+
+    // Verify the effort ladder is available despite strict_openai_schema.
+    assert!(
+        provider.supports_openai_reasoning_effort(),
+        "per-model reasoning=true should enable the OpenAI effort ladder for mistral-small"
+    );
+    assert!(
+        provider.reasoning_effort().is_some(),
+        "effort should be stored internally"
+    );
+
+    let messages = vec![Message {
+        role: Role::User,
+        content: vec![ContentBlock::Text {
+            text: "hello".to_string(),
+            cache_control: None,
+        }],
+        timestamp: None,
+        tool_duration_ms: None,
+    }];
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+    rt.block_on(async {
+        let stream = provider
+            .complete(&messages, &[], "", None)
+            .await
+            .expect("stream starts");
+        futures::pin_mut!(stream);
+        while let Some(event) = stream.next().await {
+            if event.is_err() {
+                break;
+            }
+        }
+    });
+
+    let request = request_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("capture request");
+    assert!(
+        request.contains(r#""reasoning_effort":"high""#),
+        "Mistral with reasoning=true must receive reasoning_effort=high in the request body; got: {request}"
+    );
+    assert!(
+        !request.contains(r#""thinking""#),
+        "Mistral strict-schema endpoint must NOT receive the thinking field; got: {request}"
     );
 }
