@@ -306,6 +306,30 @@ impl App {
         }
     }
 
+    /// Refresh the cached `mcp_server_names` from the live manager so the
+    /// info widget reflects the current connected-server set and tool counts.
+    /// Call after a toggle/connect/disconnect so the UI updates immediately.
+    pub async fn refresh_mcp_server_names(&mut self) {
+        let manager = self.mcp_manager.read().await;
+        let servers = manager.connected_servers().await;
+        let all_tools = manager.all_tools().await;
+        self.mcp_server_names = servers
+            .into_iter()
+            .map(|name| {
+                let count = all_tools.iter().filter(|(s, _)| s == &name).count();
+                (name, count)
+            })
+            .collect();
+        drop(manager);
+        self.mcp_config = crate::mcp::McpConfig::load_for_dir(
+            self.session
+                .working_dir
+                .as_deref()
+                .map(std::path::Path::new),
+        );
+        self.command_suggestions_cache.replace(None);
+    }
+
     /// Restore a previous session (for hot-reload)
     pub fn restore_session(&mut self, session_id: &str) {
         if let Some(restored) = Self::restore_input_for_reload(session_id) {

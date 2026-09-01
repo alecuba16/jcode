@@ -588,6 +588,18 @@ Example MCP config:
 ```
 
 Each request to an MCP server (`tools/call`, `tools/list`, `initialize`) times out after 30 seconds by default. Set `timeout_secs` on a server whose tools legitimately run longer.
+=======
+#### Toggling MCP servers (`/mcp` command)
+
+You can enable or disable individual MCP servers at runtime without editing JSON by hand. Use the `/mcp` slash command in the TUI:
+
+| Command | Action |
+|---------|--------|
+| `/mcp status` | Show connected servers and their tool counts |
+| `/mcp enable <name>` | Connect a server and inject its tools into the prompt |
+| `/mcp disable <name>` | Disconnect a server and remove its tools |
+
+Disabled servers stay in config (they are skipped during auto-connect) and can be re-enabled later. The toggle persists to `~/.jcode/mcp.json` via the `"disabled"` flag (Claude Code style), so it survives restarts. The same actions are available to the agent via the MCP management tool (`action: "enable"` / `"disable"`).
 
 For headless or SSH sessions, OAuth-style providers support `jcode login --provider <provider> --no-browser` (alias: `--headless`) so jcode prints the auth URL/QR and falls back to manual code or callback paste instead of trying to launch a local browser.
 
