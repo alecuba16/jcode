@@ -621,6 +621,8 @@ pub struct InfoWidgetData {
     pub swarm_info: Option<SwarmInfo>,
     /// Background tasks status
     pub background_info: Option<BackgroundInfo>,
+    /// Connected MCP servers with their tool counts.
+    pub mcp_servers: Vec<(String, usize)>,
     /// Subscription usage info
     pub usage_info: Option<UsageInfo>,
     /// Show consumed rather than remaining percentages in usage limits.
@@ -678,6 +680,7 @@ impl InfoWidgetData {
             && self.memory_info.is_none()
             && self.swarm_info.is_none()
             && self.background_info.is_none()
+            && self.mcp_servers.is_empty()
             && self.diagrams.is_empty()
             && self.workspace_rows.is_empty()
     }
@@ -713,6 +716,9 @@ impl InfoWidgetData {
                     .map(|b| b.running_count > 0)
                     .unwrap_or(false)
                 {
+                    sections += 1;
+                }
+                if !self.mcp_servers.is_empty() {
                     sections += 1;
                 }
                 if self.queue_mode.is_some() {
@@ -2078,6 +2084,10 @@ fn render_sections(
         lines.extend(render_background_compact(info));
     }
 
+    if !data.mcp_servers.is_empty() {
+        lines.extend(render_mcp_servers_line(&data.mcp_servers, inner.width));
+    }
+
     // Usage info (subscription limits)
     if let Some(info) = &data.usage_info
         && info.available
@@ -2100,6 +2110,63 @@ fn render_sections(
         lines.extend(render_git_compact(info, inner.width));
     }
 
+    lines
+}
+
+fn render_mcp_servers_line(servers: &[(String, usize)], width: u16) -> Vec<Line<'static>> {
+    let w = width as usize;
+    let full_parts: Vec<String> = servers
+        .iter()
+        .map(|(name, count)| {
+            if *count > 0 {
+                format!("{} ({} tools)", name, count)
+            } else {
+                format!("{} (...)", name)
+            }
+        })
+        .collect();
+    let full = format!("mcp: {}", full_parts.join(", "));
+    if full.chars().count() <= w {
+        return vec![Line::from(Span::styled(
+            full,
+            Style::default().fg(rgb(100, 180, 220)),
+        ))];
+    }
+    // Try compact single line
+    let short_parts: Vec<String> = servers
+        .iter()
+        .map(|(name, count)| {
+            if *count > 0 {
+                format!("{}({})", name, count)
+            } else {
+                format!("{}(…)", name)
+            }
+        })
+        .collect();
+    let short = format!("mcp: {}", short_parts.join(" "));
+    if short.chars().count() <= w {
+        return vec![Line::from(Span::styled(
+            short,
+            Style::default().fg(rgb(100, 180, 220)),
+        ))];
+    }
+    // Multi-line: header + one server per line
+    let mut lines = vec![Line::from(Span::styled(
+        format!("mcp: {} servers", servers.len()),
+        Style::default().fg(rgb(100, 180, 220)),
+    ))];
+    for (name, count) in servers {
+        let entry = if *count > 0 {
+            format!("  {} ({} tools)", name, count)
+        } else {
+            format!("  {} (...)", name)
+        };
+        let entry = truncate_smart(&entry, w);
+        lines.push(Line::from(Span::styled(
+            entry,
+            Style::default().fg(rgb(100, 180, 220)),
+        )));
+    }
     lines
 }
 

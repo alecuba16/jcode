@@ -349,6 +349,19 @@ impl McpManager {
             .collect()
     }
 
+    /// Get available tools from one connected server.
+    pub async fn tools_for_server(&self, server_name: &str) -> Vec<McpToolDef> {
+        if let Some(handle) = self.pool_handles.read().await.get(server_name) {
+            return handle.tools();
+        }
+
+        if let Some(client) = self.owned_clients.read().await.get(server_name) {
+            return client.tools();
+        }
+
+        Vec::new()
+    }
+
     /// Call a tool on a specific server.
     ///
     /// Connect-on-first-call: if the server is configured but not yet connected
@@ -462,6 +475,14 @@ impl McpManager {
 
         // Reconnect everything
         self.connect_all().await
+    }
+
+    /// Reload only the in-memory config from disk without disconnecting
+    /// or reconnecting any servers. Use after a config file change (e.g.
+    /// enabling/disabling a server via the management tool) so the cached
+    /// config stays consistent with what was written.
+    pub fn reload_config(&mut self) {
+        self.config = McpConfig::load_for_dir(self.project_dir.as_deref());
     }
 
     /// Get config
@@ -678,6 +699,61 @@ mod tests {
         assert!(
             started.elapsed() < Duration::from_secs(35),
             "connect-on-first-call must be bounded"
+        );
+    }
+
+    /// `reload_config` re-reads the on-disk MCP config and replaces the
+    /// in-memory copy, so an edit made after construction becomes visible
+    /// without a reconnect. Mirrors the `issue_790` hermetic setup: an empty
+    /// `JCODE_HOME` plus a project-local `.mcp.json` so only the file under
+    /// test contributes to the loaded config.
+    #[test]
+    fn reload_config_refreshes_in_memory_config_from_disk() {
+        let _guard = crate::storage::lock_test_env();
+        let original_cwd = std::env::current_dir().expect("current cwd");
+        let previous_home = std::env::var_os("JCODE_HOME");
+        let home = tempfile::tempdir().expect("home tempdir");
+        let project = tempfile::tempdir().expect("project tempdir");
+        // Isolate global config: empty JCODE_HOME so only the project-local
+        // file we write below contributes to the loaded config.
+        crate::env::set_var("JCODE_HOME", home.path());
+
+        std::fs::write(
+            project.path().join(".mcp.json"),
+            r#"{"mcpServers":{"rlcfg_before":{"command":"before-bin"}}}"#,
+        )
+        .expect("write initial project config");
+
+        std::env::set_current_dir(project.path()).expect("set project cwd");
+        let mut manager = McpManager::new();
+        assert!(
+            manager.config().servers.contains_key("rlcfg_before"),
+            "initial config should reflect the on-disk project config"
+        );
+
+        // Rewrite the project-local config on disk (different server).
+        std::fs::write(
+            project.path().join(".mcp.json"),
+            r#"{"mcpServers":{"rlcfg_after":{"command":"after-bin"}}}"#,
+        )
+        .expect("write updated project config");
+
+        manager.reload_config();
+
+        std::env::set_current_dir(original_cwd).expect("restore cwd");
+        if let Some(previous_home) = previous_home {
+            crate::env::set_var("JCODE_HOME", previous_home);
+        } else {
+            crate::env::remove_var("JCODE_HOME");
+        }
+
+        assert!(
+            !manager.config().servers.contains_key("rlcfg_before"),
+            "stale server should be gone after reload_config"
+        );
+        assert!(
+            manager.config().servers.contains_key("rlcfg_after"),
+            "new server should appear after reload_config"
         );
     }
 }
