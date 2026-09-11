@@ -102,7 +102,7 @@ impl Config {
 - Review: {}
 - Judge: {}
 - Memory: {}
-- Memory sidecar: {}
+- Memory sidecar: {} (backend: {}, fallback: {})
 - Ambient: {}
 
 **Gateway:**
@@ -296,6 +296,15 @@ impl Config {
                 .memory_model
                 .as_deref()
                 .unwrap_or("(sidecar auto-select)"),
+            self.agents
+                .memory_sidecar_backend
+                .as_deref()
+                .unwrap_or("auto"),
+            if self.agents.memory_sidecar_fallback.trim().is_empty() {
+                "openai_claude"
+            } else {
+                self.agents.memory_sidecar_fallback.trim()
+            },
             if self.agents.memory_sidecar_enabled {
                 "enabled"
             } else {
