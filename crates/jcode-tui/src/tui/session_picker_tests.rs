@@ -1425,8 +1425,15 @@ fn onboarding_banner_renders_prompt_and_both_action_rows() {
         review_x < 50,
         "suggested prompt should span the visual center: {lines:#?}"
     );
+    // The label is right-aligned inside the banner's inner area. Commit
+    // e90512dd6 lengthened the label from "Start a new session" (23 cols,
+    // start_x == 95) to "Start in the current directory" (34 cols,
+    // start_x == 84), so pin the right edge instead of the left column.
+    // Action-line chrome is " ◖ <34-col label> ◗ ", i.e. 38 visible columns.
+    let action_end_x = start_x + 38;
     assert!(
-        start_y >= buffer.area.height as usize - 3 && start_x >= 95,
+        start_y >= buffer.area.height as usize - 3
+            && action_end_x >= buffer.area.width as usize - 4,
         "blank-session action should stay secondary in the bottom-right: {lines:#?}"
     );
 }
