@@ -103,7 +103,7 @@ impl Config {
 - Review: {}
 - Judge: {}
 - Memory recall: Jev ({})
-- Memory extraction sidecar: {}
+- Memory extraction sidecar: {} (backend: {}, fallback: {})
 - Ambient: {}
 
 **Gateway:**
@@ -299,6 +299,15 @@ impl Config {
                 "enabled"
             } else {
                 "disabled"
+            },
+            self.agents
+                .memory_sidecar_backend
+                .as_deref()
+                .unwrap_or("auto"),
+            if self.agents.memory_sidecar_fallback.trim().is_empty() {
+                "openai_claude"
+            } else {
+                self.agents.memory_sidecar_fallback.trim()
             },
             self.ambient
                 .model
