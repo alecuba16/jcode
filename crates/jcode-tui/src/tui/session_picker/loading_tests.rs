@@ -1145,6 +1145,15 @@ fn benchmark_resume_loading_reports_timings() {
         session.save().expect("save benchmark session");
     }
 
+    // Parallel UI tests can leave a session-list cache entry for this same
+    // tempdir: `/sessions` overlay tests spawn a detached
+    // `load_sessions_grouped` that reads whatever JCODE_HOME is set to at the
+    // moment it runs, so while this test is still saving its 120 sessions a
+    // racing background load can cache a partial directory snapshot. Drop any
+    // such entry before the timed measurement so this benchmark always times a
+    // fresh load (and cannot observe a poisoned partial snapshot).
+    invalidate_session_list_cache();
+
     let load_start = std::time::Instant::now();
     let sessions = load_sessions().expect("load sessions");
     let load_elapsed = load_start.elapsed();
