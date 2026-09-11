@@ -219,7 +219,7 @@ impl App {
             .filter(|e| e.active)
             .map(|e| e.content)
             .collect();
-        let sidecar = crate::sidecar::Sidecar::new();
+        let sidecar = crate::memory::sidecar_for_memory(None);
         match sidecar
             .extract_memories_with_existing(&transcript, &existing)
             .await
