@@ -3818,3 +3818,79 @@ fn non_image_requests_get_no_modality_retry() {
         );
     });
 }
+
+/// The modality replay must not consume a user-visible retry attempt: with
+/// `max_retries = 1` the first (and only) attempt is rejected for the image
+/// modality, the replayed request must still run, stream its answer, and not
+/// end the stream silently (regression: a `continue` on the outer loop used to
+/// exit with no error and no output when `max_retries == 1`).
+#[test]
+fn image_modality_retry_survives_max_retries_one() {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+
+    rt.block_on(async {
+        let (api_base, rx_first, rx_retry) = spawn_image_rejecting_then_clean_server();
+        let client = reqwest::Client::new();
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<anyhow::Result<StreamEvent>>(64);
+
+        let request = serde_json::json!({
+            "model": "text-only-test-model",
+            "stream": true,
+            "messages": [
+                {"role": "user", "content": [
+                    {"type": "text", "text": "describe red.png"},
+                    {"type": "image_url", "image_url": {"url": "data:image/png;base64,aVZC"}}
+                ]}
+            ]
+        });
+
+        let _env_guard = ENV_LOCK.lock();
+        let _max_retries_guard = EnvVarGuard::set("JCODE_MAX_RETRIES", "1");
+        super::openrouter_sse_stream::run_stream_with_retries(
+            client,
+            api_base,
+            ProviderAuth::None {
+                label: "test".to_string(),
+            },
+            false,
+            new_conversation_id(),
+            request,
+            tx,
+            Arc::new(Mutex::new(None)),
+            "text-only-test-model".to_string(),
+        )
+        .await;
+        drop(_max_retries_guard);
+        drop(_env_guard);
+
+        let mut final_text = String::new();
+        let mut stream_ended_without_output = true;
+        while let Some(item) = rx.recv().await {
+            match item {
+                Ok(StreamEvent::TextDelta(text)) => {
+                    stream_ended_without_output = false;
+                    final_text.push_str(&text);
+                }
+                Err(_) => stream_ended_without_output = false,
+                _ => {}
+            }
+        }
+        assert!(
+            !stream_ended_without_output,
+            "with max_retries=1 the modality replay must still stream an answer, not end silently"
+        );
+        assert_eq!(final_text, "described marker only");
+
+        let retry = rx_retry
+            .recv_timeout(Duration::from_secs(5))
+            .expect("retry request captured even with max_retries=1");
+        assert!(
+            !retry.contains(r#""type":"image_url""#),
+            "replayed request must carry the text marker, not pixels: {retry}"
+        );
+        let _ = rx_first;
+    });
+}
