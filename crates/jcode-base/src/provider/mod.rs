@@ -14,6 +14,7 @@ pub mod external;
 mod failover;
 mod fingerprint;
 pub mod gemini;
+mod image_capability;
 mod image_clamp;
 pub mod jcode;
 pub mod models;
@@ -91,6 +92,16 @@ pub(crate) use routing::{
 /// [`Provider::complete_simple`] path. `Server::new` registers the active
 /// provider here at startup.
 static ACTIVE_PROVIDER: RwLock<Option<Arc<dyn Provider>>> = RwLock::new(None);
+
+/// Whether any message in the request carries an image block. Cheap pre-scan
+/// for the modality-rejection retry path so non-image requests never pay for
+/// the capability bookkeeping.
+fn messages_contain_images(messages: &[Message]) -> bool {
+    messages
+        .iter()
+        .flat_map(|message| message.content.iter())
+        .any(|block| matches!(block, crate::message::ContentBlock::Image { .. }))
+}
 
 /// Register the live agent provider so background helpers (memory sidecar) can
 /// reach whatever provider the user is actually running on. Safe to call more
@@ -638,6 +649,17 @@ impl MultiProvider {
         let (estimated_input_chars, estimated_input_tokens) =
             Self::estimate_request_input(messages, tools, mode);
 
+        // A recorded runtime rejection (this endpoint/model rejected image
+        // input earlier, see `image_capability`) is authoritative over the
+        // static capability answer, so a failed request can be replayed once
+        // with every image block replaced by a text marker instead of
+        // repeating the doomed request.
+        let mut retry_with_images_filtered = false;
+        let mut messages: &[Message] = messages;
+        // Owns the filtered copy for the retry attempt; kept alive until the
+        // function returns so `messages` can borrow it.
+        let mut filtered_retry_messages: Option<Vec<Message>> = None;
+
         for candidate in sequence {
             let label = Self::provider_label(candidate);
             let key = Self::provider_key(candidate);
@@ -699,7 +721,13 @@ impl MultiProvider {
                 continue;
             }
 
-            let attempt = match mode {
+            // One modality-retry per candidate: if the request carried image
+            // blocks and the endpoint answered "this model cannot accept
+            // images", replay the SAME candidate once with the images replaced
+            // by text markers. `continue` on the outer loop would silently
+            // fail over to a different provider, which is not the intent: the
+            // endpoint is healthy, only the image modality is unsupported.
+            let mut attempt = match mode {
                 CompletionMode::Unified { system } => {
                     self.complete_on_provider(candidate, messages, tools, system, resume_session_id)
                         .await
@@ -719,6 +747,56 @@ impl MultiProvider {
                     .await
                 }
             };
+
+            if let Err(err) = &attempt
+                && !retry_with_images_filtered
+                && messages_contain_images(messages)
+                && image_capability::error_indicates_image_rejection(&err.to_string())
+            {
+                image_capability::record_image_input_rejection(
+                    key,
+                    &self.candidate_model(candidate),
+                    &err.to_string(),
+                );
+                crate::logging::warn(&format!(
+                    "Provider {} rejected image input for this model; \
+                     retrying once with images replaced by text markers",
+                    label
+                ));
+                if let Some(filtered) =
+                    image_clamp::filter_unsupported_outbound_images(messages, false)
+                {
+                    retry_with_images_filtered = true;
+                    filtered_retry_messages = Some(filtered);
+                    messages = filtered_retry_messages.as_deref().expect("just assigned");
+                    attempt = match mode {
+                        CompletionMode::Unified { system } => {
+                            self.complete_on_provider(
+                                candidate,
+                                messages,
+                                tools,
+                                system,
+                                resume_session_id,
+                            )
+                            .await
+                        }
+                        CompletionMode::Split {
+                            system_static,
+                            system_dynamic,
+                        } => {
+                            self.complete_split_on_provider(
+                                candidate,
+                                messages,
+                                tools,
+                                system_static,
+                                system_dynamic,
+                                resume_session_id,
+                            )
+                            .await
+                        }
+                    };
+                }
+            }
 
             match attempt {
                 Ok(stream) => {
@@ -748,6 +826,7 @@ impl MultiProvider {
                     let summary =
                         maybe_annotate_limit_summary(candidate, Self::summarize_error(&err));
                     let decision = Self::classify_failover_error(&err);
+
                     crate::logging::info(&format!(
                         "Provider {} failed{}: {} (failover={} decision={})",
                         label,
@@ -781,6 +860,46 @@ impl MultiProvider {
         }
 
         Err(self.no_provider_available_error(&notes))
+    }
+
+    /// Model id the candidate runtime would serve right now, for scoping
+    /// runtime image-capability records.
+    fn candidate_model(&self, candidate: ActiveProvider) -> String {
+        match candidate {
+            ActiveProvider::Claude => self
+                .anthropic_provider()
+                .or_else(|| self.claude_provider())
+                .map(|provider| provider.model())
+                .unwrap_or_default(),
+            ActiveProvider::OpenAI => self
+                .openai_provider()
+                .map(|provider| provider.model())
+                .unwrap_or_default(),
+            ActiveProvider::Copilot => self
+                .copilot_provider()
+                .map(|provider| provider.model())
+                .unwrap_or_default(),
+            ActiveProvider::Antigravity => self
+                .antigravity_provider()
+                .map(|provider| provider.model())
+                .unwrap_or_default(),
+            ActiveProvider::Gemini => self
+                .gemini_provider()
+                .map(|provider| provider.model())
+                .unwrap_or_default(),
+            ActiveProvider::Cursor => self
+                .cursor_provider()
+                .map(|provider| provider.model())
+                .unwrap_or_default(),
+            ActiveProvider::Bedrock => self
+                .bedrock_provider()
+                .map(|provider| provider.model())
+                .unwrap_or_default(),
+            ActiveProvider::OpenRouter => self
+                .active_openrouter_execution_provider()
+                .map(|provider| provider.model())
+                .unwrap_or_default(),
+        }
     }
 
     /// Record which login/credential just served a request in the
@@ -1946,6 +2065,19 @@ impl Provider for MultiProvider {
     }
 
     fn supports_image_input(&self) -> bool {
+        // A recorded runtime rejection is authoritative: the endpoint told us
+        // this exact model cannot accept images, so both the outbound filter
+        // and the turn loops must treat it as text-only even when the static
+        // capability answer (default-true for direct OpenAI-compatible
+        // endpoints) disagrees.
+        let key = Self::provider_key(self.active_provider());
+        if image_capability::image_input_rejected(
+            key,
+            &self.candidate_model(self.active_provider()),
+        ) {
+            return false;
+        }
+
         match self.active_provider() {
             ActiveProvider::Claude => self
                 .anthropic_provider()
@@ -1992,6 +2124,12 @@ impl Provider for MultiProvider {
         // Model/profile switches change route availability details; rebuild
         // the catalog on next read instead of serving the memoized copy.
         self.invalidate_routes_memo();
+
+        // A runtime image-input rejection is scoped to the previous model;
+        // the new model gets a fresh capability answer.
+        image_capability::clear_image_input_overrides_for_provider(Self::provider_key(
+            self.active_provider(),
+        ));
 
         let requested_model = model.trim();
         if requested_model.is_empty() {
