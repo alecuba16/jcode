@@ -1248,7 +1248,7 @@ fn recorded_rejection_overrides_supports_image_input() {
         // Record a rejection for the exact (provider, model) pair; the
         // capability lookup must now report the override.
         super::image_capability::record_image_input_rejection(
-            key,
+            Some(key),
             model,
             "model does not support image input",
         );

@@ -38,6 +38,16 @@ pub(super) async fn run_stream_with_retries(
     provider_pin: Arc<Mutex<Option<ProviderPin>>>,
     model: String,
 ) {
+    let mut request = request;
+    // One modality retry: when the endpoint answers "this model cannot accept
+    // image input" for a request that carried `image_url` parts, rewrite the
+    // request with the images replaced by text markers and replay it once on
+    // the SAME profile. This is the streaming twin of the failover-layer retry
+    // in `MultiProvider::complete_with_failover`: HTTP errors surface here,
+    // inside the async stream, because the stream handle is handed back before
+    // the request is even sent.
+    let mut image_modality_retry_available =
+        jcode_provider_core::image_capability::request_contains_image_url_parts(&request);
     let mut last_error = None;
     let mut next_retry_delay = None;
     let config = jcode_base::config::config();
@@ -110,6 +120,45 @@ pub(super) async fn run_stream_with_retries(
                 // Full anyhow chain ({:#}) so a `.context(...)`-wrapped transport
                 // cause (e.g. TLS BadRecordMac) is visible to the classifier.
                 let error_str = format!("{e:#}").to_lowercase();
+                // Image-modality rejection: the endpoint is healthy, only the
+                // `image_url` parts are unsupported by this model. Checked
+                // BEFORE `is_retryable_error`, which correctly classifies the
+                // HTTP 400 as a deterministic client error: here that is true
+                // for the pixel data, not for the request shape. Replay the
+                // same request once with images replaced by text markers.
+                // Errors after partial output skip this path on purpose: the
+                // consumer already rendered the tokens, a silent rewrite would
+                // duplicate them.
+                if image_modality_retry_available
+                    && !saw_output
+                    && jcode_provider_core::image_capability::error_indicates_image_rejection(
+                        &error_str,
+                    )
+                {
+                    image_modality_retry_available = false;
+                    // Record under the exact (provider-key, model) pair that
+                    // `MultiProvider::supports_image_input` and this runtime's
+                    // own `supports_image_input` look up, so the NEXT request
+                    // filters images at build time instead of paying another
+                    // rejected call. The model here is the same raw string
+                    // `Provider::model()` returns (the runtime's model id).
+                    jcode_provider_core::image_capability::record_image_input_rejection(
+                        Some(jcode_provider_core::selection::provider_key(
+                            jcode_provider_core::selection::ActiveProvider::OpenRouter,
+                        )),
+                        &model,
+                        &error_str,
+                    );
+                    jcode_base::logging::warn(&format!(
+                        "Endpoint rejected image input for model {model}; \
+                         retrying once with images replaced by text markers"
+                    ));
+                    request =
+                        jcode_provider_core::image_capability::filter_image_url_parts_from_request(
+                            &request,
+                        );
+                    continue;
+                }
                 if is_retryable_error(&error_str) && attempt + 1 < max_retries {
                     if saw_output {
                         // Partial output already reached the consumer; tell it

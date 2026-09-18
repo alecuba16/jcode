@@ -5,6 +5,7 @@ pub mod catalog_refresh;
 pub mod failover;
 pub mod fallback_pick;
 pub mod fingerprint;
+pub mod image_capability;
 pub mod model_id;
 pub mod models;
 pub mod openai_schema;

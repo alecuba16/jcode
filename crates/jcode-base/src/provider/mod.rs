@@ -14,8 +14,13 @@ pub mod external;
 mod failover;
 mod fingerprint;
 pub mod gemini;
-mod image_capability;
 mod image_clamp;
+mod image_capability {
+    //! Re-exported from `jcode_provider_core` so the OpenAI-compatible
+    //! runtime (which lives downstream in its own crate) can share the same
+    //! classification + rejection records as the app-spine failover path.
+    pub use jcode_provider_core::image_capability::*;
+}
 pub mod jcode;
 pub mod models;
 mod multi_provider;
@@ -754,7 +759,7 @@ impl MultiProvider {
                 && image_capability::error_indicates_image_rejection(&err.to_string())
             {
                 image_capability::record_image_input_rejection(
-                    key,
+                    Some(key),
                     &self.candidate_model(candidate),
                     &err.to_string(),
                 );

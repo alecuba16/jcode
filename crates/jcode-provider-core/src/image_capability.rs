@@ -19,11 +19,18 @@
 //!
 //! The override is scoped to the model: switching to a vision-capable model on
 //! the same endpoint clears the penalty (and a manual `/model` switch clears
-//! every entry for the runtime anyway via `clear_image_input_override`).
+//! every entry for the runtime anyway via `clear_image_input_overrides_for_provider`).
 //!
 //! Unlike `ACCOUNT_RUNTIME_UNAVAILABLE_PROVIDERS`, these entries never steer
 //! provider failover: the endpoint is healthy, only the image modality is
 //! unsupported, so we degrade the request instead of switching providers.
+//!
+//! The OpenAI-compatible runtime surfaces HTTP errors asynchronously inside the
+//! response stream (the stream handle is returned before the request is sent),
+//! so the streaming retry loop also consults this module: when a request that
+//! carried `image_url` parts fails with a modality error, the retry loop can
+//! rewrite the request JSON (`filter_image_url_parts_from_request`) and replay
+//! the same request once instead of failing the turn.
 
 use std::collections::HashMap;
 use std::sync::{LazyLock, RwLock};
@@ -81,7 +88,7 @@ const IMAGE_REJECTION_NEEDLES: &[&str] = &[
 ];
 
 /// True when `error_text` looks like the endpoint rejected image input.
-pub(crate) fn error_indicates_image_rejection(error_text: &str) -> bool {
+pub fn error_indicates_image_rejection(error_text: &str) -> bool {
     let lower = error_text.to_ascii_lowercase();
     IMAGE_REJECTION_NEEDLES
         .iter()
@@ -90,14 +97,27 @@ pub(crate) fn error_indicates_image_rejection(error_text: &str) -> bool {
 
 /// Record that `model` on `provider_key` rejected image input.
 ///
-/// `provider_key` must already be runtime-scoped (see
-/// `MultiProvider::provider_key`), because the same provider slot can serve
-/// different accounts with different capabilities.
-pub(crate) fn record_image_input_rejection(provider_key: &str, model: &str, error_text: &str) {
-    let model = model.trim();
-    if model.is_empty() || provider_key.trim().is_empty() {
+/// `provider_key` must already be runtime-scoped, because the same provider
+/// slot can serve different accounts with different capabilities. Pass `None`
+/// when the caller has no runtime-scoped key (e.g. the streaming retry loop
+/// inside the OpenAI-compatible runtime, which is already per-profile); the
+/// record is then kept under the un-scoped key so lookups that use the same
+/// key shape still find it.
+pub fn record_image_input_rejection(
+    provider_key: Option<&str>,
+    model: &str,
+    error_text: &str,
+) {
+    // Keys are normalized (trim + lowercase) so every caller agrees even when
+    // they hold different spellings of the same model id (raw runtime string,
+    // stripped/lowercased lookups, session-restored forms).
+    let model = model.trim().to_ascii_lowercase();
+    if model.is_empty() {
         return;
     }
+    let Some(provider_key) = provider_key.map(str::trim).filter(|k| !k.is_empty()) else {
+        return;
+    };
     let matched = IMAGE_REJECTION_NEEDLES
         .iter()
         .find(|needle| error_text.to_ascii_lowercase().contains(*needle))
@@ -114,7 +134,7 @@ pub(crate) fn record_image_input_rejection(provider_key: &str, model: &str, erro
             },
         );
     }
-    crate::logging::info(&format!(
+    jcode_logging::info(&format!(
         "Recorded image-input rejection for {provider_key}/{model} (matched: {}). \
          Outbound images will be filtered to text markers until the model changes.",
         matched
@@ -123,8 +143,8 @@ pub(crate) fn record_image_input_rejection(provider_key: &str, model: &str, erro
 
 /// True when a fresh "rejected image input" record exists for `model` on
 /// `provider_key`. Expired entries are dropped on read.
-pub(crate) fn image_input_rejected(provider_key: &str, model: &str) -> bool {
-    let model = model.trim();
+pub fn image_input_rejected(provider_key: &str, model: &str) -> bool {
+    let model = model.trim().to_ascii_lowercase();
     if model.is_empty() || provider_key.trim().is_empty() {
         return false;
     }
@@ -144,16 +164,76 @@ pub(crate) fn image_input_rejected(provider_key: &str, model: &str) -> bool {
 
 /// Drop every override for `provider_key` (called when the model is switched
 /// on that runtime, so a fresh model gets a fresh capability answer).
-pub(crate) fn clear_image_input_overrides_for_provider(provider_key: &str) {
+pub fn clear_image_input_overrides_for_provider(provider_key: &str) {
     let prefix = format!("{provider_key}::");
     if let Ok(mut rejections) = IMAGE_INPUT_REJECTIONS.write() {
         rejections.retain(|key, _| !key.starts_with(&prefix));
     }
 }
 
+/// True when a serialized chat-completions request body contains `image_url`
+/// content parts (the OpenAI wire shape for user-supplied images).
+pub fn request_contains_image_url_parts(request: &serde_json::Value) -> bool {
+    request
+        .get("messages")
+        .and_then(|m| m.as_array())
+        .map(|messages| {
+            messages.iter().any(|message| {
+                message
+                    .get("content")
+                    .and_then(|c| c.as_array())
+                    .map(|parts| {
+                        parts
+                            .iter()
+                            .any(|part| part.get("type").and_then(|t| t.as_str()) == Some("image_url"))
+                    })
+                    .unwrap_or(false)
+            })
+        })
+        .unwrap_or(false)
+}
+
+/// Replace every `image_url` content part in a serialized chat-completions
+/// request body with a text marker describing the omitted image. Returns a
+/// new request value; the input is untouched. Non-array message content
+/// (plain strings) carries no images, so it is preserved as-is.
+pub fn filter_image_url_parts_from_request(request: &serde_json::Value) -> serde_json::Value {
+    let mut filtered = request.clone();
+    let Some(messages) = filtered.get_mut("messages").and_then(|m| m.as_array_mut()) else {
+        return filtered;
+    };
+    for message in messages.iter_mut() {
+        let Some(parts) = message.get_mut("content").and_then(|c| c.as_array_mut()) else {
+            continue;
+        };
+        for part in parts.iter_mut() {
+            if part.get("type").and_then(|t| t.as_str()) != Some("image_url") {
+                continue;
+            }
+            // Keep the media type in the marker so the model still knows what
+            // kind of image was omitted; the pixel data itself is dropped.
+            let media_type = part
+                .get("image_url")
+                .and_then(|iu| iu.get("url"))
+                .and_then(|u| u.as_str())
+                .and_then(|url| url.strip_prefix("data:"))
+                .and_then(|rest| rest.split(';').next())
+                .unwrap_or("unknown");
+            *part = serde_json::json!({
+                "type": "text",
+                "text": format!(
+                    "[Image omitted: this model does not support image input; media_type={media_type}]"
+                )
+            });
+        }
+    }
+    filtered
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     fn unique_provider() -> String {
         format!(
@@ -187,6 +267,7 @@ mod tests {
             "model does not support multimodal requests"
         ));
     }
+
     #[test]
     fn unrelated_errors_are_not_classified() {
         assert!(!error_indicates_image_rejection("rate limit exceeded"));
@@ -209,21 +290,87 @@ mod tests {
         let provider = unique_provider();
         assert!(!image_input_rejected(&provider, "text-model"));
 
-        record_image_input_rejection(&provider, "text-model", "does not support image input");
+        record_image_input_rejection(
+            Some(&provider),
+            "text-model",
+            "does not support image input",
+        );
         assert!(image_input_rejected(&provider, "text-model"));
         // Scoped per model.
         assert!(!image_input_rejected(&provider, "other-model"));
 
+        // Mixed-case spellings of the same model id hit the same entry:
+        // the record side may hold the raw runtime string while lookups
+        // strip/lowercase (or vice versa).
+        record_image_input_rejection(
+            Some(&provider),
+            "Vision-Model-X",
+            "does not support image input",
+        );
+        assert!(image_input_rejected(&provider, "vision-model-x"));
+        assert!(image_input_rejected(&provider, "  VISION-MODEL-X  "));
+
         clear_image_input_overrides_for_provider(&provider);
         assert!(!image_input_rejected(&provider, "text-model"));
+        assert!(!image_input_rejected(&provider, "vision-model-x"));
     }
 
     #[test]
     fn empty_inputs_are_ignored() {
         let provider = unique_provider();
-        record_image_input_rejection(&provider, "  ", "does not support image input");
-        record_image_input_rejection("", "model", "does not support image input");
+        record_image_input_rejection(Some(&provider), "  ", "does not support image input");
+        record_image_input_rejection(None, "model", "does not support image input");
+        record_image_input_rejection(Some(""), "model", "does not support image input");
         assert!(!image_input_rejected(&provider, "  "));
         assert!(!image_input_rejected("", "model"));
+    }
+
+    #[test]
+    fn request_image_url_detection_and_filtering() {
+        let request = json!({
+            "model": "text-only-test-model",
+            "messages": [
+                {"role": "system", "content": "you are helpful"},
+                {"role": "user", "content": [
+                    {"type": "text", "text": "look at this"},
+                    {"type": "image_url", "image_url": {"url": "data:image/png;base64,Zm9v"}}
+                ]},
+                {"role": "tool", "tool_call_id": "c1", "content": "plain string content"}
+            ]
+        });
+        assert!(request_contains_image_url_parts(&request));
+
+        let filtered = filter_image_url_parts_from_request(&request);
+        assert!(!request_contains_image_url_parts(&filtered));
+        // Text parts preserved.
+        let user_parts = filtered["messages"][1]["content"].as_array().unwrap();
+        assert_eq!(user_parts.len(), 2);
+        assert_eq!(user_parts[0]["type"], "text");
+        assert_eq!(user_parts[0]["text"], "look at this");
+        assert_eq!(user_parts[1]["type"], "text");
+        let marker = user_parts[1]["text"].as_str().unwrap();
+        assert!(marker.contains("[Image omitted:"));
+        assert!(marker.contains("media_type=image/png"));
+        // String-content messages untouched.
+        assert_eq!(
+            filtered["messages"][2]["content"],
+            json!("plain string content")
+        );
+        // Original request not mutated.
+        assert!(request_contains_image_url_parts(&request));
+    }
+
+    #[test]
+    fn request_without_images_is_untouched() {
+        let request = json!({
+            "model": "text-only-test-model",
+            "messages": [
+                {"role": "user", "content": [{"type": "text", "text": "hello"}]},
+                {"role": "user", "content": "plain string"}
+            ]
+        });
+        assert!(!request_contains_image_url_parts(&request));
+        let filtered = filter_image_url_parts_from_request(&request);
+        assert_eq!(filtered, request);
     }
 }

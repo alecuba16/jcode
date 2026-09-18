@@ -360,6 +360,18 @@ impl Provider for OpenRouterProvider {
             .strip_session_profile_prefix(&raw_model)
             .trim()
             .to_ascii_lowercase();
+        // A recorded runtime rejection (this endpoint/model answered "no
+        // image input" earlier, see `jcode_provider_core::image_capability`)
+        // is authoritative over the optimistic direct-endpoint default below,
+        // so follow-up requests filter images at build time.
+        if jcode_provider_core::image_capability::image_input_rejected(
+            jcode_provider_core::selection::provider_key(
+                jcode_provider_core::selection::ActiveProvider::OpenRouter,
+            ),
+            &model_id,
+        ) {
+            return false;
+        }
         if let Some(supports_images) = self.static_image_input_support.get(&model_id) {
             return *supports_images;
         }

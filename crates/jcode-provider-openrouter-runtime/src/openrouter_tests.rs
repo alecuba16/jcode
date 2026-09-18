@@ -3603,3 +3603,218 @@ fn opencode_session_header_is_sent_on_the_wire_only_to_opencode_hosts() {
         "non-opencode host received the header:\n{raw}"
     );
 }
+
+// ============================================================================
+// Stream-level image-modality retry (text-only model behind optimistic endpoint)
+// ============================================================================
+
+/// Fake SSE server for the streaming modality retry: the first request is
+/// rejected with a 400 "does not support image input" error; the retry request
+/// (which must no longer carry `image_url` parts) gets a clean SSE completion.
+/// Both raw request bodies are captured for assertions.
+fn spawn_image_rejecting_then_clean_server() -> (
+    String,
+    std::sync::mpsc::Receiver<String>,
+    std::sync::mpsc::Receiver<String>,
+) {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let (tx_first, rx_first) = std::sync::mpsc::channel::<String>();
+    let (tx_retry, rx_retry) = std::sync::mpsc::channel::<String>();
+    std::thread::spawn(move || {
+        // Connection 1: modality rejection.
+        {
+            let (mut stream, _) = listener.accept().expect("accept first");
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .expect("timeout");
+            let mut buf = vec![0u8; 65536];
+            let n = stream.read(&mut buf).unwrap_or(0);
+            let _ = tx_first.send(String::from_utf8_lossy(&buf[..n]).to_string());
+            let body = r#"{"error": {"message": "This model does not support image input. The image_url content part is not supported: text-only model.", "type": "invalid_request_error", "code": "unsupported_modality"}}"#;
+            let response = format!(
+                "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            let _ = stream.write_all(response.as_bytes());
+        }
+        // Connection 2 (modality retry): clean completion.
+        {
+            let (mut stream, _) = listener.accept().expect("accept retry");
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .expect("timeout");
+            let mut buf = vec![0u8; 65536];
+            let n = stream.read(&mut buf).unwrap_or(0);
+            let _ = tx_retry.send(String::from_utf8_lossy(&buf[..n]).to_string());
+            let body = "data: {\"choices\":[{\"delta\":{\"content\":\"described marker only\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n";
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            let _ = stream.write_all(response.as_bytes());
+        }
+    });
+    (
+        format!("http://{addr}/v1"),
+        rx_first,
+        rx_retry,
+    )
+}
+
+/// The streaming twin of the failover-layer regression: HTTP errors surface
+/// inside the async stream, so the modality retry must fire there. A request
+/// carrying `image_url` parts that the endpoint rejects with a modality error
+/// must be replayed once with the images replaced by a text marker, on the
+/// same endpoint, and the final answer must still stream to the consumer.
+#[test]
+fn image_modality_rejection_is_retried_with_filtered_request() {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+
+    rt.block_on(async {
+        let (api_base, rx_first, rx_retry) = spawn_image_rejecting_then_clean_server();
+        let client = reqwest::Client::new();
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<anyhow::Result<StreamEvent>>(64);
+
+        let request = serde_json::json!({
+            "model": "text-only-test-model",
+            "stream": true,
+            "messages": [
+                {"role": "user", "content": [
+                    {"type": "text", "text": "describe red.png"},
+                    {"type": "image_url", "image_url": {"url": "data:image/png;base64,aVZC"}}
+                ]}
+            ]
+        });
+
+        super::openrouter_sse_stream::run_stream_with_retries(
+            client,
+            api_base,
+            ProviderAuth::None {
+                label: "test".to_string(),
+            },
+            false,
+            new_conversation_id(),
+            request,
+            tx,
+            Arc::new(Mutex::new(None)),
+            "text-only-test-model".to_string(),
+        )
+        .await;
+
+        let mut final_text = String::new();
+        let mut errored = false;
+        while let Some(item) = rx.recv().await {
+            match item {
+                Ok(StreamEvent::TextDelta(text)) => final_text.push_str(&text),
+                Err(_) => errored = true,
+                _ => {}
+            }
+        }
+
+        assert!(
+            !errored,
+            "stream surfaced an error instead of replaying with filtered request"
+        );
+        assert_eq!(final_text, "described marker only");
+
+        let first = rx_first
+            .recv_timeout(Duration::from_secs(5))
+            .expect("first request captured");
+        assert!(
+            first.contains(r#""type":"image_url""#),
+            "first request must carry the image_url part"
+        );
+
+        let retry = rx_retry
+            .recv_timeout(Duration::from_secs(5))
+            .expect("retry request captured");
+        assert!(
+            !retry.contains(r#""type":"image_url""#),
+            "modality retry must not carry image_url parts: {retry}"
+        );
+        assert!(
+            retry.contains("[Image omitted: this model does not support image input"),
+            "modality retry must carry the text marker replacing the image: {retry}"
+        );
+    });
+}
+
+/// The modality retry is one-shot and only fires for modality errors: a
+/// request without `image_url` parts that fails with a 400 must surface the
+/// error immediately, with no phantom retry attempt.
+#[test]
+fn non_image_requests_get_no_modality_retry() {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+
+    rt.block_on(async {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let (tx_done, rx_done) = std::sync::mpsc::channel::<usize>();
+        std::thread::spawn(move || {
+            use std::io::{Read, Write};
+            let mut requests = 0usize;
+            while let Ok((mut stream, _)) = listener.accept() {
+                requests += 1;
+                let _ = tx_done.send(requests);
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .expect("timeout");
+                let mut buf = vec![0u8; 65536];
+                let _ = stream.read(&mut buf);
+                let body = r#"{"error": {"message": "Invalid request: max_tokens must be greater than 0", "type": "invalid_request_error"}}"#;
+                let response = format!(
+                    "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = stream.write_all(response.as_bytes());
+            }
+        });
+
+        let client = reqwest::Client::new();
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<anyhow::Result<StreamEvent>>(64);
+        let request = serde_json::json!({
+            "model": "text-only-test-model",
+            "stream": true,
+            "messages": [{"role": "user", "content": "hi"}]
+        });
+
+        super::openrouter_sse_stream::run_stream_with_retries(
+            client,
+            format!("http://{addr}/v1"),
+            ProviderAuth::None {
+                label: "test".to_string(),
+            },
+            false,
+            new_conversation_id(),
+            request,
+            tx,
+            Arc::new(Mutex::new(None)),
+            "text-only-test-model".to_string(),
+        )
+        .await;
+
+        let mut errored = false;
+        while let Some(item) = rx.recv().await {
+            if item.is_err() {
+                errored = true;
+            }
+        }
+        assert!(errored, "deterministic 400 must surface as an error");
+        let total_requests = rx_done.recv_timeout(Duration::from_secs(5)).expect("counted");
+        assert_eq!(
+            total_requests, 1,
+            "non-modality 400 must not be replayed with a filtered request"
+        );
+    });
+}
