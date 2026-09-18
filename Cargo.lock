@@ -3123,6 +3123,7 @@ dependencies = [
  "jcode-build-support",
  "jcode-command-risk",
  "jcode-core",
+ "jcode-harness-api",
  "jcode-import-core",
  "jcode-message-types",
  "jcode-notify-email",
@@ -3227,6 +3228,7 @@ dependencies = [
  "jcode-provider-openrouter",
  "jcode-provider-openrouter-runtime",
  "jcode-render-core",
+ "jcode-selfdev-types",
  "jcode-session-types",
  "jcode-side-panel-types",
  "jcode-storage",
@@ -3869,6 +3871,7 @@ dependencies = [
 name = "jcode-sdk"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "jcode-harness-api",
  "jcode-provider-metadata",
  "jcode-transport",
@@ -3876,6 +3879,7 @@ dependencies = [
  "libc",
  "serde",
  "serde_json",
+ "socket2",
  "tempfile",
  "url",
  "uuid",
@@ -3888,6 +3892,8 @@ dependencies = [
  "anyhow",
  "chrono",
  "serde",
+ "tempfile",
+ "toml",
 ]
 
 [[package]]
