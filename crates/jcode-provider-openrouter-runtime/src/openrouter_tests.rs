@@ -3894,3 +3894,106 @@ fn image_modality_retry_survives_max_retries_one() {
         let _ = rx_first;
     });
 }
+
+/// Regression for the record/lookup key mismatch in the streaming image
+/// replay: `complete()` hands the stream the runtime's raw model state, but
+/// the consumers of the recorded rejection (`supports_image_input` here, and
+/// `MultiProvider::supports_image_input` via `candidate_model`) compare
+/// against the *prefix-stripped* model id that `set_model` normally
+/// normalizes into state. Right after session restore the state can still
+/// carry the session-routing `<profile>:<model>` prefix (#403), so a
+/// rejection recorded as `ollama:llava` would never match the `llava`
+/// lookup and the NEXT request would ship pixels again.
+///
+/// Wire-level, through `complete()` on a real provider instance: the first
+/// request carries the image and is rejected, the replay arrives pixel-free,
+/// and afterwards the recorded rejection must be visible under the stripped
+/// model key so `supports_image_input()` flips to false for follow-up turns.
+#[test]
+fn image_modality_rejection_records_under_stripped_model_key() {
+    let _lock = ENV_LOCK.lock();
+    let key = jcode_provider_core::selection::provider_key(
+        jcode_provider_core::selection::ActiveProvider::OpenRouter,
+    );
+    jcode_provider_core::image_capability::clear_image_input_overrides_for_provider(key);
+
+    let (api_base, rx_first, rx_retry) = spawn_image_rejecting_then_clean_server();
+    // Simulate the #403 transient: session restore left the raw state
+    // prefixed. `profile_id` matches the prefix so the strip logic applies.
+    let provider = OpenRouterProvider {
+        api_base,
+        model: Arc::new(RwLock::new("ollama:llava".to_string())),
+        profile_id: Some("ollama".to_string()),
+        supports_provider_features: false,
+        supports_model_catalog: false,
+        ..make_custom_compatible_provider()
+    };
+
+    let messages = vec![Message {
+        role: Role::User,
+        content: vec![
+            ContentBlock::Text {
+                text: "describe red.png".to_string(),
+                cache_control: None,
+            },
+            ContentBlock::Image {
+                media_type: "image/png".to_string(),
+                data: "aVZC".to_string(),
+            },
+        ],
+        timestamp: None,
+        tool_duration_ms: None,
+    }];
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+    rt.block_on(async {
+        // Before the rejection is known, the compat default is optimistic.
+        assert!(
+            provider.supports_image_input(),
+            "prefixed state must not break the pre-record capability answer"
+        );
+
+        let mut stream = provider
+            .complete(&messages, &[], "", None)
+            .await
+            .expect("complete returns a stream handle");
+        let mut saw_text = false;
+        while let Some(event) = stream.next().await {
+            match event.expect("stream event") {
+                StreamEvent::TextDelta(_) => saw_text = true,
+                _ => {}
+            }
+        }
+        assert!(saw_text, "the pixel-free replay must still stream an answer");
+
+        // The self-heal replay fired on the wire.
+        let retry = rx_retry
+            .recv_timeout(Duration::from_secs(5))
+            .expect("retry request captured");
+        assert!(
+            !retry.contains(r#""type":"image_url""#),
+            "replayed request must carry the text marker, not pixels: {retry}"
+        );
+        let _ = rx_first;
+
+        // Prevention layer: the rejection must be recorded under the stripped
+        // model id (`llava`), which is the key the lookups use. Without the
+        // fix this was recorded as `ollama:llava` and never matched.
+        assert!(
+            !provider.supports_image_input(),
+            "recorded rejection must flip supports_image_input to false under the stripped key"
+        );
+        assert!(jcode_provider_core::image_capability::image_input_rejected(
+            key, "llava"
+        ));
+        assert!(
+            !jcode_provider_core::image_capability::image_input_rejected(key, "ollama:llava"),
+            "the record must not be stored under the raw prefixed spelling"
+        );
+    });
+
+    jcode_provider_core::image_capability::clear_image_input_overrides_for_provider(key);
+}

@@ -50,8 +50,10 @@ pub(super) async fn run_stream_with_retries(
         jcode_provider_core::image_capability::request_contains_image_url_parts(&request);
     // Set by the inner replay loop when an attempt fails for a non-modality
     // (or after-partial-output) reason; consumed by the outer loop's
-    // transient-vs-deterministic classification.
-    let mut last_attempt_failure: Option<(anyhow::Error, bool, String)> = None;
+    // transient-vs-deterministic classification. Deferred-init: the only
+    // read (`.take()` below) is always preceded by the assignment in the
+    // same outer-loop iteration.
+    let mut last_attempt_failure: Option<(anyhow::Error, bool, String)>;
     let mut last_error = None;
     let mut next_retry_delay = None;
     let config = jcode_base::config::config();

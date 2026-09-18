@@ -309,7 +309,16 @@ impl Provider for OpenRouterProvider {
         let send_openrouter_headers = self.send_openrouter_headers;
         let conversation_id = self.conversation_id.clone();
         let request_for_retries = request;
-        let model_for_stream = model.clone();
+        // The stream records image-modality rejections under this model
+        // string, and its consumers (runtime `supports_image_input` and the
+        // `OpenRouterStream` provider-pin matching) compare against the bare
+        // model id that `set_model` normalizes into state. The raw state
+        // string can transiently carry a session-routing
+        // `<profile>:<model>` prefix (right after session restore, before
+        // `set_model` normalizes it, see #403); recording under that spelling
+        // would never match the stripped lookups, so hand the stream the
+        // same stripped form the lookups use.
+        let model_for_stream = self.strip_session_profile_prefix(&model).to_string();
         let provider_pin = Arc::clone(&self.provider_pin);
 
         tokio::spawn(async move {

@@ -662,8 +662,10 @@ impl MultiProvider {
         let mut retry_with_images_filtered = false;
         let mut messages: &[Message] = messages;
         // Owns the filtered copy for the retry attempt; kept alive until the
-        // function returns so `messages` can borrow it.
-        let mut filtered_retry_messages: Option<Vec<Message>> = None;
+        // function returns so `messages` can borrow it. Deferred-init: the
+        // only read (`as_deref` below) is always preceded by the assignment
+        // in the same iteration.
+        let mut filtered_retry_messages: Option<Vec<Message>>;
 
         for candidate in sequence {
             let label = Self::provider_label(candidate);
