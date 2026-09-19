@@ -275,12 +275,11 @@ pub(super) fn push_todo_plan_details(
             crate::todo::IntentUnderstanding::Clear
             | crate::todo::IntentUnderstanding::Complete => todo_score_color(),
         };
-        let intention_text = intention.unwrap_or_default();
         let intent_clear = matches!(
             state,
             crate::todo::IntentUnderstanding::Clear | crate::todo::IntentUnderstanding::Complete
         );
-        if !compact_details && intent_clear && !intention_text.is_empty() {
+        if let Some(intention_text) = intention.filter(|_| intent_clear && !compact_details) {
             // A clear plan intention is worth reading in full, so wrap it
             // across card rows instead of clipping it to an ellipsis. Partial or
             // uncertain states stay on one ellipsized line: the state itself is
