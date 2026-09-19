@@ -387,6 +387,10 @@ impl Session {
         // id find no file and silently treat the session as missing.
         // Parent linkage is also explicit state: an empty fork carries only a
         // hidden fork notice but must be loadable when its new client attaches.
+        // Debug and canary flags are explicit state too: a headless session
+        // created via the debug admin socket is empty and untitled at creation,
+        // but later lookups by id (e2e flows, resume) must find the file, the
+        // same way title/parent linkage must (4e7009930, #1144).
         if !self.persist_state.snapshot_exists
             && !self
                 .messages
@@ -396,6 +400,8 @@ impl Session {
             && self.custom_title.is_none()
             && self.title.is_none()
             && self.parent_id.is_none()
+            && !self.is_debug
+            && !self.is_canary
         {
             return Ok(());
         }
