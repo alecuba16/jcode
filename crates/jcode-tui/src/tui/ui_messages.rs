@@ -1480,15 +1480,9 @@ fn push_todo_plan_details(
                         Style::default().fg(todo_label_color()),
                     ));
                 } else {
-                    line_spans.push(Span::styled(
-                        " ".repeat(prefix_width),
-                        Style::default(),
-                    ));
+                    line_spans.push(Span::styled(" ".repeat(prefix_width), Style::default()));
                 }
-                line_spans.push(Span::styled(
-                    chunk,
-                    Style::default().fg(todo_meta_color()),
-                ));
+                line_spans.push(Span::styled(chunk, Style::default().fg(todo_meta_color())));
                 lines.push(todo_card_line(line_spans, base_indent, inner_width));
             }
         } else {
