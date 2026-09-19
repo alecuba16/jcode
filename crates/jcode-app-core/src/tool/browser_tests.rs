@@ -1,3 +1,5 @@
+#![allow(clippy::await_holding_lock)] // env guards held across async test bodies
+
 use super::*;
 
 #[test]

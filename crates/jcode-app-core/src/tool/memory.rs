@@ -1,5 +1,6 @@
 //! Memory tool for storing and recalling information across sessions
 
+#![cfg_attr(test, allow(clippy::await_holding_lock))] // env guards held across async test bodies
 use super::{Tool, ToolContext, ToolOutput};
 use crate::memory::{MemoryCategory, MemoryEntry, MemoryManager, MemoryScope};
 use anyhow::Result;

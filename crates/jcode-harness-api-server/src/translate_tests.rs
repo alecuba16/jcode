@@ -6,8 +6,10 @@ use std::sync::MutexGuard;
 
 #[test]
 fn token_usage_preserves_cache_creation_and_missing_counters() {
-    let mut state = BridgeState::default();
-    state.session_id = Some("s1".into());
+    let mut state = BridgeState {
+        session_id: Some("s1".into()),
+        ..Default::default()
+    };
     for cache_creation_input in [None, Some(0), Some(42)] {
         let mut legacy = json!({
             "type": "tokens", "input": 10, "output": 5, "cache_read_input": 2
@@ -1759,7 +1761,7 @@ fn archive_restore_and_retention_are_reversible_and_owner_only() {
         .iter()
         .find(|session| session.session_id == "old_session")
         .expect("old session remains restorable");
-    assert_eq!(old.archived, true);
+    assert!(old.archived);
     assert!(old.archived_at_ms.is_some());
     let recent = sessions
         .iter()
@@ -2470,17 +2472,26 @@ fn history_response_stats_cross_real_render_protocol_and_sdk_boundary() {
         {"id":"a","role":"assistant","content":[{"type":"text","text":"answer"}],
             "token_usage":{"input_tokens":123,"output_tokens":45,"cache_read_input_tokens":7,"cache_creation_input_tokens":8}}
     ])).unwrap();
-    let legacy: Vec<_> = jcode_base::session::render_messages(&session).into_iter()
+    let legacy: Vec<_> = jcode_base::session::render_messages(&session)
+        .into_iter()
         .map(|row| jcode_base::protocol::HistoryMessage {
-            role: row.role, content: row.content, tool_calls: None, tool_data: row.tool_data,
+            role: row.role,
+            content: row.content,
+            tool_calls: None,
+            tool_data: row.tool_data,
             response_stats: row.response_stats,
-        }).collect();
+        })
+        .collect();
     let mut state = state_with_session();
     let out = state.api_request_to_legacy(&json!({"req":"get_history", "id":46}));
-    let Outbound::Legacy(request) = &out[0] else { panic!("expected history request") };
+    let Outbound::Legacy(request) = &out[0] else {
+        panic!("expected history request")
+    };
     let frames = state.legacy_event_to_api(&json!({"type":"history", "id":request["id"],
         "messages":legacy,"activity":{"is_processing":false}}));
-    let ApiEvent::History { messages, .. } = &frames[0].event else { panic!("expected history") };
+    let ApiEvent::History { messages, .. } = &frames[0].event else {
+        panic!("expected history")
+    };
     let stats = messages[1].response_stats.as_ref().unwrap();
     assert_eq!(stats.input_tokens, Some(123));
     assert_eq!(stats.output_tokens, Some(45));
@@ -2564,8 +2575,10 @@ fn attachment_recovery_preserves_directive_in_both_history_state_orders() {
 
 #[test]
 fn attachment_recovery_ignores_wrong_session_and_request_without_consuming_intent() {
-    let mut state = BridgeState::default();
-    state.session_id = Some("previous".into());
+    let mut state = BridgeState {
+        session_id: Some("previous".into()),
+        ..Default::default()
+    };
     let (history, _) = recovery_attach(&mut state, Some("recover"));
     let mut unrelated = history.clone();
     unrelated["session_id"] = json!("other");

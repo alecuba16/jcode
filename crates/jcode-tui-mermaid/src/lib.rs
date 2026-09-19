@@ -438,7 +438,9 @@ static MERMAID_SOURCE_BY_HASH: LazyLock<Mutex<HashMap<u64, String>>> =
 static MERMAID_INLINE_EXPAND_LEVEL: LazyLock<Mutex<HashMap<u64, u8>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 static MERMAID_INLINE_EXPAND_EPOCH: AtomicU64 = AtomicU64::new(0);
-static MERMAID_INLINE_LEVEL_GEOMETRY: LazyLock<Mutex<HashMap<u64, [(u16, u16); 3]>>> =
+/// Per-level (rows, cols) geometry for each rendered inline diagram hash.
+type InlineLevelGeometry = HashMap<u64, [(u16, u16); 3]>;
+static MERMAID_INLINE_LEVEL_GEOMETRY: LazyLock<Mutex<InlineLevelGeometry>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 pub fn mermaid_source_for_hash(hash: u64) -> Option<String> {

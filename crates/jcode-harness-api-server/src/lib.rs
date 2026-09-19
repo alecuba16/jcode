@@ -480,6 +480,10 @@ mod public_acceptance_tests {
         }
     }
 
+    // Guard held across await is intentional: it serializes JCODE_HOME
+    // across tests for the whole async body since the server under test
+    // inherits the env. await_holding_lock fires on fn scope, so allow here.
+    #[allow(clippy::await_holding_lock)]
     #[tokio::test(flavor = "multi_thread")]
     async fn public_socket_keeps_its_attachment_after_another_sessions_state() {
         let _home_lock = translate::jcode_home_test_lock();

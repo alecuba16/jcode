@@ -112,12 +112,20 @@ fn redact_credentials(value: &mut Value) -> bool {
             *text = "[REDACTED: credential material]".into();
             true
         }
-        Value::Array(items) => items
-            .iter_mut()
-            .fold(false, |found, item| redact_credentials(item) || found),
-        Value::Object(items) => items
-            .values_mut()
-            .fold(false, |found, item| redact_credentials(item) || found),
+        Value::Array(items) => {
+            let mut found = false;
+            for item in items {
+                found |= redact_credentials(item);
+            }
+            found
+        }
+        Value::Object(items) => {
+            let mut found = false;
+            for item in items.values_mut() {
+                found |= redact_credentials(item);
+            }
+            found
+        }
         _ => false,
     }
 }
