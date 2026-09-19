@@ -1476,10 +1476,10 @@ fn test_changelog_overlay_mouse_drag_release_copies_text() {
         modifiers: KeyModifiers::empty(),
     });
 
-    // A copy was attempted (success/failure depends on clipboard availability
-    // in the test environment, but the selection path must have run).
-    assert!(matches!(
-        app.status_notice().as_deref(),
-        Some("Copied selection") | Some("Failed to copy selection") | Some("Selection is empty")
-    ));
+    // A copy was attempted (clipboard availability varies, but the path must
+    // run). Drag-copy keeps the highlight and appends a suffix to the notice.
+    let notice = app.status_notice().unwrap_or_default();
+    assert!(["Copied selection", "Failed to copy selection", "Selection is empty"]
+        .iter()
+        .any(|base| notice == *base || notice.starts_with(base)));
 }

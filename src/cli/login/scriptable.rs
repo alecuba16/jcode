@@ -862,6 +862,9 @@ pub(super) fn resolve_auth_input(value: &str) -> Result<String> {
     Ok(trimmed.to_string())
 }
 
+// One flat struct-free parameter list mirrors the CLI flag surface this
+// prompt renders; grouping into a struct would just move the same fields.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn emit_scriptable_auth_prompt(
     provider: &str,
     auth_url: &str,

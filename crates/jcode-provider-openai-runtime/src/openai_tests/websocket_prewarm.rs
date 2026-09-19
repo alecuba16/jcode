@@ -42,6 +42,7 @@ async fn wait_for_prewarm(slot: &openai_websocket_prewarm::PrewarmSlot) {
     .expect("prewarm should become ready");
 }
 
+#[allow(clippy::await_holding_lock)] // env guard held across async body
 #[tokio::test]
 async fn websocket_v2_prewarm_is_adopted_by_complete_without_losing_request_state() {
     let _lock = jcode_base::storage::lock_test_env();
@@ -55,6 +56,9 @@ async fn websocket_v2_prewarm_is_adopted_by_complete_without_losing_request_stat
 
     let server = tokio::spawn(async move {
         let (stream, _) = listener.accept().await.expect("accept prewarm connection");
+        // Err type is tungstenite's own Response<Option<String>>; its size is
+        // fixed by the accept_hdr_async callback signature, not by this test.
+        #[allow(clippy::result_large_err)]
         let mut socket = tokio_tungstenite::accept_hdr_async(
             stream,
             |request: &tokio_tungstenite::tungstenite::handshake::server::Request,
@@ -204,6 +208,7 @@ async fn websocket_v2_prewarm_is_adopted_by_complete_without_losing_request_stat
     server.await.expect("local websocket server");
 }
 
+#[allow(clippy::await_holding_lock)] // env guard held across async body
 #[tokio::test]
 async fn unfinished_or_incompatible_prewarm_is_cancelled_without_foreground_wait() {
     let _lock = jcode_base::storage::lock_test_env();
@@ -245,6 +250,7 @@ async fn unfinished_or_incompatible_prewarm_is_cancelled_without_foreground_wait
     server.await.expect("unfinished server");
 }
 
+#[allow(clippy::await_holding_lock)] // env guard held across async body
 #[tokio::test]
 async fn ready_prewarm_with_different_settings_is_invalidated() {
     let _lock = jcode_base::storage::lock_test_env();
@@ -280,6 +286,7 @@ async fn ready_prewarm_with_different_settings_is_invalidated() {
     server.await.expect("settings mismatch server");
 }
 
+#[allow(clippy::await_holding_lock)] // env guard held across async body
 #[tokio::test]
 async fn rejected_warmup_is_not_adopted() {
     let _lock = jcode_base::storage::lock_test_env();

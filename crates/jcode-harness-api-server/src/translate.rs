@@ -83,6 +83,10 @@ fn flatten_content(content: &Value) -> String {
 use serde_json::{Value, json};
 
 /// Where a translated client request should go.
+/// `Reply` is 9x `Legacy` because `ServerFrame` carries rich reply payloads;
+/// boxing every construction site costs more churn than the enum's
+/// short-lived, low-frequency use justifies.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug)]
 pub enum Outbound {
     /// Forward to the legacy daemon connection.
@@ -471,7 +475,9 @@ impl BridgeState {
                 vec![
                     Outbound::Legacy(subscribe),
                     Outbound::Legacy(json!({"type": "state", "id": state_id})),
-                    Outbound::Legacy(json!({"type": "get_model_catalog", "id": catalog_id, "subscribe_usage_updates": true})),
+                    Outbound::Legacy(
+                        json!({"type": "get_model_catalog", "id": catalog_id, "subscribe_usage_updates": true}),
+                    ),
                 ]
             }
             "send_message" => {
@@ -1895,7 +1901,11 @@ impl BridgeState {
             .windows(needle.len())
             .enumerate()
             .filter_map(|(at, window)| (window == needle.as_bytes()).then_some(at + needle.len()));
-        let start = if last { starts.last()? } else { starts.next()? };
+        let start = if last {
+            starts.next_back()?
+        } else {
+            starts.next()?
+        };
         Option::<String>::deserialize(&mut serde_json::Deserializer::from_slice(&bytes[start..]))
             .ok()
             .flatten()
@@ -2112,7 +2122,7 @@ impl BridgeState {
                 .flat_map(|handle| handle.join().unwrap_or_default())
                 .collect::<Vec<_>>()
         });
-        ids.sort_unstable_by(|left, right| right.0.cmp(&left.0));
+        ids.sort_unstable_by_key(|(started, _)| std::cmp::Reverse(*started));
         Self::write_bootstrap_recent_session_index(&ids);
         if let Some(limit) = limit {
             ids.truncate(limit);

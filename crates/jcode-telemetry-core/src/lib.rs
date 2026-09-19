@@ -21,23 +21,35 @@ use serde_json::Value;
 use state_support::*;
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{SyncSender, TrySendError, sync_channel};
+#[cfg(not(test))]
+use std::sync::mpsc::TrySendError;
+use std::sync::mpsc::{SyncSender, sync_channel};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 const TELEMETRY_ENDPOINT: &str = "https://telemetry.jcode.sh/v1/event";
 const TRANSCRIPT_ENDPOINT: &str = "https://telemetry.jcode.sh/v1/transcript";
+// The background HTTP delivery machinery below is only wired up in
+// cfg(not(test)) builds; tests stub delivery into TEST_EMITTED_PAYLOADS,
+// so these items look dead in the test build.
+#[cfg_attr(test, allow(dead_code))]
 const ASYNC_SEND_TIMEOUT: Duration = Duration::from_secs(5);
+#[cfg_attr(test, allow(dead_code))]
 const BACKGROUND_QUEUE_CAPACITY: usize = 2048;
 const BLOCKING_INSTALL_TIMEOUT: Duration = Duration::from_millis(1200);
 const BLOCKING_LIFECYCLE_TIMEOUT: Duration = Duration::from_millis(800);
 const BLOCKING_FIRST_PROMPT_TIMEOUT: Duration = Duration::from_millis(500);
 const TELEMETRY_SCHEMA_VERSION: u32 = 6;
 const DEFAULT_DISCOVERY_ENDPOINT: &str = "https://api.jcode.sh/v1/discovery";
+#[cfg_attr(test, allow(dead_code))]
 static TELEMETRY_PERMANENTLY_REJECTED: AtomicBool = AtomicBool::new(false);
+#[cfg_attr(test, allow(dead_code))]
 static TELEMETRY_QUEUE_OVERFLOW_WARNED: AtomicBool = AtomicBool::new(false);
+#[cfg_attr(test, allow(dead_code))]
 static TELEMETRY_BACKGROUND_SENDER: OnceLock<SyncSender<Value>> = OnceLock::new();
+#[cfg_attr(test, allow(dead_code))]
 static TRANSCRIPT_BACKGROUND_SENDER: OnceLock<SyncSender<Value>> = OnceLock::new();
+#[cfg_attr(test, allow(dead_code))]
 static TELEMETRY_HTTP_CLIENT: OnceLock<reqwest::blocking::Client> = OnceLock::new();
 #[cfg(test)]
 static TEST_EMITTED_PAYLOADS: Mutex<Vec<Value>> = Mutex::new(Vec::new());
@@ -1288,6 +1300,7 @@ pub fn record_command_family(command: &str) {
     maybe_emit_session_start();
 }
 
+#[cfg_attr(test, allow(dead_code))] // wired only in cfg(not(test)) delivery paths
 fn post_payload(payload: serde_json::Value, timeout: Duration) -> bool {
     if TELEMETRY_PERMANENTLY_REJECTED.load(Ordering::Relaxed) {
         return false;
@@ -1326,6 +1339,7 @@ fn post_payload(payload: serde_json::Value, timeout: Duration) -> bool {
     }
 }
 
+#[cfg_attr(test, allow(dead_code))] // wired only in cfg(not(test)) delivery paths
 fn post_payload_with_retry(payload: serde_json::Value, timeout: Duration) -> bool {
     const RETRY_DELAYS: [Duration; 2] = [Duration::from_millis(200), Duration::from_millis(800)];
     if post_payload(payload.clone(), timeout) {
@@ -1343,6 +1357,7 @@ fn post_payload_with_retry(payload: serde_json::Value, timeout: Duration) -> boo
     false
 }
 
+#[cfg_attr(test, allow(dead_code))] // wired only in cfg(not(test)) delivery paths
 fn post_transcript_payload(payload: serde_json::Value, timeout: Duration) -> bool {
     let client = TELEMETRY_HTTP_CLIENT.get_or_init(|| {
         reqwest::blocking::Client::builder()
@@ -1390,6 +1405,7 @@ where
     Ok(sender)
 }
 
+#[cfg_attr(test, allow(dead_code))] // wired only in cfg(not(test)) delivery paths
 fn background_sender() -> &'static SyncSender<Value> {
     TELEMETRY_BACKGROUND_SENDER.get_or_init(|| {
         spawn_background_worker(BACKGROUND_QUEUE_CAPACITY, |payload| {
@@ -1399,6 +1415,7 @@ fn background_sender() -> &'static SyncSender<Value> {
     })
 }
 
+#[cfg_attr(test, allow(dead_code))] // wired only in cfg(not(test)) delivery paths
 fn transcript_background_sender() -> &'static SyncSender<Value> {
     TRANSCRIPT_BACKGROUND_SENDER.get_or_init(|| {
         spawn_background_worker(64, |payload| {
@@ -1414,7 +1431,7 @@ fn send_transcript_payload(payload: Value) -> bool {
         if let Ok(mut emitted) = TEST_EMITTED_PAYLOADS.lock() {
             emitted.push(payload);
         }
-        return true;
+        true
     }
     #[cfg(not(test))]
     match transcript_background_sender().try_send(payload) {
@@ -1438,7 +1455,7 @@ fn send_payload(mut payload: serde_json::Value, mode: DeliveryMode) -> bool {
         if let Ok(mut emitted) = TEST_EMITTED_PAYLOADS.lock() {
             emitted.push(payload);
         }
-        return true;
+        true
     }
     #[cfg(not(test))]
     match mode {
