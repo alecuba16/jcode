@@ -78,9 +78,11 @@ pub fn load_file(
         page_id,
         title,
         &source_path,
-        SidePanelPageSource::LinkedFile,
-        format,
-        now,
+        PageRecordMeta {
+            source: SidePanelPageSource::LinkedFile,
+            format,
+            updated_at_ms: now,
+        },
         focus,
     );
     save_state(session_id, &state)?;
@@ -255,9 +257,11 @@ fn write_page(
         page_id,
         title,
         &page_path,
-        SidePanelPageSource::Managed,
-        SidePanelPageFormat::Markdown,
-        now,
+        PageRecordMeta {
+            source: SidePanelPageSource::Managed,
+            format: SidePanelPageFormat::Markdown,
+            updated_at_ms: now,
+        },
         focus,
     );
 
@@ -265,16 +269,27 @@ fn write_page(
     hydrate_snapshot(state)
 }
 
+/// Provenance fields shared by every upserted page record. Bundled so the
+/// upsert signature stays under clippy's `too_many_arguments` threshold.
+struct PageRecordMeta {
+    source: SidePanelPageSource,
+    format: SidePanelPageFormat,
+    updated_at_ms: u64,
+}
+
 fn upsert_page_record(
     state: &mut PersistedSidePanelState,
     page_id: &str,
     title: Option<&str>,
     file_path: &Path,
-    source: SidePanelPageSource,
-    format: SidePanelPageFormat,
-    updated_at_ms: u64,
+    meta: PageRecordMeta,
     focus: bool,
 ) {
+    let PageRecordMeta {
+        source,
+        format,
+        updated_at_ms,
+    } = meta;
     let file_path = file_path.display().to_string();
     if let Some(existing) = state.pages.iter_mut().find(|page| page.id == page_id) {
         existing.title = title

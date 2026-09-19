@@ -233,7 +233,7 @@ fn validate_wav(bytes: &[u8]) -> Result<(), VoiceError> {
                 rate = Some(sample_rate);
             }
             b"data" => {
-                if data_len.is_some() || len == 0 || len % 2 != 0 {
+                if data_len.is_some() || len == 0 || !len.is_multiple_of(2) {
                     return Err(invalid());
                 }
                 data_len = Some(len);

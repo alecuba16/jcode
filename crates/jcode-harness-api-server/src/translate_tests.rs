@@ -2609,9 +2609,13 @@ fn attachment_recovery_suppresses_empty_active_completed_and_blank_directives_on
             _ => unreachable!(),
         }
         assert!(
-            matches!(state.legacy_event_to_api(&history).as_slice(), [ServerFrame {
-                event: ApiEvent::SidePanelState { .. }, ..
-            }]),
+            matches!(
+                state.legacy_event_to_api(&history).as_slice(),
+                [ServerFrame {
+                    event: ApiEvent::SidePanelState { .. },
+                    ..
+                }]
+            ),
             "{case}"
         );
         assert!(
