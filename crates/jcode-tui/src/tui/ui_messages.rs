@@ -1455,18 +1455,56 @@ fn push_todo_plan_details(
             crate::todo::IntentUnderstanding::Clear
             | crate::todo::IntentUnderstanding::Complete => todo_score_color(),
         };
-        let mut spans = vec![
-            Span::styled("Intent ", Style::default().fg(todo_label_color())),
-            Span::styled(state.as_str().to_string(), Style::default().fg(state_color)),
-            Span::styled(": ", Style::default().fg(todo_label_color())),
-        ];
-        if let Some(intention) = intention {
-            spans.push(Span::styled(
-                intention.to_string(),
-                Style::default().fg(todo_meta_color()),
-            ));
+        let intention_text = intention.unwrap_or_default();
+        if !compact_details && !intention_text.is_empty() {
+            // A long plan intention must stay readable, not get clipped to an
+            // ellipsis: wrap it across card rows like the other detail fields.
+            let prefix_width = "Intent ".width() + state.as_str().width() + ": ".width();
+            let available = inner_width.saturating_sub(prefix_width).max(1);
+            for (index, chunk) in wrap_todo_detail(intention_text, available)
+                .into_iter()
+                .enumerate()
+            {
+                let mut line_spans = Vec::new();
+                if index == 0 {
+                    line_spans.push(Span::styled(
+                        "Intent ",
+                        Style::default().fg(todo_label_color()),
+                    ));
+                    line_spans.push(Span::styled(
+                        state.as_str().to_string(),
+                        Style::default().fg(state_color),
+                    ));
+                    line_spans.push(Span::styled(
+                        ": ".to_string(),
+                        Style::default().fg(todo_label_color()),
+                    ));
+                } else {
+                    line_spans.push(Span::styled(
+                        " ".repeat(prefix_width),
+                        Style::default(),
+                    ));
+                }
+                line_spans.push(Span::styled(
+                    chunk,
+                    Style::default().fg(todo_meta_color()),
+                ));
+                lines.push(todo_card_line(line_spans, base_indent, inner_width));
+            }
+        } else {
+            let mut spans = vec![
+                Span::styled("Intent ", Style::default().fg(todo_label_color())),
+                Span::styled(state.as_str().to_string(), Style::default().fg(state_color)),
+                Span::styled(": ", Style::default().fg(todo_label_color())),
+            ];
+            if let Some(intention) = intention {
+                spans.push(Span::styled(
+                    intention.to_string(),
+                    Style::default().fg(todo_meta_color()),
+                ));
+            }
+            lines.push(todo_card_line(spans, base_indent, inner_width));
         }
-        lines.push(todo_card_line(spans, base_indent, inner_width));
     } else if let Some(intention) = intention {
         push_todo_detail(
             lines,
