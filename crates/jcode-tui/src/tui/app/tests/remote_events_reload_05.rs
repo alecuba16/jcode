@@ -821,16 +821,29 @@ fn test_gate_digest_is_delivered_at_turn_end_and_rearms_next_cycle() {
                 .is_empty()
         );
 
-        // Simulate the turn running, then the cycle completing.
+        // Simulate the turn running, then the cycle completing. A cleanly completed
+        // cycle hands off to one final-answer continuation before the next
+        // digest can be delivered (see 1bd235b5f).
         app.queued_messages.clear();
         app.pending_queued_dispatch = false;
         assert!(
-            !app.schedule_auto_poke_followup_if_needed(),
-            "with nothing left outstanding the cycle should finish"
+            app.schedule_auto_poke_followup_if_needed(),
+            "a finished cycle should request one final-answer turn"
+        );
+        assert_eq!(
+            app.queued_messages,
+            vec![crate::todo::TODO_FINAL_RESPONSE_CONTINUATION_MESSAGE.to_string()]
         );
         assert!(
             !app.todo_gate_digest_delivered,
             "a finished cycle must re-arm the review for later work"
+        );
+        // The final-answer turn itself must not enqueue another final answer.
+        app.queued_messages.clear();
+        app.pending_queued_dispatch = false;
+        assert!(
+            !app.schedule_auto_poke_followup_if_needed(),
+            "the final-answer turn must not loop"
         );
     });
 }

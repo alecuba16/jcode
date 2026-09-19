@@ -1004,7 +1004,8 @@ fn test_top_level_command_suggestions_include_all_non_hidden_commands() {
 #[test]
 fn test_logout_clear_anthropic_accounts_removes_all_accounts_once() {
     with_temp_jcode_home(|| {
-        for index in 1..=3 {
+        // Upsert canonicalizes labels with animal names, so capture them.
+        let upsert = |index: i64| {
             crate::auth::claude::upsert_account(crate::auth::claude::AnthropicAccount {
                 label: format!("requested-{index}"),
                 access: format!("access-{index}"),
@@ -1014,17 +1015,16 @@ fn test_logout_clear_anthropic_accounts_removes_all_accounts_once() {
                 subscription_type: None,
                 scopes: Vec::new(),
             })
-            .unwrap();
-        }
-        crate::auth::claude::set_active_account("claude-3").unwrap();
-
+            .unwrap()
+        };
+        let labels_assigned: Vec<String> = (1..=3).map(upsert).collect();
+        crate::auth::claude::set_active_account(&labels_assigned[2]).unwrap();
         let labels: Vec<_> = crate::auth::claude::list_accounts()
             .unwrap()
             .into_iter()
             .map(|account| account.label)
             .collect();
-        assert_eq!(labels, vec!["claude-1", "claude-2", "claude-3"]);
-
+        assert_eq!(labels, labels_assigned);
         assert_eq!(crate::auth::claude::clear_accounts().unwrap(), 3);
         assert!(crate::auth::claude::list_accounts().unwrap().is_empty());
         assert!(crate::auth::claude::active_account_label().is_none());

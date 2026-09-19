@@ -1,8 +1,5 @@
 name: CI
 
-env:
-  JCODE_CI: "1"
-
 on:
   push:
     branches: [main, master]
@@ -14,6 +11,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
+  JCODE_CI: "1"
   CARGO_TERM_COLOR: always
   SCCACHE_GHA_ENABLED: "true"
 
@@ -30,8 +28,11 @@ jobs:
 
       - name: Configure SSH for cargo git dependencies
         uses: webfactory/ssh-agent@v0.9.0
+        if: env.DEPLOY_KEY != ''
+        env:
+          DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}
         with:
-          ssh-private-key: ${{ secrets.DEPLOY_KEY }}
+          ssh-private-key: ${{ env.DEPLOY_KEY }}
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -156,8 +157,11 @@ jobs:
 
       - name: Configure SSH for cargo git dependencies
         uses: webfactory/ssh-agent@v0.9.0
+        if: env.DEPLOY_KEY != ''
+        env:
+          DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}
         with:
-          ssh-private-key: ${{ secrets.DEPLOY_KEY }}
+          ssh-private-key: ${{ env.DEPLOY_KEY }}
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -396,8 +400,11 @@ jobs:
 
       - name: Configure SSH for cargo git dependencies
         uses: webfactory/ssh-agent@v0.9.0
+        if: env.DEPLOY_KEY != ''
+        env:
+          DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}
         with:
-          ssh-private-key: ${{ secrets.DEPLOY_KEY }}
+          ssh-private-key: ${{ env.DEPLOY_KEY }}
 
       - uses: ilammy/msvc-dev-cmd@v1
         with:
@@ -649,8 +656,11 @@ jobs:
 
       - name: Configure SSH for cargo git dependencies
         uses: webfactory/ssh-agent@v0.9.0
+        if: env.DEPLOY_KEY != ''
+        env:
+          DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}
         with:
-          ssh-private-key: ${{ secrets.DEPLOY_KEY }}
+          ssh-private-key: ${{ env.DEPLOY_KEY }}
 
       - uses: dtolnay/rust-toolchain@stable
         with:

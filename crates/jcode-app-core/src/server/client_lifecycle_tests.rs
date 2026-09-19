@@ -1,3 +1,4 @@
+#![allow(clippy::await_holding_lock)] // env guards held across async test bodies
 use super::*;
 use crate::message::{ContentBlock, Message, StreamEvent, ToolDefinition};
 use crate::provider::{EventStream, Provider};
