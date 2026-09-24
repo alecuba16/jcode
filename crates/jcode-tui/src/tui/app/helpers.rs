@@ -1235,10 +1235,9 @@ pub(super) fn gather_ambient_info(ambient_enabled: bool) -> Option<AmbientWidget
         // absent instead of displaying unrelated local tasks.
         return None;
     }
-    use std::time::Instant;
     const TTL: Duration = Duration::from_secs(2);
 
-    if let Ok(mut guard) = AMBIENT_INFO_CACHE.lock() {
+    let refresh = if let Ok(mut guard) = AMBIENT_INFO_CACHE.lock() {
         if let Some((ts, cached_enabled, cached, refreshing)) = guard.as_mut() {
             if *cached_enabled == ambient_enabled && ts.elapsed() < TTL {
                 return cached.clone();
@@ -1253,30 +1252,56 @@ pub(super) fn gather_ambient_info(ambient_enabled: bool) -> Option<AmbientWidget
             };
             *refreshing = true;
             *cached_enabled = ambient_enabled;
-            std::thread::spawn(move || {
-                let result = gather_ambient_info_inner(ambient_enabled);
-                if let Ok(mut guard) = AMBIENT_INFO_CACHE.lock() {
-                    *guard = Some((Instant::now(), ambient_enabled, result, false));
-                }
-            });
-            return stale;
+            // Refresh after the guard is dropped: the synchronous test path
+            // re-locks the cache when storing the result, so refreshing while
+            // the guard is still alive would self-deadlock.
+            Some((stale, false))
+        } else {
+            *guard = Some((
+                backdated_now(TTL + Duration::from_secs(1)),
+                ambient_enabled,
+                None,
+                true,
+            ));
+            Some((None, true))
         }
+    } else {
+        None
+    };
 
-        *guard = Some((
-            backdated_now(TTL + Duration::from_secs(1)),
-            ambient_enabled,
-            None,
-            true,
-        ));
+    let Some((stale, _first_fill)) = refresh else {
+        return None;
+    };
+    spawn_ambient_info_refresh(ambient_enabled);
+    stale
+}
+
+/// Refresh the ambient cache off the render path.
+///
+/// Under `cfg(test)` there is no render loop to serve, and the background
+/// refresh is exactly what makes the suite parallel-unsafe: it re-reads the
+/// queue under whatever `JCODE_HOME` is current when the thread runs, not when
+/// it was queued, so an in-flight refresh can overwrite the cleared process
+/// cache with data loaded from another test's temp home (upstream #596). The
+/// synchronous tests read via `gather_ambient_info_inner` directly, so keeping
+/// the refresh inline under tests is both correct and deterministic.
+fn spawn_ambient_info_refresh(ambient_enabled: bool) {
+    #[cfg(test)]
+    {
+        let result = gather_ambient_info_inner(ambient_enabled);
+        if let Ok(mut guard) = AMBIENT_INFO_CACHE.lock() {
+            *guard = Some((std::time::Instant::now(), ambient_enabled, result, false));
+        }
+    }
+    #[cfg(not(test))]
+    {
         std::thread::spawn(move || {
             let result = gather_ambient_info_inner(ambient_enabled);
             if let Ok(mut guard) = AMBIENT_INFO_CACHE.lock() {
-                *guard = Some((Instant::now(), ambient_enabled, result, false));
+                *guard = Some((std::time::Instant::now(), ambient_enabled, result, false));
             }
         });
     }
-
-    None
 }
 
 fn gather_ambient_info_inner(ambient_enabled: bool) -> Option<AmbientWidgetData> {

@@ -1475,6 +1475,23 @@ fn test_info_widget_remote_openai_uses_explicit_route_when_credential_is_missing
 #[test]
 fn test_info_widget_local_direct_api_runtime_shows_cost_based_usage() {
     let _guard = crate::storage::lock_test_env();
+    // Restore on unwind, not only on the success path: a mid-test assertion
+    // panic used to leave these vars cleared, poisoning concurrently running
+    // auth tests that read the same process env (openrouter/named-profile
+    // state) and turning this test into a cross-suite flake source.
+    struct RestoreEnv(Vec<(&'static str, Option<std::ffi::OsString>)>);
+    impl Drop for RestoreEnv {
+        fn drop(&mut self) {
+            for (key, value) in self.0.drain(..) {
+                if let Some(value) = value {
+                    crate::env::set_var(key, value);
+                } else {
+                    crate::env::remove_var(key);
+                }
+            }
+            crate::auth::AuthStatus::invalidate_cache();
+        }
+    }
     let tracked_env = [
         "JCODE_RUNTIME_PROVIDER",
         "JCODE_OPENROUTER_ALLOW_NO_AUTH",
@@ -1486,11 +1503,13 @@ fn test_info_widget_local_direct_api_runtime_shows_cost_based_usage() {
         "JCODE_PROVIDER_PROFILE_ACTIVE",
         "JCODE_PROVIDER_PROFILE_NAME",
     ];
-    let saved_env = tracked_env
-        .iter()
-        .map(|&key| (key, std::env::var_os(key)))
-        .collect::<Vec<_>>();
-    for &key in &tracked_env {
+    let _restore = RestoreEnv(
+        tracked_env
+            .into_iter()
+            .map(|key| (key, std::env::var_os(key)))
+            .collect(),
+    );
+    for key in tracked_env {
         crate::env::remove_var(key);
     }
 
@@ -1598,15 +1617,6 @@ fn test_info_widget_local_direct_api_runtime_shows_cost_based_usage() {
         crate::tui::info_widget::AuthMethod::Unknown
     );
     assert!(data.usage_info.is_none());
-
-    for (key, value) in saved_env {
-        if let Some(value) = value {
-            crate::env::set_var(key, value);
-        } else {
-            crate::env::remove_var(key);
-        }
-    }
-    crate::auth::AuthStatus::invalidate_cache();
 }
 
 #[test]
