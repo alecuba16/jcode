@@ -416,6 +416,17 @@ fn with_temp_jcode_home<T>(f: impl FnOnce() -> T) -> T {
     let temp = tempfile::tempdir().expect("tempdir");
     let prev_home = std::env::var_os("JCODE_HOME");
     crate::env::set_var("JCODE_HOME", temp.path());
+    // Telemetry opt-out env on the developer's machine must not decide whether
+    // the onboarding telemetry tests pass: the temp home has no marker file, so
+    // with JCODE_NO_TELEMETRY/DO_NOT_TRACK inherited these tests would read the
+    // machine state instead of the state they just wrote (upstream #892 fixed
+    // the telemetry-core side; this is the TUI onboarding remainder). Telemetry
+    // HTTP delivery is fully stubbed under cfg(test), so nothing is sent.
+    let saved_telemetry_env = ["JCODE_NO_TELEMETRY", "DO_NOT_TRACK"]
+        .map(|key| (key, std::env::var_os(key)));
+    for (key, _) in saved_telemetry_env.iter() {
+        crate::env::remove_var(key);
+    }
     crate::auth::claude::set_active_account_override(None);
     crate::auth::codex::set_active_account_override(None);
     crate::auth::AuthStatus::invalidate_cache();
@@ -426,6 +437,13 @@ fn with_temp_jcode_home<T>(f: impl FnOnce() -> T) -> T {
 
     let result = f();
 
+    for (key, value) in saved_telemetry_env {
+        if let Some(value) = value {
+            crate::env::set_var(key, value);
+        } else {
+            crate::env::remove_var(key);
+        }
+    }
     crate::auth::claude::set_active_account_override(None);
     crate::auth::codex::set_active_account_override(None);
     crate::auth::AuthStatus::invalidate_cache();
