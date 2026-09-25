@@ -1,3 +1,6 @@
+// Initiative is temporarily unregistered (see the matching comment in
+// mod.rs); the implementation is kept intact so it can be restored without
+// a migration, so the registration gap must not fail the dead_code lint.
 #![cfg_attr(test, allow(clippy::await_holding_lock))]
 
 use super::{Tool, ToolContext, ToolOutput};

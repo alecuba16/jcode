@@ -170,6 +170,26 @@ fn judge_visible_tool_summary(tool: &ToolCall) -> Option<String> {
     }
 }
 
+/// Strip re-rendered reasoning markup from a rendered message body.
+///
+/// `render_messages` inlines persisted reasoning (when the user's display
+/// config shows thinking) as `*{sentinel}...{sentinel}*` lines prefixed to the
+/// assistant text. The judge transcript is a user-visible mirror: private
+/// reasoning must never reach it, regardless of the local display preference.
+fn strip_reasoning_markup(content: &str) -> String {
+    content
+        .lines()
+        .filter(|line| {
+            !line
+                .trim_end()
+                .starts_with(&format!("*{}", jcode_tui_markdown::REASONING_SENTINEL))
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim()
+        .to_string()
+}
+
 fn build_judge_visible_transcript_messages(parent_session: &Session) -> Vec<StoredMessage> {
     let mut transcript = Vec::new();
 
@@ -197,12 +217,12 @@ fn build_judge_visible_transcript_messages(parent_session: &Session) -> Vec<Stor
                 if !rendered.content.trim().is_empty() {
                     transcript.push(judge_transcript_text_message(
                         Role::User,
-                        rendered.content.trim().to_string(),
+                        strip_reasoning_markup(&rendered.content),
                     ));
                 }
             }
             "assistant" => {
-                let mut text = rendered.content.trim().to_string();
+                let mut text = strip_reasoning_markup(&rendered.content);
                 if !rendered.tool_calls.is_empty() {
                     let visible_tools = rendered
                         .tool_calls

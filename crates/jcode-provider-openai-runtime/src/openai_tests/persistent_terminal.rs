@@ -1,5 +1,6 @@
 // Public Provider::complete + EventStream regressions using a loopback Responses
 // server. These are deterministic protocol fixtures, not live OpenAI acceptance.
+#[allow(clippy::await_holding_lock)] // env guard held across async body
 async fn persistent_terminal_public_case(
     error_kind: &str,
     code: Option<&str>,
@@ -138,16 +139,19 @@ async fn persistent_terminal_public_case(
     );
 }
 
+#[allow(clippy::await_holding_lock)] // env guard held across async body
 #[tokio::test]
 async fn persistent_terminal_public_stream_ends() {
     persistent_terminal_public_case("error", None, false, false).await;
 }
 
+#[allow(clippy::await_holding_lock)] // env guard held across async body
 #[tokio::test]
 async fn persistent_terminal_public_next_call_not_stalled() {
     persistent_terminal_public_case("response.failed", None, true, false).await;
 }
 
+#[allow(clippy::await_holding_lock)] // env guard held across async body
 #[tokio::test]
 async fn persistent_terminal_public_missing_previous_full_replay() {
     persistent_terminal_public_case("error", Some("previous_response_not_found"), false, false)
@@ -156,6 +160,7 @@ async fn persistent_terminal_public_missing_previous_full_replay() {
 
 // Synthetic concurrency regression: a mutex waiter is queued before failure,
 // so a caller-side clear after the helper returns cannot hide a stale handoff.
+#[allow(clippy::await_holding_lock)] // env guard held across async body
 #[tokio::test]
 async fn persistent_terminal_failure_invalidates_before_mutex_handoff() {
     let _env_lock = jcode_base::storage::lock_test_env();

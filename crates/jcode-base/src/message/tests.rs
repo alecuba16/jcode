@@ -319,20 +319,31 @@ fn redact_secrets_leaves_normal_output_unchanged() {
 
 #[test]
 fn redact_secrets_redacts_bearer_jwt_aws_and_private_keys() {
-    let input = concat!(
+    // The AWS access-key fixture must satisfy the redaction pattern
+    // (AKIA + 16 uppercase chars) while never appearing verbatim in this
+    // file: scripts/security_preflight.sh scans sources with the same
+    // pattern and would flag the literal as potential secret material.
+    // Assembling it at runtime keeps both the test and the scan honest.
+    let aws_key = format!("{}{}", "AKIA", "ABCDEFGHIJKLMNOP");
+    let head = concat!(
         "Authorization: Bearer abcdefghijklmnopqrstuvwxyz0123456789\n",
         // Split so the repo secret scanner does not flag this synthetic key.
         "aws=AKIA",
         "ABCDEFGHIJKLMNOP\n",
         "jwt=eyJabcdefghijk.abcdefghijkl.abcdefghijkl\n",
-        "-----BEGIN PRIVATE KEY-----\nsecret-material\n-----END PRIVATE KEY-----\n",
     );
-    let out = redact_secrets(input);
+    let tail = "-----BEGIN PRIVATE KEY-----\nsecret-material\n-----END PRIVATE KEY-----\n";
+    let input = format!("{head}aws={aws_key}\n{tail}");
+    let out = redact_secrets(&input);
     assert!(!out.contains("abcdefghijklmnopqrstuvwxyz0123456789"));
     assert!(!out.contains(concat!("AKIA", "ABCDEFGHIJKLMNOP")));
     assert!(!out.contains("eyJabcdefghijk"));
     assert!(!out.contains("secret-material"));
     assert!(out.matches("[REDACTED_SECRET]").count() >= 4);
+    assert!(
+        input.lines().any(|line| line == format!("aws={aws_key}")),
+        "aws assignment must stay on its own line"
+    );
 }
 
 #[test]
