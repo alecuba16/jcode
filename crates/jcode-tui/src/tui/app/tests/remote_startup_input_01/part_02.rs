@@ -395,29 +395,41 @@ fn test_remote_catalog_activity_notification_upserts_compact_row() {
 
 #[test]
 fn test_model_picker_copilot_models_have_copilot_route() {
-    let mut app = create_test_app();
-    configure_test_remote_models_with_copilot(&mut app);
+    // Temp home: route building consults configured OpenAI-compatible
+    // profiles (key env vars and env files under the shared test home), so
+    // without isolation the firmware static model list can claim
+    // grok-code-fast-1 and the copilot route disappears. The env guard scrubs
+    // named-profile runtime vars, which make every built-in profile look
+    // configured when a `--provider-profile` session env leaks in. App
+    // construction can re-apply the config's default provider profile, so
+    // scrub again right before opening the picker.
+    let _named_profile_guard = NamedProfileEnvGuard::new();
+    with_temp_jcode_home(|| {
+        let mut app = create_test_app();
+        let _inner_scrub = NamedProfileEnvGuard::new();
+        configure_test_remote_models_with_copilot(&mut app);
 
-    app.open_model_picker();
+        app.open_model_picker();
 
-    let picker = app
-        .inline_interactive_state
-        .as_ref()
-        .expect("model picker should be open");
+        let picker = app
+            .inline_interactive_state
+            .as_ref()
+            .expect("model picker should be open");
 
-    // grok-code-fast-1 is NOT in ALL_CLAUDE_MODELS or ALL_OPENAI_MODELS,
-    // so it should get a copilot route
-    let grok_entry = picker
-        .entries
-        .iter()
-        .find(|m| m.name == "grok-code-fast-1")
-        .expect("grok-code-fast-1 should be in picker");
+        // grok-code-fast-1 is NOT in ALL_CLAUDE_MODELS or ALL_OPENAI_MODELS,
+        // so it should get a copilot route
+        let grok_entry = picker
+            .entries
+            .iter()
+            .find(|m| m.name == "grok-code-fast-1")
+            .expect("grok-code-fast-1 should be in picker");
 
-    assert!(
-        grok_entry.options.iter().any(|r| r.api_method == "copilot"),
-        "grok-code-fast-1 should have a copilot route, got: {:?}",
-        grok_entry.options
-    );
+        assert!(
+            grok_entry.options.iter().any(|r| r.api_method == "copilot"),
+            "grok-code-fast-1 should have a copilot route, got: {:?}",
+            grok_entry.options
+        );
+    });
 }
 
 #[test]
