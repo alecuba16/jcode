@@ -237,6 +237,7 @@ impl Drop for ScopedLoginTestHome {
     }
 }
 
+#[allow(clippy::await_holding_lock)] // env guard held across async body
 #[tokio::test]
 async fn scoped_concurrent_begin_completion_and_cancel_are_isolated() {
     let _guard = crate::storage::lock_test_env();

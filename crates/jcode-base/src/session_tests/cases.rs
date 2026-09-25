@@ -722,6 +722,47 @@ fn test_recover_crashed_sessions_by_ids_restores_only_selected_group() -> Result
 }
 
 #[test]
+fn debug_and_canary_sessions_are_persisted_before_first_visible_message() -> Result<()> {
+    // Regression for the lazy-save guard (9e8d6e13b): a headless session
+    // created via the debug admin socket is empty and untitled, but later
+    // lookups by id (e2e debug flows, resume) must find the file. The same
+    // explicit-state rule already covers titles (#1144) and parent
+    // linkage; is_debug and is_canary must opt in identically.
+    let _env_lock = lock_env();
+    let temp_home = tempfile::Builder::new()
+        .prefix("jcode-session-debug-save-test-")
+        .tempdir()
+        .map_err(|e| anyhow!(e))?;
+    let _home = EnvVarGuard::set("JCODE_HOME", temp_home.path().as_os_str());
+
+    let id = "session_debug_eager_save";
+    let mut session = Session::create_with_id(id.to_string(), None, None);
+    assert!(session.ensure_initial_session_context_message());
+    session.set_debug(true);
+    session.save()?;
+    assert!(
+        session_path(id)?.exists(),
+        "debug session must persist before any visible message"
+    );
+
+    let canary_id = "session_canary_eager_save";
+    let mut canary = Session::create_with_id(canary_id.to_string(), None, None);
+    assert!(canary.ensure_initial_session_context_message());
+    canary.set_canary("self-dev");
+    canary.save()?;
+    assert!(
+        session_path(canary_id)?.exists(),
+        "canary session must persist before any visible message"
+    );
+
+    let stub = Session::load_startup_stub(id)?;
+    assert!(stub.is_debug);
+    let canary_stub = Session::load_startup_stub(canary_id)?;
+    assert!(canary_stub.is_canary);
+    Ok(())
+}
+
+#[test]
 fn untouched_session_is_not_persisted_until_real_conversation_starts() -> Result<()> {
     let _env_lock = lock_env();
     let temp_home = tempfile::Builder::new()

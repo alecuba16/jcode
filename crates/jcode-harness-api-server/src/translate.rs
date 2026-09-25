@@ -88,9 +88,11 @@ fn flatten_content(content: &Value) -> String {
 use serde_json::{Value, json};
 
 /// Where a translated client request should go.
-#[derive(Debug)]
-// Short-lived per-request value; boxing ServerFrame would touch every reply site.
+/// `Reply` is 9x `Legacy` because `ServerFrame` carries rich reply payloads;
+/// boxing every construction site costs more churn than the enum's
+/// short-lived, low-frequency use justifies.
 #[allow(clippy::large_enum_variant)]
+#[derive(Debug)]
 pub enum Outbound {
     /// Forward to the legacy daemon connection.
     Legacy(Value),
