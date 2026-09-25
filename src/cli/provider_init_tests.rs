@@ -12,6 +12,25 @@ use tempfile::TempDir;
 
 static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
+/// Env vars that can leak a provider-profile or OpenRouter-compatible
+/// configuration into provider init tests. Shared by the save/restore and
+/// cleanup blocks below.
+const PROFILE_ENV_KEYS: [&str; 13] = [
+    "JCODE_PROVIDER_PROFILE_NAME",
+    "JCODE_NAMED_PROVIDER_PROFILE",
+    "JCODE_PROVIDER_PROFILE_ACTIVE",
+    "JCODE_OPENROUTER_API_BASE",
+    "JCODE_OPENROUTER_API_KEY_NAME",
+    "JCODE_OPENROUTER_ENV_FILE",
+    "JCODE_OPENROUTER_ALLOW_NO_AUTH",
+    "JCODE_OPENROUTER_MODEL",
+    "JCODE_OPENROUTER_STATIC_MODELS",
+    "JCODE_OPENROUTER_CACHE_NAMESPACE",
+    "JCODE_OPENROUTER_PROVIDER_FEATURES",
+    "JCODE_OPENROUTER_TRANSPORT_STATE",
+    "JCODE_OPENROUTER_MODEL_CATALOG",
+];
+
 fn lock_env() -> std::sync::MutexGuard<'static, ()> {
     let mutex = ENV_LOCK.get_or_init(|| Mutex::new(()));
     match mutex.lock() {
@@ -99,6 +118,9 @@ async fn explicit_anthropic_api_choice_pins_api_key_over_available_oauth() {
         "JCODE_RUNTIME_PROVIDER",
         "JCODE_ACTIVE_PROVIDER",
         "JCODE_INITIAL_PROVIDER_EXPLICIT",
+        "JCODE_PROVIDER_PROFILE_NAME",
+        "JCODE_NAMED_PROVIDER_PROFILE",
+        "JCODE_PROVIDER_PROFILE_ACTIVE",
     ];
     let saved: Vec<(&str, Option<String>)> = keys
         .iter()
@@ -106,11 +128,15 @@ async fn explicit_anthropic_api_choice_pins_api_key_over_available_oauth() {
         .collect();
 
     crate::env::set_var("JCODE_HOME", dir.path());
+    crate::config::invalidate_config_cache();
     crate::env::set_var("ANTHROPIC_API_KEY", "sk-ant-api-test");
     for key in [
         "JCODE_RUNTIME_PROVIDER",
         "JCODE_ACTIVE_PROVIDER",
         "JCODE_INITIAL_PROVIDER_EXPLICIT",
+        "JCODE_PROVIDER_PROFILE_NAME",
+        "JCODE_NAMED_PROVIDER_PROFILE",
+        "JCODE_PROVIDER_PROFILE_ACTIVE",
     ] {
         crate::env::remove_var(key);
     }
@@ -289,11 +315,23 @@ fn test_init_provider_jcode_delegates_runtime_profile_to_wrapper() {
     let dir = TempDir::new().expect("temp dir");
     let saved_home = std::env::var("JCODE_HOME").ok();
     crate::env::set_var("JCODE_HOME", dir.path());
+    crate::config::invalidate_config_cache();
     crate::subscription_catalog::clear_runtime_env();
     crate::env::remove_var("JCODE_OPENROUTER_MODEL");
     crate::env::remove_var("JCODE_RUNTIME_PROVIDER");
     crate::env::remove_var("JCODE_ACTIVE_PROVIDER");
     crate::env::remove_var("JCODE_INITIAL_PROVIDER_EXPLICIT");
+    crate::env::remove_var("JCODE_PROVIDER_PROFILE_NAME");
+    crate::env::remove_var("JCODE_NAMED_PROVIDER_PROFILE");
+    crate::env::remove_var("JCODE_PROVIDER_PROFILE_ACTIVE");
+    crate::env::remove_var("JCODE_OPENROUTER_API_BASE");
+    crate::env::remove_var("JCODE_OPENROUTER_ALLOW_NO_AUTH");
+    crate::env::remove_var("JCODE_OPENROUTER_MODEL");
+    crate::env::remove_var("JCODE_OPENROUTER_STATIC_MODELS");
+    crate::env::remove_var("JCODE_OPENROUTER_CACHE_NAMESPACE");
+    crate::env::remove_var("JCODE_OPENROUTER_PROVIDER_FEATURES");
+    crate::env::remove_var("JCODE_OPENROUTER_TRANSPORT_STATE");
+    crate::env::remove_var("JCODE_OPENROUTER_MODEL_CATALOG");
 
     let runtime = tokio::runtime::Runtime::new().expect("tokio runtime");
     let provider = runtime
@@ -797,6 +835,10 @@ async fn init_provider_for_ollama_reapplies_local_compat_runtime_env_after_disab
     .collect();
 
     crate::env::set_var("JCODE_HOME", dir.path());
+    crate::config::invalidate_config_cache();
+    crate::env::remove_var("JCODE_PROVIDER_PROFILE_NAME");
+    crate::env::remove_var("JCODE_NAMED_PROVIDER_PROFILE");
+    crate::env::remove_var("JCODE_PROVIDER_PROFILE_ACTIVE");
     crate::subscription_catalog::apply_runtime_env();
 
     let provider = init_provider_for_validation(&ProviderChoice::Ollama, Some("llama3.2"))
@@ -972,10 +1014,38 @@ async fn auto_provider_noninteractive_skips_untrusted_external_auth_instead_of_b
         "JCODE_INITIAL_PROVIDER_EXPLICIT",
     ]
     .iter()
+    .chain(PROFILE_ENV_KEYS.iter())
     .map(|k| (k.to_string(), std::env::var(k).ok()))
     .collect();
 
+    // Also save all built-in OpenAI-compatible profile API key env vars so we
+    // can remove them. Without this, a key like NVIDIA_API_KEY in the user's
+    // shell causes autodetected_openai_compatible_profile() to find a configured
+    // profile, which makes has_credentials() return true and lets Auto init
+    // succeed via maybe_enable_external_api_key_auth_for_auto.
+    let profile_key_vars: Vec<String> = crate::provider_catalog::openrouter_like_api_key_sources()
+        .into_iter()
+        .map(|(env_key, _)| env_key)
+        .filter(|k| !saved.iter().any(|(s, _)| s == k))
+        .collect();
+    let saved_profile_keys: Vec<(String, Option<String>)> = profile_key_vars
+        .iter()
+        .map(|k| (k.clone(), std::env::var(k).ok()))
+        .collect();
+    let saved = [saved, saved_profile_keys].concat();
+
+    // Remove provider-profile, OpenRouter, and all built-in profile API key
+    // env vars BEFORE setting JCODE_HOME and invalidating the config cache,
+    // so the reload doesn't pick them up.
+    for key in PROFILE_ENV_KEYS {
+        crate::env::remove_var(key);
+    }
+    for key in &profile_key_vars {
+        crate::env::remove_var(key);
+    }
+
     crate::env::set_var("JCODE_HOME", dir.path());
+    crate::config::invalidate_config_cache();
     crate::env::set_var("JCODE_NON_INTERACTIVE", "1");
     for key in [
         "JCODE_DEFERRED_AUTH_BOOTSTRAP",
@@ -987,7 +1057,13 @@ async fn auto_provider_noninteractive_skips_untrusted_external_auth_instead_of_b
         "CURSOR_API_KEY",
         "JCODE_ACTIVE_PROVIDER",
         "JCODE_INITIAL_PROVIDER_EXPLICIT",
-    ] {
+    ]
+    .iter()
+    .chain(PROFILE_ENV_KEYS.iter())
+    {
+        crate::env::remove_var(*key);
+    }
+    for key in &profile_key_vars {
         crate::env::remove_var(key);
     }
 
