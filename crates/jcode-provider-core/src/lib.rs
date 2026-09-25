@@ -50,7 +50,7 @@ pub use models::{
 };
 pub use reasoning::{
     DEEPSEEK_SELECTABLE_EFFORTS, OPENAI_SELECTABLE_EFFORTS, OPENROUTER_SELECTABLE_EFFORTS,
-    canonical_reasoning_effort, inferred_reasoning_efforts,
+    SWARM_EFFORTS, canonical_reasoning_effort, inferred_reasoning_efforts,
 };
 pub use selection::{
     ActiveProvider, ProviderAvailability, auto_default_provider, cli_provider_arg_for_session_key,
@@ -1282,6 +1282,8 @@ pub struct RouteCheapnessEstimate {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_read_price_per_mtok_micros: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_write_price_per_mtok_micros: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub included_requests_per_month: Option<u64>,
     pub reference_input_tokens: u64,
     pub reference_output_tokens: u64,
@@ -1308,6 +1310,7 @@ impl RouteCheapnessEstimate {
             input_price_per_mtok_micros: Some(input_price_per_mtok_micros),
             output_price_per_mtok_micros: Some(output_price_per_mtok_micros),
             cache_read_price_per_mtok_micros,
+            cache_write_price_per_mtok_micros: None,
             included_requests_per_month: None,
             reference_input_tokens: CHEAPNESS_REFERENCE_INPUT_TOKENS,
             reference_output_tokens: CHEAPNESS_REFERENCE_OUTPUT_TOKENS,
@@ -1334,6 +1337,7 @@ impl RouteCheapnessEstimate {
             input_price_per_mtok_micros: None,
             output_price_per_mtok_micros: None,
             cache_read_price_per_mtok_micros: None,
+            cache_write_price_per_mtok_micros: None,
             included_requests_per_month,
             reference_input_tokens: CHEAPNESS_REFERENCE_INPUT_TOKENS,
             reference_output_tokens: CHEAPNESS_REFERENCE_OUTPUT_TOKENS,
@@ -1359,12 +1363,18 @@ impl RouteCheapnessEstimate {
             input_price_per_mtok_micros: None,
             output_price_per_mtok_micros: None,
             cache_read_price_per_mtok_micros: None,
+            cache_write_price_per_mtok_micros: None,
             included_requests_per_month,
             reference_input_tokens: CHEAPNESS_REFERENCE_INPUT_TOKENS,
             reference_output_tokens: CHEAPNESS_REFERENCE_OUTPUT_TOKENS,
             estimated_reference_cost_micros,
             note: note.into(),
         }
+    }
+
+    pub fn with_cache_write_price_per_mtok_micros(mut self, value: Option<u64>) -> Self {
+        self.cache_write_price_per_mtok_micros = value;
+        self
     }
 }
 

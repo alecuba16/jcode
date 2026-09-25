@@ -1185,6 +1185,69 @@ fn workspace_widget_has_high_priority_when_enabled() {
 }
 
 #[test]
+fn model_info_shows_effort_bracket_suffix_for_reasoning_model() {
+    // Custom branch layout: model first (gray bold), then the effort bracket
+    // appended as an orange suffix by append_model_runtime_metadata.
+    // Custom OpenAI-compatible providers must get the same bracket.
+    let data = InfoWidgetData {
+        model: Some("gpt-5.3-codex-spark".to_string()),
+        provider_name: Some("mock-gw".to_string()),
+        reasoning_effort: Some("high".to_string()),
+        ..Default::default()
+    };
+    let lines = super::model::render_model_info(&data, Rect::new(0, 0, 40, 10));
+    let text: Vec<String> = lines
+        .iter()
+        .map(|line| {
+            line.spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect::<String>()
+        })
+        .collect();
+    let model_line = text
+        .iter()
+        .find(|l| l.contains("GPT-5.3 Codex Spark"))
+        .expect("model line rendered");
+    assert!(
+        model_line.contains("(hi)"),
+        "reasoning effort bracket missing from model line: {model_line}"
+    );
+}
+
+#[test]
+fn model_info_omits_effort_bracket_for_plain_model() {
+    // A model configured with reasoning = false must not show any bracket.
+    let data = InfoWidgetData {
+        model: Some("my-plain-model".to_string()),
+        provider_name: Some("mock-gw".to_string()),
+        reasoning_effort: None,
+        ..Default::default()
+    };
+    let lines = super::model::render_model_info(&data, Rect::new(0, 0, 40, 10));
+    let joined = lines
+        .iter()
+        .map(|line| {
+            line.spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    for bracket in ["(hi)", "(med)", "(lo)", "(xhigh)", "(max)", "(none)"] {
+        assert!(
+            !joined.contains(bracket),
+            "effort bracket {bracket} must not render for a plain model: {joined}"
+        );
+    }
+    assert!(
+        joined.contains("My Plain Model"),
+        "model line missing: {joined}"
+    );
+}
+
+#[test]
 fn model_widget_renders_connection_type() {
     let data = InfoWidgetData {
         model: Some("gpt-5.3-codex".to_string()),

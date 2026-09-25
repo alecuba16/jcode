@@ -73,7 +73,7 @@ async fn apply_remote_effort_direction(
     // provider does not support it until the History payload settles.
     let (provider_name, provider_model) = app.remote_effort_identity();
     let efforts =
-        app_mod::inferred_reasoning_efforts(provider_name.as_deref(), provider_model.as_deref());
+        app_mod::remote_reasoning_efforts(provider_name.as_deref(), provider_model.as_deref());
     if efforts.is_empty() {
         app.set_status_notice("Reasoning effort not available for this provider");
         return Ok(());
@@ -81,7 +81,7 @@ async fn apply_remote_effort_direction(
     let current = app.remote_reasoning_effort_hint();
     let current = current.as_deref();
     let current_index = current
-        .and_then(|c| efforts.iter().position(|e| *e == c))
+        .and_then(|c| efforts.iter().position(|e| e == c))
         .unwrap_or(efforts.len() - 1);
     let len = efforts.len();
     let next_index = if direction > 0 {
@@ -95,22 +95,22 @@ async fn apply_remote_effort_direction(
     } else {
         current_index - 1
     };
-    let next_effort = efforts[next_index];
-    if Some(next_effort) == current {
-        let label = app_mod::effort_display_label(next_effort);
+    let next_effort = efforts[next_index].clone();
+    if current == Some(next_effort.as_str()) {
+        let label = app_mod::effort_display_label(&next_effort);
         app.set_status_notice(format!(
             "Effort: {} (already at {})",
             label,
             if direction > 0 { "max" } else { "min" }
         ));
     } else {
-        app.remote_reasoning_effort = Some(next_effort.to_string());
+        app.remote_reasoning_effort = Some(next_effort.clone());
         app.invalidate_model_picker_cache();
         app.set_status_notice(format!(
             "Effort: {} (will apply to next request)",
-            app_mod::effort_display_label(next_effort)
+            app_mod::effort_display_label(&next_effort)
         ));
-        remote.set_reasoning_effort(next_effort).await?;
+        remote.set_reasoning_effort(&next_effort).await?;
     }
     Ok(())
 }
@@ -1226,7 +1226,7 @@ async fn handle_remote_key_internal(
                         .map(app_mod::effort_display_label)
                         .unwrap_or("default");
                     let (provider_name, provider_model) = app.remote_effort_identity();
-                    let efforts = app_mod::inferred_reasoning_efforts(
+                    let efforts = app_mod::remote_reasoning_efforts(
                         provider_name.as_deref(),
                         provider_model.as_deref(),
                     );
@@ -1239,7 +1239,7 @@ async fn handle_remote_key_internal(
                     let list: Vec<String> = efforts
                         .iter()
                         .map(|e| {
-                            if Some(*e) == current {
+                            if Some(e.as_str()) == current {
                                 format!("{} <- current", app_mod::effort_display_label(e))
                             } else {
                                 app_mod::effort_display_label(e).to_string()
@@ -1262,11 +1262,11 @@ async fn handle_remote_key_internal(
                         return Ok(());
                     }
                     let (provider_name, provider_model) = app.remote_effort_identity();
-                    let efforts = app_mod::inferred_reasoning_efforts(
+                    let efforts = app_mod::remote_reasoning_efforts(
                         provider_name.as_deref(),
                         provider_model.as_deref(),
                     );
-                    if efforts.contains(&level) {
+                    if efforts.iter().any(|e| e == level) {
                         app.remote_reasoning_effort = Some(level.to_string());
                         app.invalidate_model_picker_cache();
                         app.set_status_notice(format!(

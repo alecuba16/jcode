@@ -418,7 +418,27 @@ Useful environment overrides for these endpoints:
 
 - `JCODE_STREAM_IDLE_TIMEOUT_SECS` — raise the base streaming idle timeout (default 180s) for slow reasoning models that think silently before emitting tokens. High reasoning efforts scale this automatically (high 2x, xhigh 3x, max 4x). Also settable as `[provider] stream_idle_timeout_secs` in `config.toml`.
 - Per-model `context_window` (alias `context_limit`) in a `[[providers.<name>.models]]` entry — set the context window when the endpoint has no usable `/v1/models` response, so jcode does not fall back to the generic 200k default.
+- Per-model `display_name` (alias `name`) in `[[providers.<name>.models]]` — human-friendly name shown in the `/model` picker instead of the raw model id.
+- Per-model `max_output_tokens` (alias `output_limit`) — override the max output tokens sent in the request body for that model.
+- Per-model `reasoning` (bool) — enable or force-disable the reasoning effort ladder (`/effort` picker) for a model. `true` enables it on gateways that are not auto-detected as reasoning-capable; `false` force-disables it even on models that would otherwise auto-qualify (DeepSeek-family or GPT-family reasoning models).
+- Per-model `reasoning_map` (alias `reasoning-map`) — opencode-style per-effort-level mapping. Each rung (`none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`) maps to a wire value for the `reasoning_effort` field or is disabled outright. See [Per-effort-level reasoning map](#per-effort-level-reasoning-map-reasoning_map) below.
+- Per-model `cost` — input/output/cache_read/cache_write USD per million tokens, surfaced in the picker cost overlay.
+- Provider-level `display_name` — overrides the raw profile key as the provider label in the `/model` picker.
 - `extra_body` — inject non-standard top-level fields into every chat/completions request body for backends that require them. See [Extra request-body fields](#extra-request-body-fields-extra_body) below.
+
+**Per-model and provider-level settings summary:**
+
+| Setting | Scope | Description |
+|---------|-------|-------------|
+| `display_name` (alias `name`) | per-model / provider | Human-friendly label shown in the `/model` picker |
+| `context_window` (alias `context_limit`) | per-model | Override the context window when no `/v1/models` response is available |
+| `max_output_tokens` (alias `output_limit`) | per-model | Override max output tokens in the request body |
+| `reasoning` | per-model | `true` enables the `/effort` ladder; `false` force-disables it |
+| `reasoning_map` | per-model | Per-rung `reasoning_effort` wire value or `disabled = true`; defines the `/effort` ladder for that model |
+| `cost` | per-model | `{ input, output, cache_read, cache_write }` USD per 1M tokens, shown in the picker |
+| `display_name` | provider | Override the raw profile key as the provider label in the picker |
+
+> **Note on Mistral:** `reasoning: true` sends the `reasoning_effort` field in the request body. Mistral only accepts this field for `mistral-small-*` models. Other Mistral models (e.g. `mistral-large-latest`, `mistral-medium-latest`) will reject it with a 422 error. Magistral models reason natively and do not need the parameter.
 
 For details on self-hosting, local runtimes, and the exact config file shape, see below.
 
@@ -489,9 +509,8 @@ base_url = "https://llm.example.com/v1"
 api_key_env = "JCODE_PROVIDER_MY_API_API_KEY"
 env_file = "provider-my-api.env"
 default_model = "my-model-id"
-# Optional: prevent model names such as `gpt-5-*` from automatically enabling
-# `reasoning_effort` on gateways that reject it.
 disable_reasoning_heuristics = true
+display_name = "My Custom API"
 
 [[providers.my-api.models]]
 id = "my-model-id"
@@ -500,6 +519,9 @@ context_window = 128000
 # `reasoning = false` on an individual model to disable it instead.
 reasoning = true
 reasoning_effort = "high"
+display_name = "My Model"
+max_output_tokens = 8192
+cost = { input = 0.15, output = 0.60, cache_read = 0.015 }
 ```
 
 Anthropic Messages-compatible gateways use the same named-profile surface with
@@ -555,6 +577,41 @@ Some OpenAI-compatible backends require non-standard top-level request fields. F
    ```
 
 Keys from `extra_body` are merged last and override any jcode-generated body field with the same name (`JCODE_OPENAI_EXTRA_BODY` wins over the config `extra_body` on key collisions). Invalid values are logged and ignored rather than failing the request.
+
+#### Per-effort-level reasoning map (`reasoning_map`)
+
+Some OpenAI-compatible gateways accept the standard `reasoning_effort` field but only for a subset of the levels jcode can pick, or expect a different wire value per level. `reasoning_map` (alias `reasoning-map`) on a `[[providers.<name>.models]]` entry pins down, per effort rung, exactly what is sent in the request body — or that the rung is not offered at all:
+
+```toml
+[providers.my-gateway]
+type = "openai-compatible"
+base_url = "https://my-gateway.example/v1"
+api_key_env = "MY_GATEWAY_API_KEY"
+default_model = "my-reasoning-model"
+
+[[providers.my-gateway.models]]
+id = "my-reasoning-model"
+
+[providers.my-gateway.models.reasoning_map]
+xhigh = { reasoningEffort = "xhigh" }
+high  = { reasoningEffort = "high" }
+medium = { disabled = true }
+low = { disabled = true }
+```
+
+Each rung key (`none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`) is optional. Inside a rung, `reasoningEffort` (alias `reasoning_effort`) sets the wire value sent as `reasoning_effort` in the request body; `disabled = true` removes that rung from the `/effort` picker and rejects it if a saved session or swarm asks for it.
+
+Semantics:
+
+- The `/effort` picker for that model lists only the enabled rungs of the map, plus the `swarm`/`swarm-deep` sentinels for swarm routing.
+- With `reasoningEffort` omitted, the rung name itself is sent (e.g. `high = {}` sends `"high"`).
+- Wire values are sent verbatim, so a rung can target a non-standard value the gateway expects (`xhigh = { reasoningEffort = "very_high" }`).
+- Rungs absent from the map fall back to the built-in ladder behavior for the model (family detection plus the `reasoning` flag).
+- `reasoning = false` on the same model still force-disables everything, map included.
+- The configured provider/model `default_effort` must be an enabled rung of the map.
+- Switching effort mid-session (`/effort`, keybinding, or swarm routing) is honored per request: the next completion uses the newly selected rung's wire value.
+
+This mirrors opencode's per-level reasoning mapping so configs port over with only key-casing changes (`reasoningEffort` is accepted as-is).
 
 The custom OpenAI-compatible provider reads overrides from environment variables or from an env file in jcode's app config directory. On Linux this is usually `~/.config/jcode/`, so the default file is usually:
 
