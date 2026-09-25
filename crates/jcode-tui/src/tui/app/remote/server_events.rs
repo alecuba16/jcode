@@ -2301,6 +2301,7 @@ pub(in crate::tui::app) fn handle_server_event(
             provider_name,
             error,
             resolved_credential,
+            reasoning_effort,
             ..
         } => {
             app.remote_model_switch_in_flight = false;
@@ -2325,6 +2326,10 @@ pub(in crate::tui::app) fn handle_server_event(
             } else {
                 app.update_context_limit_for_model(&model);
                 app.remote_provider_model = Some(model.clone());
+                // Always replace, like resolved_credential below: the wire type
+                // always serializes the field, and None means the switched-to
+                // model runs without an effort (never keep the stale level).
+                app.remote_reasoning_effort = reasoning_effort;
                 app.clear_remote_startup_phase();
                 if let Some(ref pname) = provider_name {
                     app.remote_provider_name = Some(pname.clone());

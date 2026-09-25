@@ -1314,3 +1314,86 @@ fn remote_submit_input_never_strands_a_local_pending_turn() {
         "the prompt should be queued for the remote tick loop"
     );
 }
+
+fn model_changed_event(reasoning_effort: Option<&str>, error: Option<&str>) -> ServerEvent {
+    ServerEvent::ModelChanged {
+        id: 1,
+        model: "switched-model".to_string(),
+        provider_name: Some("mock".to_string()),
+        error: error.map(str::to_string),
+        resolved_credential: None,
+        reasoning_effort: reasoning_effort.map(str::to_string),
+    }
+}
+
+/// A successful switch must adopt the effort the switched-to model runs with,
+/// so the effort chip never shows a level the new model does not use.
+#[test]
+fn model_changed_adopts_reported_reasoning_effort() {
+    let rt = tokio::runtime::Runtime::new().expect("runtime");
+    let _guard = rt.enter();
+    let mut app = create_test_app();
+    app.is_remote = true;
+    app.remote_reasoning_effort = Some("high".to_string());
+    let mut remote = crate::tui::backend::RemoteConnection::dummy();
+
+    handle_server_event(
+        &mut app,
+        model_changed_event(Some("low"), None),
+        &mut remote,
+    );
+
+    assert_eq!(
+        app.remote_reasoning_effort.as_deref(),
+        Some("low"),
+        "the chip must show the switched-to model's effort, not the stale one"
+    );
+    assert_eq!(
+        app.remote_provider_model.as_deref(),
+        Some("switched-model"),
+        "the switch must still update the model name"
+    );
+}
+
+/// Switching to a model that reports no effort must clear the chip: keeping
+/// the previous level would advertise a capability the new model lacks.
+#[test]
+fn model_changed_clears_reasoning_effort_when_none_reported() {
+    let rt = tokio::runtime::Runtime::new().expect("runtime");
+    let _guard = rt.enter();
+    let mut app = create_test_app();
+    app.is_remote = true;
+    app.remote_reasoning_effort = Some("high".to_string());
+    let mut remote = crate::tui::backend::RemoteConnection::dummy();
+
+    handle_server_event(&mut app, model_changed_event(None, None), &mut remote);
+
+    assert!(
+        app.remote_reasoning_effort.is_none(),
+        "a switch to an effort-less model must clear the stale effort chip"
+    );
+}
+
+/// A failed switch leaves the running model (and its effort) untouched, so the
+/// event must not clobber the effort either.
+#[test]
+fn model_changed_failure_leaves_reasoning_effort_untouched() {
+    let rt = tokio::runtime::Runtime::new().expect("runtime");
+    let _guard = rt.enter();
+    let mut app = create_test_app();
+    app.is_remote = true;
+    app.remote_reasoning_effort = Some("high".to_string());
+    let mut remote = crate::tui::backend::RemoteConnection::dummy();
+
+    handle_server_event(
+        &mut app,
+        model_changed_event(None, Some("model switching unavailable")),
+        &mut remote,
+    );
+
+    assert_eq!(
+        app.remote_reasoning_effort.as_deref(),
+        Some("high"),
+        "a failed switch must not touch the effort chip"
+    );
+}
