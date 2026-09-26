@@ -530,6 +530,41 @@ For direct environment-based configuration, `ANTHROPIC_BASE_URL` overrides the
 non-OAuth Messages endpoint and `ANTHROPIC_AUTH_TOKEN` is sent as a bearer token.
 Claude OAuth traffic always continues to use Anthropic's official endpoints.
 
+##### HTTP header overrides (`user_agent`, `headers`)
+
+Gateways sometimes filter or authenticate by `User-Agent` or expect extra
+headers on every request (corporate proxies, usage attribution, routing hints).
+Both levels of config accept overrides, and a named profile's value wins per
+header name over the global one. Overrides are applied after jcode's own
+headers, so they replace built-ins (the default User-Agent, `anthropic-beta`,
+the kimi coding-agent UA) instead of appending duplicates:
+
+```toml
+[provider]
+# Global defaults for every provider request.
+user_agent = "corp-agent/9.9"
+
+[provider.headers]
+x-tenant-id = "tenant-42"
+
+[providers.corp-claude]
+type = "anthropic-compatible"
+base_url = "https://gateway.example.com/anthropic/v1"
+# This profile's own values beat the global ones per header name.
+user_agent = "claude-agent/2.0"
+
+[providers.corp-claude.headers]
+x-route = "claude"
+```
+
+The same `user_agent` and `headers` keys work on `openai-compatible` profiles
+and apply to chat completions, model catalog, endpoint and Ollama native
+requests alike. Header names match case-insensitively (HTTP semantics), so
+`user-agent` and `User-Agent` are the same header at every level. Invalid
+header names or values fail provider startup with an error naming the
+offending profile. Claude OAuth traffic is exempt: it keeps Claude CLI identity
+headers.
+
 ##### Extra request-body fields (`extra_body`)
 
 Some OpenAI-compatible backends require non-standard top-level request fields. For example, NVIDIA NIM DeepSeek-V4 reasoning models (`deepseek-ai/deepseek-v4-flash`, `deepseek-ai/deepseek-v4-pro`) only enable thinking when the request includes `chat_template_kwargs`; without it they reply without reasoning (or, for some deployments, hang). jcode lets you inject arbitrary top-level fields two ways.

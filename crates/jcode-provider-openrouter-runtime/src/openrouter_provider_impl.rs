@@ -268,6 +268,7 @@ impl Provider for OpenRouterProvider {
         let request_for_retries = request;
         let model_for_stream = model.clone();
         let provider_pin = Arc::clone(&self.provider_pin);
+        let http_header_overrides = self.http_header_overrides.clone();
 
         tokio::spawn(async move {
             if tx
@@ -284,6 +285,7 @@ impl Provider for OpenRouterProvider {
                 api_base,
                 auth,
                 send_openrouter_headers,
+                http_header_overrides,
                 conversation_id,
                 request_for_retries,
                 tx,
@@ -807,6 +809,7 @@ impl Provider for OpenRouterProvider {
             )),
             endpoints_cache: Arc::clone(&self.endpoints_cache),
             endpoint_refresh: Arc::clone(&self.endpoint_refresh),
+            http_header_overrides: self.http_header_overrides.clone(),
         })
     }
 }

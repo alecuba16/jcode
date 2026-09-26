@@ -502,8 +502,13 @@ pub struct NamedProviderConfig {
     pub auth: NamedProviderAuth,
     pub auth_header: Option<String>,
     /// Extra HTTP headers sent with every request to this provider.
+    /// Applied after jcode's own headers, overriding any same-named header.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub headers: std::collections::BTreeMap<String, String>,
+    /// Override the `User-Agent` header for requests to this provider.
+    /// Takes precedence over the global `[provider].user_agent` value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_agent: Option<String>,
     pub api_key_env: Option<String>,
     pub api_key: Option<String>,
     pub env_file: Option<String>,
@@ -551,6 +556,7 @@ impl Default for NamedProviderConfig {
             auth: NamedProviderAuth::Bearer,
             auth_header: None,
             headers: std::collections::BTreeMap::new(),
+            user_agent: None,
             api_key_env: None,
             api_key: None,
             env_file: None,
@@ -1344,6 +1350,13 @@ pub struct ProviderConfig {
     /// Maximum exponential-backoff delay between transient-error retries.
     /// Default: 30 seconds. Overridable via `JCODE_RETRY_BACKOFF_CAP_SECS`.
     pub retry_backoff_cap_secs: u64,
+    /// Global `User-Agent` override for provider HTTP requests. Provider
+    /// profiles that set their own `user_agent` take precedence over this.
+    pub user_agent: Option<String>,
+    /// Global extra HTTP headers applied to provider requests. Provider
+    /// profiles' own `headers` take precedence per header name.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub headers: std::collections::BTreeMap<String, String>,
 }
 
 impl Default for ProviderConfig {
@@ -1368,6 +1381,8 @@ impl Default for ProviderConfig {
             stream_idle_timeout_secs: 180,
             max_retries: 8,
             retry_backoff_cap_secs: 30,
+            user_agent: None,
+            headers: std::collections::BTreeMap::new(),
         }
     }
 }

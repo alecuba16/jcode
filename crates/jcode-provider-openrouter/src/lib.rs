@@ -554,6 +554,13 @@ fn save_disk_cache_with_source_to_path(
 fn endpoints_cache_path(model: &str) -> PathBuf {
     let safe_name = model.replace('/', "__");
     let namespace = configured_cache_namespace();
+    // Honor JCODE_HOME like the models cache does, so tests and parallel
+    // installs stay hermetic instead of writing into the real ~/.jcode/cache.
+    if let Ok(path) = std::env::var("JCODE_HOME") {
+        return PathBuf::from(path)
+            .join("cache")
+            .join(format!("{}_endpoints_{}.json", namespace, safe_name));
+    }
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join(".jcode")

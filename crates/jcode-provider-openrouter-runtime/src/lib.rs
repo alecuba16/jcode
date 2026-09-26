@@ -27,6 +27,7 @@ use jcode_base::provider_catalog::{
     openai_compatible_profile_by_id, openai_compatible_profile_id_for_api_base,
     openai_compatible_profile_static_context_limits, openai_compatible_profile_static_models,
     openai_compatible_profiles, resolve_openai_compatible_profile,
+    resolved_provider_http_header_overrides,
 };
 use jcode_message_types::{CacheControl, ContentBlock, Message, Role, StreamEvent, ToolDefinition};
 use jcode_provider_core::{EventStream, Provider};
@@ -43,7 +44,7 @@ use jcode_provider_openrouter::{
 };
 use models_catalog_parse::parse_openai_compatible_models_response;
 use reqwest::Client;
-use reqwest::header::HeaderName;
+use reqwest::header::{HeaderMap, HeaderName};
 use serde::Deserialize;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -581,21 +582,28 @@ async fn fetch_models_from_api(
     client: Client,
     api_base: String,
     auth: ProviderAuth,
+    http_header_overrides: HeaderMap,
     models_cache: Arc<RwLock<ModelsCache>>,
     cache_namespace: Option<String>,
 ) -> Result<Vec<ModelInfo>> {
     let url = format!("{}/models", api_base);
-    let response =
-        apply_kimi_coding_agent_headers(auth.apply(client.get(&url)).await?, &api_base, None)
-            .send()
-            .await
-            .with_context(|| {
-                format!(
-                    "Failed to send OpenAI-compatible model catalog request\n  endpoint: {}\n  auth: {}\nHint: check network connectivity, DNS/TLS, and that the base URL includes the API version (usually /v1).",
-                    url,
-                    auth.label()
-                )
-            })?;
+    let response = apply_kimi_coding_agent_headers(
+        auth.apply(client.get(&url)).await?,
+        &api_base,
+        None,
+    )
+    // Config-driven overrides apply last so they win over any same-named
+    // header jcode set earlier on the request.
+    .headers(http_header_overrides.clone())
+    .send()
+    .await
+    .with_context(|| {
+        format!(
+            "Failed to send OpenAI-compatible model catalog request\n  endpoint: {}\n  auth: {}\nHint: check network connectivity, DNS/TLS, and that the base URL includes the API version (usually /v1).",
+            url,
+            auth.label()
+        )
+    })?;
 
     if !response.status().is_success() {
         let status = response.status();
@@ -623,7 +631,7 @@ async fn fetch_models_from_api(
         })?;
 
     let ns = cache_namespace.as_deref();
-    ollama_context::maybe_enrich(&client, &api_base, ns, &mut models).await;
+    ollama_context::maybe_enrich(&client, &api_base, ns, &http_header_overrides, &mut models).await;
     if let Some(namespace) = ns {
         save_disk_cache_with_source_for_namespace(namespace, &models, Some(&api_base));
     } else {
@@ -798,6 +806,14 @@ pub fn maybe_schedule_openai_compatible_profile_catalog_refresh(
             jcode_provider_core::shared_http_client(),
             api_base,
             auth,
+            // Catalog refreshes for named profiles honor the same merged
+            // header overrides as the foreground runtime (profile wins).
+            jcode_base::provider_catalog::resolved_provider_http_header_overrides(
+                &jcode_base::config::config().provider,
+                jcode_base::config::config().providers.get(&profile_id),
+                &profile_id,
+            )
+            .unwrap_or_default(),
             models_cache,
             Some(profile_id.clone()),
         )
@@ -906,6 +922,14 @@ pub fn maybe_schedule_standard_openrouter_catalog_refresh(context: &'static str)
             jcode_provider_core::shared_http_client(),
             api_base,
             auth,
+            // The standard OpenRouter catalog targets canonical openrouter.ai;
+            // only global [provider] overrides apply (no named profile).
+            jcode_base::provider_catalog::resolved_provider_http_header_overrides(
+                &jcode_base::config::config().provider,
+                None,
+                "openrouter",
+            )
+            .unwrap_or_default(),
             models_cache,
             Some(namespace.to_string()),
         )
@@ -981,6 +1005,12 @@ pub struct OpenRouterProvider {
     endpoints_cache: Arc<RwLock<EndpointsCache>>,
     /// Background refresh state for per-model endpoint data
     endpoint_refresh: Arc<Mutex<EndpointRefreshTracker>>,
+    /// Config-driven HTTP header overrides (User-Agent and arbitrary extra
+    /// headers) applied last to every outgoing request, so they win over any
+    /// built-in header. Resolved once at construction by merging the global
+    /// `[provider]` config with the active named profile (profile wins per
+    /// header name).
+    http_header_overrides: HeaderMap,
 }
 
 impl OpenRouterProvider {
@@ -1555,6 +1585,11 @@ impl OpenRouterProvider {
             provider_pin: Arc::new(Mutex::new(None)),
             endpoints_cache: Arc::new(RwLock::new(HashMap::new())),
             endpoint_refresh: Arc::new(Mutex::new(EndpointRefreshTracker::default())),
+            http_header_overrides: resolved_provider_http_header_overrides(
+                &jcode_base::config::config().provider,
+                Some(profile),
+                profile_name,
+            )?,
         };
         let initial_effort = if provider.supports_any_reasoning_effort() {
             provider.configured_effort_for_model()
@@ -1761,6 +1796,13 @@ impl OpenRouterProvider {
             provider_pin: Arc::new(Mutex::new(None)),
             endpoints_cache: Arc::new(RwLock::new(HashMap::new())),
             endpoint_refresh: Arc::new(Mutex::new(EndpointRefreshTracker::default())),
+            // Global [provider] overrides only: this runtime has no named
+            // profile, so there is no per-profile layer to merge.
+            http_header_overrides: resolved_provider_http_header_overrides(
+                &jcode_base::config::config().provider,
+                None,
+                "[provider]",
+            )?,
         })
     }
 
@@ -1815,6 +1857,9 @@ impl OpenRouterProvider {
             provider_pin: Arc::new(Mutex::new(None)),
             endpoints_cache: Arc::new(RwLock::new(HashMap::new())),
             endpoint_refresh: Arc::new(Mutex::new(EndpointRefreshTracker::default())),
+            // Grok build-subscription requests carry identity headers set by
+            // the dedicated client defaults, so no config overrides apply.
+            http_header_overrides: HeaderMap::new(),
         }
     }
 
@@ -1859,6 +1904,13 @@ impl OpenRouterProvider {
             provider_pin: Arc::new(Mutex::new(None)),
             endpoints_cache: Arc::new(RwLock::new(HashMap::new())),
             endpoint_refresh: Arc::new(Mutex::new(EndpointRefreshTracker::default())),
+            // Global [provider] overrides only: this runtime has no named
+            // profile, so there is no per-profile layer to merge.
+            http_header_overrides: resolved_provider_http_header_overrides(
+                &jcode_base::config::config().provider,
+                None,
+                "[provider]",
+            )?,
         })
     }
 
@@ -1931,6 +1983,13 @@ impl OpenRouterProvider {
             provider_pin: Arc::new(Mutex::new(None)),
             endpoints_cache: Arc::new(RwLock::new(HashMap::new())),
             endpoint_refresh: Arc::new(Mutex::new(EndpointRefreshTracker::default())),
+            // Global [provider] overrides only: this runtime has no named
+            // profile, so there is no per-profile layer to merge.
+            http_header_overrides: resolved_provider_http_header_overrides(
+                &jcode_base::config::config().provider,
+                None,
+                "[provider]",
+            )?,
         })
     }
 
@@ -2110,6 +2169,7 @@ impl OpenRouterProvider {
         let refresh_state = Arc::clone(&self.endpoint_refresh);
         let endpoints_cache = Arc::clone(&self.endpoints_cache);
         let previous_fingerprint = self.cached_endpoints_fingerprint(model);
+        let http_header_overrides = self.http_header_overrides.clone();
 
         handle.spawn(async move {
             let provider = OpenRouterProvider {
@@ -2137,6 +2197,7 @@ impl OpenRouterProvider {
                 provider_pin: Arc::new(Mutex::new(None)),
                 endpoints_cache,
                 endpoint_refresh: Arc::clone(&refresh_state),
+                http_header_overrides,
             };
 
             match provider.fetch_endpoints(&model_name).await {
@@ -2195,8 +2256,18 @@ impl OpenRouterProvider {
         let refresh_state = Arc::clone(&self.model_catalog_refresh);
         let previous_fingerprint = self.cached_model_catalog_fingerprint();
         let ns = self.foreground_cache_namespace();
+        let http_header_overrides = self.http_header_overrides.clone();
         handle.spawn(async move {
-            match fetch_models_from_api(client, api_base, auth, models_cache, ns).await {
+            match fetch_models_from_api(
+                client,
+                api_base,
+                auth,
+                http_header_overrides,
+                models_cache,
+                ns,
+            )
+            .await
+            {
                 Ok(models) => {
                     let updated = models_fingerprint(&models) != previous_fingerprint;
                     if updated {
@@ -2674,6 +2745,7 @@ impl OpenRouterProvider {
             self.client.clone(),
             self.api_base.clone(),
             self.auth.clone(),
+            self.http_header_overrides.clone(),
             Arc::clone(&self.models_cache),
             self.foreground_cache_namespace(),
         )
@@ -2686,6 +2758,7 @@ impl OpenRouterProvider {
             self.client.clone(),
             self.api_base.clone(),
             self.auth.clone(),
+            self.http_header_overrides.clone(),
             Arc::clone(&self.models_cache),
             self.foreground_cache_namespace(),
         )
@@ -2727,6 +2800,9 @@ impl OpenRouterProvider {
             .auth
             .apply(self.client.get(&url))
             .await?
+            // Config-driven overrides apply last so they win over any
+            // same-named header jcode set earlier on the request.
+            .headers(self.http_header_overrides.clone())
             .send()
             .await
             .context("Failed to fetch endpoint data")?;
@@ -2782,6 +2858,9 @@ impl OpenRouterProvider {
             .auth
             .apply(self.client.get(&url))
             .await?
+            // Config-driven overrides apply last so they win over any
+            // same-named header jcode set earlier on the request.
+            .headers(self.http_header_overrides.clone())
             .send()
             .await
             .context("Failed to refresh endpoint data")?;
