@@ -343,3 +343,132 @@ fn test_usage_enter_requests_report_with_inline_view() {
     );
     assert!(app.usage_report_refreshing);
 }
+
+#[test]
+fn test_show_tps_command_persists_and_applies_immediately() {
+    with_temp_jcode_home(|| {
+        // Start from the default (shown).
+        assert!(crate::config::Config::load().display.show_tps);
+
+        let mut app = create_test_app();
+        app.input = "/settings tps off".to_string();
+
+        app.submit_input();
+
+        let cfg = crate::config::Config::load();
+        assert!(!cfg.display.show_tps, "the off value must persist");
+        assert_eq!(app.status_notice(), Some("TPS display: off".to_string()));
+
+        let last = app.display_messages().last().expect("missing response");
+        assert_eq!(last.role, "system");
+        assert!(
+            last.content.contains("Saved TPS display: off"),
+            "got: {}",
+            last.content
+        );
+
+        // And back on, through the same acceptance path.
+        app.input = "/settings tps on".to_string();
+        app.submit_input();
+        assert!(crate::config::Config::load().display.show_tps);
+        assert_eq!(app.status_notice(), Some("TPS display: on".to_string()));
+    });
+}
+
+#[test]
+fn test_show_tps_command_status_reports_current_value() {
+    with_temp_jcode_home(|| {
+        crate::config::Config::set_show_tps(false).expect("save default");
+
+        let mut app = create_test_app();
+        app.input = "/settings tps status".to_string();
+
+        app.submit_input();
+
+        let last = app.display_messages().last().expect("missing response");
+        assert_eq!(last.role, "system");
+        assert!(
+            last.content.contains("TPS display is currently off"),
+            "got: {}",
+            last.content
+        );
+    });
+}
+
+#[test]
+fn test_show_tps_command_invalid_value_shows_usage_error() {
+    let mut app = create_test_app();
+    app.input = "/settings tps bogus".to_string();
+
+    app.submit_input();
+
+    let last = app.display_messages().last().expect("missing response");
+    assert_eq!(last.role, "error");
+    assert!(
+        last.content.contains("Usage: /settings tps"),
+        "got: {}",
+        last.content
+    );
+}
+
+#[test]
+fn test_show_tps_false_config_hides_tps_from_widget_builders() {
+    with_temp_jcode_home(|| {
+        // The file value alone (no env override) must hide the t/s surfaces.
+        crate::config::Config::set_show_tps(false).expect("save off");
+
+        let mut app = create_test_app();
+        app.is_processing = true;
+        app.status = ProcessingStatus::Streaming;
+        // A live sample the builders would otherwise surface.
+        app.streaming.streaming_tps_collect_output = true;
+        // Deterministic live sample: 240 tokens / exact 400ms -> 600 t/s.
+        app.streaming.streaming_total_output_tokens = 240;
+        app.streaming.streaming_tps_observed_output_tokens = 240;
+        app.streaming.streaming_tps_elapsed = std::time::Duration::from_millis(400);
+        app.streaming.streaming_tps_start = None;
+        app.snapshot_streaming_tps();
+
+        use crate::tui::TuiState;
+        let data = app.info_widget_data();
+
+        assert_eq!(data.tokens_per_second, None);
+        assert_eq!(data.avg_tokens_per_second, None);
+        assert_eq!(data.usage_info.as_ref().and_then(|u| u.output_tps), None);
+        assert_eq!(app.output_tps(), None);
+    });
+}
+
+#[test]
+fn test_show_tps_env_override_hides_tps() {
+    with_temp_jcode_home(|| {
+        let prev = std::env::var_os("JCODE_SHOW_TPS");
+        crate::env::set_var("JCODE_SHOW_TPS", "off");
+        crate::config::invalidate_config_cache();
+
+        let mut app = create_test_app();
+        app.is_processing = true;
+        app.status = ProcessingStatus::Streaming;
+        app.streaming.streaming_tps_collect_output = true;
+        // Deterministic live sample: 240 tokens / exact 400ms -> 600 t/s.
+        app.streaming.streaming_total_output_tokens = 240;
+        app.streaming.streaming_tps_observed_output_tokens = 240;
+        app.streaming.streaming_tps_elapsed = std::time::Duration::from_millis(400);
+        app.streaming.streaming_tps_start = None;
+        app.snapshot_streaming_tps();
+
+        use crate::tui::TuiState;
+        let data = app.info_widget_data();
+
+        assert_eq!(data.tokens_per_second, None);
+        assert_eq!(app.output_tps(), None);
+
+        // Restore the ambient env so nothing leaks into later tests.
+        if let Some(prev) = prev {
+            crate::env::set_var("JCODE_SHOW_TPS", prev);
+        } else {
+            crate::env::remove_var("JCODE_SHOW_TPS");
+        }
+        crate::config::invalidate_config_cache();
+    });
+}

@@ -11,8 +11,8 @@ pub use jcode_config_types::{
     MarkdownSpacingMode, NamedProviderAuth, NamedProviderConfig, NamedProviderModelConfig,
     NamedProviderType, NativeScrollbarConfig, NotificationsConfig, OverscrollStatusMode,
     PowerConfig, ProviderConfig, ReasoningDisplayMode, SafetyConfig, SessionPickerResumeAction,
-    SponsorsConfig, SwarmSpawnMode, SwarmStripLayout, TerminalConfig, UpdateChannel,
-    WebSearchConfig, WebSearchEngine,
+    SponsorsConfig, SwarmSpawnMode, SwarmStripLayout, TerminalConfig, TpsIntervalMode,
+    UpdateChannel, WebSearchConfig, WebSearchEngine,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
@@ -123,6 +123,7 @@ const CONFIG_ENV_KEYS: &[&str] = &[
     "JCODE_MEMORY_JEV_PROVIDER",
     "JCODE_ENABLE_MERMAID",
     "JCODE_MEMORY_MODEL",
+    "JCODE_MEMORY_JEV_PROVIDER",
     "JCODE_MEMORY_SIDECAR_ENABLED",
     "JCODE_PERSIST_MEMORY_INJECTIONS",
     "JCODE_MESSAGE_TIMESTAMPS",
@@ -164,6 +165,7 @@ const CONFIG_ENV_KEYS: &[&str] = &[
     "JCODE_SHOW_AGENTGREP_OUTPUT",
     "JCODE_SHOW_BASH_OUTPUT",
     "JCODE_SHOW_DIFFS",
+    "JCODE_SHOW_TPS",
     "JCODE_SHOW_THINKING",
     "JCODE_SIDE_PANEL_TOGGLE_KEY",
     "JCODE_SIDE_PANEL_NATIVE_SCROLLBAR",

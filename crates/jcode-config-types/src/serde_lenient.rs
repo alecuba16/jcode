@@ -21,6 +21,53 @@ where
     Ok(T::deserialize(value).unwrap_or_default())
 }
 
+/// Deserialize a bool, accepting bare booleans, quoted boolean-like strings
+/// ("on"/"off"/"true"/...), and integers (1/0). An unrecognized value falls
+/// back to the *default* (`true`) so one bad line degrades only that field
+/// instead of aborting the entire `[display]` parse (issue #689 pattern for
+/// bool fields; struct-level `#[serde(default)]` only covers *missing*
+/// fields, an erroring field still fails the whole struct).
+pub(crate) fn lenient_bool_true<'de, D>(deserializer: D) -> Result<bool, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    struct LenientBoolVisitor;
+
+    impl<'de> serde::de::Visitor<'de> for LenientBoolVisitor {
+        type Value = bool;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str("a boolean or a boolean-like string")
+        }
+
+        fn visit_bool<E>(self, value: bool) -> Result<bool, E> {
+            Ok(value)
+        }
+
+        fn visit_i64<E>(self, value: i64) -> Result<bool, E> {
+            Ok(value != 0)
+        }
+
+        fn visit_u64<E>(self, value: u64) -> Result<bool, E> {
+            Ok(value != 0)
+        }
+
+        fn visit_str<E>(self, value: &str) -> Result<bool, E> {
+            Ok(match value.trim().to_ascii_lowercase().as_str() {
+                "1" | "true" | "yes" | "on" | "enable" | "enabled" => true,
+                "0" | "false" | "no" | "off" | "disable" | "disabled" => false,
+                // Unknown value: keep the default rather than failing the
+                // whole config.toml parse.
+                _ => true,
+            })
+        }
+    }
+
+    // `deserialize_any` so a quoted TOML string is handled by `visit_str`
+    // rather than failing to type-check as a bool.
+    deserializer.deserialize_any(LenientBoolVisitor)
+}
+
 /// `Option` variant of [`lenient_enum`]: an unrecognized value becomes `None`
 /// ("not configured") rather than a config-wide parse failure.
 pub(crate) fn lenient_optional_enum<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
@@ -46,6 +93,25 @@ mod tests {
 
     fn parse(json: &str) -> DisplayConfig {
         serde_json::from_str(json).expect("display config must still parse")
+    }
+
+    #[test]
+    fn lenient_bool_accepts_boolean_like_strings_and_keeps_default_on_unknown() {
+        let accepts = |raw, expected: bool| {
+            let cfg = parse(&format!("{{\"show_tps\": {raw}}}"));
+            assert_eq!(cfg.show_tps, expected, "raw value: {raw}");
+        };
+        accepts("true", true);
+        accepts("false", false);
+        accepts("\"on\"", true);
+        accepts("\"off\"", false);
+        accepts("\"yes\"", true);
+        accepts("\"no\"", false);
+        accepts("1", true);
+        accepts("0", false);
+        // Unknown spellings degrade to the field default instead of
+        // discarding the rest of the section.
+        accepts("\"bogus\"", true);
     }
 
     #[test]

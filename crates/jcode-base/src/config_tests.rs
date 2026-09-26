@@ -1725,3 +1725,44 @@ fn cli_config_save_round_trips_desktop_tables() {
     restore_env_var("JCODE_HOME", prev_home);
     Config::invalidate_cache();
 }
+
+// ---------------------------------------------------------------------------
+// display.show_tps
+// ---------------------------------------------------------------------------
+
+/// `show_tps` hides every tokens-per-second display. Default is on; an
+/// explicit `false` must parse, and an unknown key must not be a hard error
+/// (lenient parse keeps the rest of the section).
+#[test]
+fn show_tps_defaults_on_parses_false_and_survives_unknown_keys() {
+    assert!(Config::default().display.show_tps);
+
+    let cfg: Config = toml::from_str("[display]\nshow_tps = false\n")
+        .expect("display.show_tps = false should parse");
+    assert!(!cfg.display.show_tps);
+
+    let cfg: Config = toml::from_str("[display]\nshow_tps = true\n")
+        .expect("display.show_tps = true should parse");
+    assert!(cfg.display.show_tps);
+
+    // Lenient: an unrecognized value falls back to the default instead of
+    // discarding the rest of the user's config (issue #689 pattern).
+    let cfg: Config = toml::from_str("[display]\nshow_tps = \"bogus\"\n").expect("must parse");
+    assert!(
+        cfg.display.show_tps,
+        "an unparsable show_tps value must fall back to the default (true)"
+    );
+}
+
+/// The `JCODE_SHOW_TPS` env override must win over the file value.
+#[test]
+fn show_tps_env_override_beats_file_value() {
+    let previous = std::env::var_os("JCODE_SHOW_TPS");
+    crate::env::set_var("JCODE_SHOW_TPS", "off");
+
+    let mut cfg = Config::default();
+    cfg.apply_env_overrides();
+    assert!(!cfg.display.show_tps);
+
+    restore_env_var("JCODE_SHOW_TPS", previous);
+}

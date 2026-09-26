@@ -214,6 +214,31 @@ impl Config {
         Ok(())
     }
 
+    /// Update the persisted TPS interval mode preference.
+    ///
+    /// Uses [`Self::load_for_update`] (like every other setter here) so a
+    /// transient `JCODE_*` env override is not baked into the file as a
+    /// side effect of saving this one preference.
+    pub fn set_tps_interval(mode: TpsIntervalMode) -> anyhow::Result<()> {
+        let mut cfg = Self::load_for_update()?;
+        cfg.display.tps_interval = mode;
+        cfg.save()?;
+        crate::logging::info(&format!(
+            "Saved display.tps_interval to config: {}",
+            mode.as_str()
+        ));
+        Ok(())
+    }
+
+    /// Update the persisted show-tokens-per-second preference.
+    pub fn set_show_tps(show: bool) -> anyhow::Result<()> {
+        let mut cfg = Self::load_for_update()?;
+        cfg.display.show_tps = show;
+        cfg.save()?;
+        crate::logging::info(&format!("Saved display.show_tps to config: {}", show));
+        Ok(())
+    }
+
     /// Update the persisted pinned-todos preference.
     pub fn set_pin_todos(pin: bool) -> anyhow::Result<()> {
         let mut cfg = Self::load_for_update()?;
@@ -802,5 +827,72 @@ reasoning_effort = "max"
 
         assert!(error.to_string().contains("Failed to parse config file"));
         assert_eq!(std::fs::read_to_string(path).unwrap(), original);
+    }
+
+    #[test]
+    fn set_show_tps_persists_without_baking_env_overrides() {
+        let _lock = crate::storage::lock_test_env();
+        let home = tempfile::tempdir().unwrap();
+        let _home = EnvGuard::set("JCODE_HOME", home.path());
+        let path = home.path().join("config.toml");
+        std::fs::write(
+            &path,
+            "[display]\ntps_interval = \"total\"\ncompact_notifications = true\n",
+        )
+        .unwrap();
+
+        // A transient env override must not get baked into the file as a
+        // side effect of saving one preference.
+        let _env = EnvGuard::set("JCODE_COMPACT_NOTIFICATIONS", "off");
+        Config::set_show_tps(false).unwrap();
+
+        // Assert on the file itself: the env override is still active, so a
+        // load_strict()-style read would show `off` either way and could
+        // not distinguish a baked-in value from a transient override.
+        let saved = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            saved.contains("show_tps = false"),
+            "show_tps = false must persist, file: {saved}"
+        );
+        assert!(
+            saved.contains("compact_notifications = true"),
+            "the transient env override must not be baked into config.toml on save, file: {saved}"
+        );
+        assert!(
+            saved.contains("tps_interval = \"total\""),
+            "the pre-existing tps_interval preference must survive the save, file: {saved}"
+        );
+    }
+
+    #[test]
+    fn set_tps_interval_does_not_bake_env_overrides_into_the_file() {
+        let _lock = crate::storage::lock_test_env();
+        let home = tempfile::tempdir().unwrap();
+        let _home = EnvGuard::set("JCODE_HOME", home.path());
+        let path = home.path().join("config.toml");
+        std::fs::write(
+            &path,
+            "[display]\nshow_tps = false\ncompact_notifications = true\n",
+        )
+        .unwrap();
+
+        // Transient env override: the file value must stay authoritative on disk.
+        let _env = EnvGuard::set("JCODE_COMPACT_NOTIFICATIONS", "off");
+        Config::set_tps_interval(crate::config::TpsIntervalMode::Total).unwrap();
+
+        // Assert on the file itself (see above for why not load_strict()).
+        let saved = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            saved.contains("tps_interval = \"total\""),
+            "the new tps_interval must persist, file: {saved}"
+        );
+        assert!(
+            saved.contains("show_tps = false"),
+            "the pre-existing show_tps preference must survive the save, file: {saved}"
+        );
+        assert!(
+            saved.contains("compact_notifications = true"),
+            "the transient env override must not be baked into the file by set_tps_interval, file: {saved}"
+        );
     }
 }

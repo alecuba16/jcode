@@ -439,7 +439,8 @@ fn test_copy_badge_line_prefers_row_with_free_width_over_truncation() {
     let full = Line::from("│ ".to_string() + &"x".repeat(60));
     let short = Line::from("│ short".to_string());
     let visible_lines = vec![full, short];
-    let reserved = 14usize; // " [Alt] [⇧] [S]"
+    let copy_badge_ui = crate::tui::app::CopyBadgeUiState::default();
+    let reserved = copy_badge_reserved_width('s', &copy_badge_ui, Instant::now());
 
     let picked = pick_copy_badge_line(0, 0, 2, 0, 2, &visible_lines, 62, reserved);
     assert_eq!(picked, 1, "badge should move to the line with free width");

@@ -226,6 +226,19 @@ prompt_entry_animation = true
 #   "off"        - never shown
 # overscroll_status = "on"
 
+# TPS (tokens per second) interval mode:
+#   "generation" - only count model output-generation time, excluding tool
+#                  execution and rate-limit waits (default)
+#   "total"       - count the full wall-clock time between responses, including
+#                  tool execution, rate limits, and network overhead so the
+#                  effective throughput reflects what the user experiences
+# tps_interval = "generation"
+
+# Show tokens-per-second surfaces (status bar live rate, Overview cost-line
+# rolling average, usage widget). When off, every t/s readout is hidden;
+# the underlying counters keep running. (default: true)
+# show_tps = true
+
 # Disable specific animation variants by name.
 # Examples: ["donut"] or ["donut", "orbit_rings"]
 # Legacy aliases such as "three_rings" and "gyroscope" are still accepted.
@@ -486,6 +499,8 @@ swarm_max_concurrent_agents = 32
 # Env overrides: JCODE_MEMORY_SIDECAR_ENABLED, JCODE_MEMORY_MODEL
 # memory_sidecar_enabled = true
 # memory_model = "gpt-5.6-luna"
+# When unset, the sidecar auto-selects the provider default (OpenAI defaults
+# to gpt-5.6-luna with reasoning effort "none").
 # Legacy memory_rerank_* and memory_embedding_* settings are accepted for
 # backwards compatibility, but have no effect on Jev recall.
 

@@ -1729,6 +1729,318 @@ fn openrouter_chat_request_sends_unified_reasoning_effort() {
     );
 }
 
+#[test]
+fn named_compat_reasoning_model_sends_and_cycles_reasoning_effort_on_the_wire() {
+    let _lock = ENV_LOCK.lock();
+    let _namespace = EnvVarGuard::remove("JCODE_OPENROUTER_CACHE_NAMESPACE");
+    let _key = EnvVarGuard::set("TEST_NAMED_COMPAT_EFFORT_KEY", "test-key");
+
+    let (api_base, request_rx) = spawn_single_response_chat_server();
+    let profile = jcode_base::config::NamedProviderConfig {
+        base_url: api_base,
+        api_key_env: Some("TEST_NAMED_COMPAT_EFFORT_KEY".to_string()),
+        default_model: Some("gpt-5.3-codex-spark".to_string()),
+        models: vec![jcode_base::config::NamedProviderModelConfig {
+            id: "gpt-5.3-codex-spark".to_string(),
+            reasoning: Some(true),
+            reasoning_effort: Some("high".to_string()),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+
+    let provider = OpenRouterProvider::new_named_openai_compatible("mock-gw", &profile)
+        .expect("named compat profile should initialize");
+
+    // GPT-family reasoning model: the effort ladder must be exposed and the
+    // configured per-model default must be the initial effort.
+    assert_eq!(
+        provider.available_efforts(),
+        jcode_provider_core::OPENAI_SELECTABLE_EFFORTS.to_vec()
+    );
+    assert_eq!(provider.reasoning_effort().as_deref(), Some("high"));
+
+    let messages = vec![Message {
+        role: Role::User,
+        content: vec![ContentBlock::Text {
+            text: "hello".to_string(),
+            cache_control: None,
+        }],
+        timestamp: None,
+        tool_duration_ms: None,
+    }];
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+
+    rt.block_on(async {
+        let mut stream = provider
+            .complete(&messages, &[], "", None)
+            .await
+            .expect("fake chat request should start");
+        while let Some(event) = stream.next().await {
+            event.expect("stream event should parse");
+        }
+    });
+    let request = request_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("capture fake provider request");
+    assert!(
+        request.contains(r#""reasoning_effort":"high""#),
+        "custom compat reasoning model must send reasoning_effort=high: {request}"
+    );
+
+    // Cycle to low, send again: the wire body must follow.
+    provider
+        .set_reasoning_effort("low")
+        .expect("custom compat reasoning model should accept low");
+    let (api_base2, request_rx2) = spawn_single_response_chat_server();
+    let mut provider2 = provider;
+    provider2.api_base = api_base2;
+    rt.block_on(async {
+        let mut stream = provider2
+            .complete(&messages, &[], "", None)
+            .await
+            .expect("fake chat request should start");
+        while let Some(event) = stream.next().await {
+            event.expect("stream event should parse");
+        }
+    });
+    let request = request_rx2
+        .recv_timeout(Duration::from_secs(2))
+        .expect("capture fake provider request");
+    assert!(
+        request.contains(r#""reasoning_effort":"low""#),
+        "cycled effort must reach the wire as reasoning_effort=low: {request}"
+    );
+}
+
+#[test]
+fn named_compat_plain_model_omits_reasoning_effort_and_rejects_cycling() {
+    let _lock = ENV_LOCK.lock();
+    let _namespace = EnvVarGuard::remove("JCODE_OPENROUTER_CACHE_NAMESPACE");
+    let _key = EnvVarGuard::set("TEST_NAMED_COMPAT_PLAIN_KEY", "test-key");
+
+    let (api_base, request_rx) = spawn_single_response_chat_server();
+    let profile = jcode_base::config::NamedProviderConfig {
+        base_url: api_base,
+        api_key_env: Some("TEST_NAMED_COMPAT_PLAIN_KEY".to_string()),
+        default_model: Some("my-plain-model".to_string()),
+        models: vec![jcode_base::config::NamedProviderModelConfig {
+            id: "my-plain-model".to_string(),
+            reasoning: Some(false),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+
+    let provider = OpenRouterProvider::new_named_openai_compatible("mock-gw", &profile)
+        .expect("named compat profile should initialize");
+
+    // Per-model reasoning = false must disable the effort ladder entirely.
+    assert!(
+        provider.available_efforts().is_empty(),
+        "plain model must not advertise any effort ladder"
+    );
+    assert!(provider.reasoning_effort().is_none());
+    provider
+        .set_reasoning_effort("low")
+        .expect_err("plain model must reject effort changes");
+
+    let messages = vec![Message {
+        role: Role::User,
+        content: vec![ContentBlock::Text {
+            text: "hello".to_string(),
+            cache_control: None,
+        }],
+        timestamp: None,
+        tool_duration_ms: None,
+    }];
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+    rt.block_on(async {
+        let mut stream = provider
+            .complete(&messages, &[], "", None)
+            .await
+            .expect("fake chat request should start");
+        while let Some(event) = stream.next().await {
+            event.expect("stream event should parse");
+        }
+    });
+    let request = request_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("capture fake provider request");
+    assert!(
+        !request.contains("reasoning_effort"),
+        "plain model must not send reasoning_effort on the wire: {request}"
+    );
+    assert!(
+        !request.contains("reasoning"),
+        "plain model must not send any reasoning field: {request}"
+    );
+}
+
+// Mid-session model switch: reasoning model -> plain model on a named
+// OpenAI-compatible profile. The previously stored effort must be cleared so
+// the display does not show an effort bracket for a model that cannot reason,
+// and the next request must omit the reasoning_effort field entirely.
+#[test]
+fn named_compat_model_switch_to_plain_clears_reasoning_effort() {
+    let _lock = ENV_LOCK.lock();
+    let _namespace = EnvVarGuard::remove("JCODE_OPENROUTER_CACHE_NAMESPACE");
+    let _key = EnvVarGuard::set("TEST_NAMED_COMPAT_SWITCH_KEY", "test-key");
+
+    let (api_base, request_rx) = spawn_single_response_chat_server();
+    let profile = jcode_base::config::NamedProviderConfig {
+        base_url: api_base,
+        api_key_env: Some("TEST_NAMED_COMPAT_SWITCH_KEY".to_string()),
+        default_model: Some("gpt-5.3-codex-spark".to_string()),
+        models: vec![
+            jcode_base::config::NamedProviderModelConfig {
+                id: "gpt-5.3-codex-spark".to_string(),
+                reasoning: Some(true),
+                reasoning_effort: Some("high".to_string()),
+                ..Default::default()
+            },
+            jcode_base::config::NamedProviderModelConfig {
+                id: "my-plain-model".to_string(),
+                reasoning: Some(false),
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    };
+
+    let provider = OpenRouterProvider::new_named_openai_compatible("mock-gw", &profile)
+        .expect("named compat profile should initialize");
+
+    // Reasoning model: configured default is on the wire and the ladder exists.
+    assert_eq!(provider.reasoning_effort().as_deref(), Some("high"));
+    provider
+        .set_reasoning_effort("medium")
+        .expect("reasoning model accepts effort changes");
+    assert_eq!(provider.reasoning_effort().as_deref(), Some("medium"));
+
+    // Mid-session switch to the plain model: the stored effort must clear so
+    // neither the display nor the request builder can leak it.
+    provider
+        .set_model("my-plain-model")
+        .expect("switching to the plain model should succeed");
+    assert!(
+        provider.reasoning_effort().is_none(),
+        "switching to a plain model must clear the stored effort"
+    );
+    assert!(
+        provider.available_efforts().is_empty(),
+        "plain model must not advertise an effort ladder after the switch"
+    );
+
+    let messages = vec![Message {
+        role: Role::User,
+        content: vec![ContentBlock::Text {
+            text: "hello".to_string(),
+            cache_control: None,
+        }],
+        timestamp: None,
+        tool_duration_ms: None,
+    }];
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+    rt.block_on(async {
+        let mut stream = provider
+            .complete(&messages, &[], "", None)
+            .await
+            .expect("fake chat request should start");
+        while let Some(event) = stream.next().await {
+            event.expect("stream event should parse");
+        }
+    });
+    let request = request_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("capture fake provider request");
+    assert!(
+        request.contains(r#""model":"my-plain-model""#),
+        "post-switch request must target the plain model: {request}"
+    );
+    assert!(
+        !request.contains("reasoning_effort") && !request.contains("reasoning"),
+        "post-switch plain-model request must omit reasoning fields entirely: {request}"
+    );
+
+    // Switch back to the reasoning model: the configured per-model default
+    // must be restored, not the stale cycled medium.
+    provider
+        .set_model("gpt-5.3-codex-spark")
+        .expect("switching back to the reasoning model should succeed");
+    assert_eq!(
+        provider.reasoning_effort().as_deref(),
+        Some("high"),
+        "switching back must restore the configured per-model effort default"
+    );
+}
+
+#[test]
+fn named_compat_none_effort_omits_the_field_from_the_wire() {
+    let _lock = ENV_LOCK.lock();
+    let _namespace = EnvVarGuard::remove("JCODE_OPENROUTER_CACHE_NAMESPACE");
+    let _key = EnvVarGuard::set("TEST_NAMED_COMPAT_NONE_KEY", "test-key");
+
+    let (api_base, request_rx) = spawn_single_response_chat_server();
+    let profile = jcode_base::config::NamedProviderConfig {
+        base_url: api_base,
+        api_key_env: Some("TEST_NAMED_COMPAT_NONE_KEY".to_string()),
+        default_model: Some("gpt-5.3-codex-spark".to_string()),
+        models: vec![jcode_base::config::NamedProviderModelConfig {
+            id: "gpt-5.3-codex-spark".to_string(),
+            reasoning: Some(true),
+            reasoning_effort: Some("high".to_string()),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+
+    let provider = OpenRouterProvider::new_named_openai_compatible("mock-gw", &profile)
+        .expect("named compat profile should initialize");
+    provider
+        .set_reasoning_effort("none")
+        .expect("none is a ladder rung and must be accepted");
+
+    let messages = vec![Message {
+        role: Role::User,
+        content: vec![ContentBlock::Text {
+            text: "hello".to_string(),
+            cache_control: None,
+        }],
+        timestamp: None,
+        tool_duration_ms: None,
+    }];
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+    rt.block_on(async {
+        let mut stream = provider
+            .complete(&messages, &[], "", None)
+            .await
+            .expect("fake chat request should start");
+        while let Some(event) = stream.next().await {
+            event.expect("stream event should parse");
+        }
+    });
+    let request = request_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("capture fake provider request");
+    assert!(
+        !request.contains("reasoning_effort"),
+        "effort none must omit the field instead of sending reasoning_effort=\"none\": {request}"
+    );
+}
+
 fn live_openrouter_models() -> Vec<String> {
     std::env::var("JCODE_LIVE_OPENROUTER_MODELS")
         .or_else(|_| std::env::var("JCODE_OPENROUTER_MODEL"))

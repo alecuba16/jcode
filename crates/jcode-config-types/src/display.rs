@@ -2,7 +2,8 @@
 
 use crate::{
     DiagramDisplayMode, DiffDisplayMode, LatexRenderingMode, MarkdownSpacingMode,
-    NativeScrollbarConfig, OverscrollStatusMode, ReasoningDisplayMode, default_true,
+    NativeScrollbarConfig, OverscrollStatusMode, ReasoningDisplayMode, TpsIntervalMode,
+    default_true,
 };
 use serde::{Deserialize, Serialize};
 
@@ -124,6 +125,21 @@ pub struct DisplayConfig {
     /// reveal when scrolling past the bottom, "on" keeps it always visible.
     #[serde(default, deserialize_with = "crate::serde_lenient::lenient_enum")]
     pub overscroll_status: OverscrollStatusMode,
+    /// Which time interval the TPS (tokens per second) display uses
+    /// (generation/total, default: generation). "generation" only counts
+    /// model output-generation time (excluding tool execution and rate-limit
+    /// waits); "total" counts the full wall-clock time between responses so
+    /// rate limits and tool execution are factored into the effective t/s.
+    #[serde(default, deserialize_with = "crate::serde_lenient::lenient_enum")]
+    pub tps_interval: TpsIntervalMode,
+    /// Show tokens-per-second surfaces (status bar live rate, Overview
+    /// cost-line rolling average, usage widget). Default: on. When off,
+    /// every t/s readout is hidden; the underlying counters keep running.
+    #[serde(
+        default = "default_true",
+        deserialize_with = "crate::serde_lenient::lenient_bool_true"
+    )]
+    pub show_tps: bool,
 }
 impl Default for DisplayConfig {
     fn default() -> Self {
@@ -163,6 +179,8 @@ impl Default for DisplayConfig {
             external_sessions: true,
             usage_display: "left".to_string(),
             overscroll_status: OverscrollStatusMode::default(),
+            tps_interval: TpsIntervalMode::default(),
+            show_tps: true,
         }
     }
 }

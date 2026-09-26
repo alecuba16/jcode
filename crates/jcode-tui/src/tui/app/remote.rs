@@ -1021,6 +1021,7 @@ pub(super) fn handle_disconnect(
             app.pending_soft_interrupts.len()
         ));
     }
+    app.record_turn_tps();
     app.reset_streaming_tps();
     app.is_processing = false;
     app.status = ProcessingStatus::Idle;

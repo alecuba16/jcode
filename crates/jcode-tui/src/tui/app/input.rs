@@ -3706,6 +3706,12 @@ impl App {
         self.stream_buffer.clear();
         self.clear_streaming_render_state();
         self.streaming_tool_calls.clear();
+        // The retry is a fresh sample, not a deterministic replay: the aborted
+        // attempt's TPS accounting (token count, generation clock, "total"
+        // interval clock, held t/s) is as stale as its stream buffers, so
+        // discard it with the same reset the turn boundary uses. The retry's
+        // own kv-cache begin re-anchors the clocks when tokens arrive again.
+        self.reset_streaming_tps();
         self.batch_progress = None;
         self.thought_line_inserted = false;
         self.thinking_prefix_emitted = false;
@@ -4071,6 +4077,8 @@ impl App {
         self.streaming.streaming_total_output_tokens = 0;
         self.streaming.streaming_tps_observed_output_tokens = 0;
         self.streaming.streaming_tps_observed_elapsed = Duration::ZERO;
+        self.streaming.last_displayed_tps = None;
+        self.streaming.streaming_total_tps_start = None;
         self.processing_started = Some(Instant::now());
         self.visible_turn_started = Some(Instant::now());
         self.pending_turn = true;
@@ -4139,6 +4147,8 @@ impl App {
             self.streaming.streaming_total_output_tokens = 0;
             self.streaming.streaming_tps_observed_output_tokens = 0;
             self.streaming.streaming_tps_observed_elapsed = Duration::ZERO;
+            self.streaming.last_displayed_tps = None;
+            self.streaming.streaming_total_tps_start = None;
             self.processing_started = Some(Instant::now());
             if has_combined {
                 if preserve_visible_turn {

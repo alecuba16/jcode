@@ -1,4 +1,5 @@
 use super::*;
+use crate::tui::ui::viewport::copy_badge_alt_badge;
 use crate::tui::ui::{
     FlickerFrameSample, FramePerfStats, SlowFrameSample, clear_flicker_frame_history_for_tests,
     clear_slow_frame_history_for_tests, copy_badge_reserved_width, expand_badge_reserved_width,

@@ -1,8 +1,15 @@
 use super::format_event_for_expanded;
 use super::{MemoryActivity, MemoryEvent, MemoryEventKind, MemoryState};
 
-pub(super) fn memory_active_summary(state: &MemoryState) -> Option<String> {
+#[cfg(test)]
+pub(crate) fn memory_active_summary(state: &MemoryState) -> Option<String> {
     match state {
+        MemoryState::Embedding => Some("embedding".to_string()),
+        MemoryState::SidecarChecking { .. } => Some("checking".to_string()),
+        MemoryState::FoundRelevant { .. } => Some("found".to_string()),
+        MemoryState::Extracting { .. } => Some("extracting".to_string()),
+        MemoryState::Maintaining { .. } => Some("maintaining".to_string()),
+        MemoryState::ToolAction { .. } => Some("tool".to_string()),
         MemoryState::Idle => None,
         MemoryState::Embedding => Some("searching".to_string()),
         MemoryState::SidecarChecking { count } => Some(format!("Jev {count}")),
