@@ -244,7 +244,7 @@ pub(super) async fn handle_get_model_catalog(
                 agent_guard.model_routes(),
                 agent_guard.active_resolved_credential(),
                 agent_guard.provider_handle().service_tier(),
-                agent_guard.provider_handle().reasoning_effort(),
+                agent_guard.provider_handle().effective_reasoning_effort(),
                 "live",
             ),
             Err(_) => {
@@ -270,7 +270,7 @@ pub(super) async fn handle_get_model_catalog(
                     model_routes,
                     provider.active_resolved_credential(),
                     provider.service_tier(),
-                    provider.reasoning_effort(),
+                    provider.effective_reasoning_effort(),
                     "fallback",
                 )
             }
@@ -573,7 +573,7 @@ async fn send_history_from_persisted_session(
     let reasoning_effort = session
         .reasoning_effort
         .clone()
-        .or_else(|| provider.reasoning_effort());
+        .or_else(|| provider.effective_reasoning_effort());
     drop(session);
 
     let messages = rendered_messages
@@ -719,7 +719,7 @@ async fn send_history_with_guard(
         let skills_ms = skills_start.elapsed().as_millis();
 
         let provider_meta_start = Instant::now();
-        let reasoning_effort = provider.reasoning_effort();
+        let reasoning_effort = provider.effective_reasoning_effort();
         let service_tier = provider.service_tier();
         let provider_meta_ms = provider_meta_start.elapsed().as_millis();
 
