@@ -29,9 +29,10 @@ use futures::StreamExt;
 pub(crate) use helpers::effort_display_label;
 use helpers::*;
 use jcode_tui_messages::DisplayMessage;
+use memory_info::gather_memory_info;
 use ratatui::DefaultTerminal;
 use std::cell::RefCell;
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -76,6 +77,7 @@ mod inline_interactive;
 mod input;
 mod input_help;
 mod local;
+pub(crate) mod memory_info;
 mod misc_ui;
 mod model_context;
 mod navigation;
@@ -843,6 +845,12 @@ struct StreamingProgress {
     streaming_tps_observed_output_tokens: u64,
     /// Streaming-only elapsed time corresponding to streaming_tps_observed_output_tokens.
     streaming_tps_observed_elapsed: Duration,
+    /// Last tokens/sec value shown in the info panel.
+    last_displayed_tps: Option<f32>,
+    /// Wall-clock turn start for the total TPS interval mode.
+    streaming_total_tps_start: Option<Instant>,
+    /// Rolling buffer of per-turn throughput values.
+    tps_history: VecDeque<f32>,
 }
 
 /// Accumulated session cost and cached per-model pricing.
@@ -1828,6 +1836,7 @@ impl App {
         self.pause_streaming_tps(false);
         self.kv_cache.current_api_usage_recorded = false;
         self.mark_stream_usage_call_boundary();
+        self.anchor_total_tps_start_if_unanchored();
 
         self.kv_cache.pending_kv_cache_request = Some(PendingKvCacheRequest {
             turn_number,
@@ -1880,6 +1889,7 @@ impl App {
         self.pause_streaming_tps(false);
         self.kv_cache.current_api_usage_recorded = false;
         self.mark_stream_usage_call_boundary();
+        self.anchor_total_tps_start_if_unanchored();
         self.kv_cache.pending_kv_cache_request = Some(PendingKvCacheRequest {
             turn_number,
             call_index: self.kv_cache.kv_cache_turn_call_index,

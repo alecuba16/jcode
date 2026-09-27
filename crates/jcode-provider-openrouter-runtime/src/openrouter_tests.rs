@@ -1729,6 +1729,318 @@ fn openrouter_chat_request_sends_unified_reasoning_effort() {
     );
 }
 
+#[test]
+fn named_compat_reasoning_model_sends_and_cycles_reasoning_effort_on_the_wire() {
+    let _lock = ENV_LOCK.lock();
+    let _namespace = EnvVarGuard::remove("JCODE_OPENROUTER_CACHE_NAMESPACE");
+    let _key = EnvVarGuard::set("TEST_NAMED_COMPAT_EFFORT_KEY", "test-key");
+
+    let (api_base, request_rx) = spawn_single_response_chat_server();
+    let profile = jcode_base::config::NamedProviderConfig {
+        base_url: api_base,
+        api_key_env: Some("TEST_NAMED_COMPAT_EFFORT_KEY".to_string()),
+        default_model: Some("gpt-5.3-codex-spark".to_string()),
+        models: vec![jcode_base::config::NamedProviderModelConfig {
+            id: "gpt-5.3-codex-spark".to_string(),
+            reasoning: Some(true),
+            reasoning_effort: Some("high".to_string()),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+
+    let provider = OpenRouterProvider::new_named_openai_compatible("mock-gw", &profile)
+        .expect("named compat profile should initialize");
+
+    // GPT-family reasoning model: the effort ladder must be exposed and the
+    // configured per-model default must be the initial effort.
+    assert_eq!(
+        provider.available_efforts(),
+        jcode_provider_core::OPENAI_SELECTABLE_EFFORTS.to_vec()
+    );
+    assert_eq!(provider.reasoning_effort().as_deref(), Some("high"));
+
+    let messages = vec![Message {
+        role: Role::User,
+        content: vec![ContentBlock::Text {
+            text: "hello".to_string(),
+            cache_control: None,
+        }],
+        timestamp: None,
+        tool_duration_ms: None,
+    }];
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+
+    rt.block_on(async {
+        let mut stream = provider
+            .complete(&messages, &[], "", None)
+            .await
+            .expect("fake chat request should start");
+        while let Some(event) = stream.next().await {
+            event.expect("stream event should parse");
+        }
+    });
+    let request = request_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("capture fake provider request");
+    assert!(
+        request.contains(r#""reasoning_effort":"high""#),
+        "custom compat reasoning model must send reasoning_effort=high: {request}"
+    );
+
+    // Cycle to low, send again: the wire body must follow.
+    provider
+        .set_reasoning_effort("low")
+        .expect("custom compat reasoning model should accept low");
+    let (api_base2, request_rx2) = spawn_single_response_chat_server();
+    let mut provider2 = provider;
+    provider2.api_base = api_base2;
+    rt.block_on(async {
+        let mut stream = provider2
+            .complete(&messages, &[], "", None)
+            .await
+            .expect("fake chat request should start");
+        while let Some(event) = stream.next().await {
+            event.expect("stream event should parse");
+        }
+    });
+    let request = request_rx2
+        .recv_timeout(Duration::from_secs(2))
+        .expect("capture fake provider request");
+    assert!(
+        request.contains(r#""reasoning_effort":"low""#),
+        "cycled effort must reach the wire as reasoning_effort=low: {request}"
+    );
+}
+
+#[test]
+fn named_compat_plain_model_omits_reasoning_effort_and_rejects_cycling() {
+    let _lock = ENV_LOCK.lock();
+    let _namespace = EnvVarGuard::remove("JCODE_OPENROUTER_CACHE_NAMESPACE");
+    let _key = EnvVarGuard::set("TEST_NAMED_COMPAT_PLAIN_KEY", "test-key");
+
+    let (api_base, request_rx) = spawn_single_response_chat_server();
+    let profile = jcode_base::config::NamedProviderConfig {
+        base_url: api_base,
+        api_key_env: Some("TEST_NAMED_COMPAT_PLAIN_KEY".to_string()),
+        default_model: Some("my-plain-model".to_string()),
+        models: vec![jcode_base::config::NamedProviderModelConfig {
+            id: "my-plain-model".to_string(),
+            reasoning: Some(false),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+
+    let provider = OpenRouterProvider::new_named_openai_compatible("mock-gw", &profile)
+        .expect("named compat profile should initialize");
+
+    // Per-model reasoning = false must disable the effort ladder entirely.
+    assert!(
+        provider.available_efforts().is_empty(),
+        "plain model must not advertise any effort ladder"
+    );
+    assert!(provider.reasoning_effort().is_none());
+    provider
+        .set_reasoning_effort("low")
+        .expect_err("plain model must reject effort changes");
+
+    let messages = vec![Message {
+        role: Role::User,
+        content: vec![ContentBlock::Text {
+            text: "hello".to_string(),
+            cache_control: None,
+        }],
+        timestamp: None,
+        tool_duration_ms: None,
+    }];
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+    rt.block_on(async {
+        let mut stream = provider
+            .complete(&messages, &[], "", None)
+            .await
+            .expect("fake chat request should start");
+        while let Some(event) = stream.next().await {
+            event.expect("stream event should parse");
+        }
+    });
+    let request = request_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("capture fake provider request");
+    assert!(
+        !request.contains("reasoning_effort"),
+        "plain model must not send reasoning_effort on the wire: {request}"
+    );
+    assert!(
+        !request.contains("reasoning"),
+        "plain model must not send any reasoning field: {request}"
+    );
+}
+
+// Mid-session model switch: reasoning model -> plain model on a named
+// OpenAI-compatible profile. The previously stored effort must be cleared so
+// the display does not show an effort bracket for a model that cannot reason,
+// and the next request must omit the reasoning_effort field entirely.
+#[test]
+fn named_compat_model_switch_to_plain_clears_reasoning_effort() {
+    let _lock = ENV_LOCK.lock();
+    let _namespace = EnvVarGuard::remove("JCODE_OPENROUTER_CACHE_NAMESPACE");
+    let _key = EnvVarGuard::set("TEST_NAMED_COMPAT_SWITCH_KEY", "test-key");
+
+    let (api_base, request_rx) = spawn_single_response_chat_server();
+    let profile = jcode_base::config::NamedProviderConfig {
+        base_url: api_base,
+        api_key_env: Some("TEST_NAMED_COMPAT_SWITCH_KEY".to_string()),
+        default_model: Some("gpt-5.3-codex-spark".to_string()),
+        models: vec![
+            jcode_base::config::NamedProviderModelConfig {
+                id: "gpt-5.3-codex-spark".to_string(),
+                reasoning: Some(true),
+                reasoning_effort: Some("high".to_string()),
+                ..Default::default()
+            },
+            jcode_base::config::NamedProviderModelConfig {
+                id: "my-plain-model".to_string(),
+                reasoning: Some(false),
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    };
+
+    let provider = OpenRouterProvider::new_named_openai_compatible("mock-gw", &profile)
+        .expect("named compat profile should initialize");
+
+    // Reasoning model: configured default is on the wire and the ladder exists.
+    assert_eq!(provider.reasoning_effort().as_deref(), Some("high"));
+    provider
+        .set_reasoning_effort("medium")
+        .expect("reasoning model accepts effort changes");
+    assert_eq!(provider.reasoning_effort().as_deref(), Some("medium"));
+
+    // Mid-session switch to the plain model: the stored effort must clear so
+    // neither the display nor the request builder can leak it.
+    provider
+        .set_model("my-plain-model")
+        .expect("switching to the plain model should succeed");
+    assert!(
+        provider.reasoning_effort().is_none(),
+        "switching to a plain model must clear the stored effort"
+    );
+    assert!(
+        provider.available_efforts().is_empty(),
+        "plain model must not advertise an effort ladder after the switch"
+    );
+
+    let messages = vec![Message {
+        role: Role::User,
+        content: vec![ContentBlock::Text {
+            text: "hello".to_string(),
+            cache_control: None,
+        }],
+        timestamp: None,
+        tool_duration_ms: None,
+    }];
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+    rt.block_on(async {
+        let mut stream = provider
+            .complete(&messages, &[], "", None)
+            .await
+            .expect("fake chat request should start");
+        while let Some(event) = stream.next().await {
+            event.expect("stream event should parse");
+        }
+    });
+    let request = request_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("capture fake provider request");
+    assert!(
+        request.contains(r#""model":"my-plain-model""#),
+        "post-switch request must target the plain model: {request}"
+    );
+    assert!(
+        !request.contains("reasoning_effort") && !request.contains("reasoning"),
+        "post-switch plain-model request must omit reasoning fields entirely: {request}"
+    );
+
+    // Switch back to the reasoning model: the configured per-model default
+    // must be restored, not the stale cycled medium.
+    provider
+        .set_model("gpt-5.3-codex-spark")
+        .expect("switching back to the reasoning model should succeed");
+    assert_eq!(
+        provider.reasoning_effort().as_deref(),
+        Some("high"),
+        "switching back must restore the configured per-model effort default"
+    );
+}
+
+#[test]
+fn named_compat_none_effort_omits_the_field_from_the_wire() {
+    let _lock = ENV_LOCK.lock();
+    let _namespace = EnvVarGuard::remove("JCODE_OPENROUTER_CACHE_NAMESPACE");
+    let _key = EnvVarGuard::set("TEST_NAMED_COMPAT_NONE_KEY", "test-key");
+
+    let (api_base, request_rx) = spawn_single_response_chat_server();
+    let profile = jcode_base::config::NamedProviderConfig {
+        base_url: api_base,
+        api_key_env: Some("TEST_NAMED_COMPAT_NONE_KEY".to_string()),
+        default_model: Some("gpt-5.3-codex-spark".to_string()),
+        models: vec![jcode_base::config::NamedProviderModelConfig {
+            id: "gpt-5.3-codex-spark".to_string(),
+            reasoning: Some(true),
+            reasoning_effort: Some("high".to_string()),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+
+    let provider = OpenRouterProvider::new_named_openai_compatible("mock-gw", &profile)
+        .expect("named compat profile should initialize");
+    provider
+        .set_reasoning_effort("none")
+        .expect("none is a ladder rung and must be accepted");
+
+    let messages = vec![Message {
+        role: Role::User,
+        content: vec![ContentBlock::Text {
+            text: "hello".to_string(),
+            cache_control: None,
+        }],
+        timestamp: None,
+        tool_duration_ms: None,
+    }];
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+    rt.block_on(async {
+        let mut stream = provider
+            .complete(&messages, &[], "", None)
+            .await
+            .expect("fake chat request should start");
+        while let Some(event) = stream.next().await {
+            event.expect("stream event should parse");
+        }
+    });
+    let request = request_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("capture fake provider request");
+    assert!(
+        !request.contains("reasoning_effort"),
+        "effort none must omit the field instead of sending reasoning_effort=\"none\": {request}"
+    );
+}
+
 fn live_openrouter_models() -> Vec<String> {
     std::env::var("JCODE_LIVE_OPENROUTER_MODELS")
         .or_else(|_| std::env::var("JCODE_OPENROUTER_MODEL"))
@@ -3896,4 +4208,281 @@ fn grok_build_subscription_request_spoofs_grok_cli_and_uses_oidc_bearer() {
     assert_eq!(body["tools"][0]["function"]["name"], "bash");
     assert_eq!(body["messages"][0]["role"], "system");
     assert!(body.get("reasoning_effort").is_none());
+}
+
+// extra_body effort fallback: providers that do not expose switchable effort
+// can still send a fixed one via OpenAI-compatible `extra_body`. The display
+// path must surface it, but live `/effort` changes must always win.
+fn make_extra_body_provider(extra_body: serde_json::Value) -> OpenRouterProvider {
+    let mut provider = make_custom_compatible_provider();
+    provider.extra_body =
+        Some(serde_json::from_value(extra_body).expect("valid extra_body object"));
+    provider
+}
+
+#[test]
+fn test_extra_body_reasoning_effort_top_level_shape() {
+    let provider = make_extra_body_provider(serde_json::json!({
+        "reasoning_effort": "high"
+    }));
+    assert_eq!(
+        provider.effective_reasoning_effort(),
+        Some("high".to_string())
+    );
+    // Switchable effort stays off: the fallback is display-only.
+    assert_eq!(provider.reasoning_effort(), None);
+}
+
+#[test]
+fn test_extra_body_reasoning_effort_reasoning_object_shape() {
+    let provider = make_extra_body_provider(serde_json::json!({
+        "reasoning": { "effort": "medium" }
+    }));
+    assert_eq!(
+        provider.effective_reasoning_effort(),
+        Some("medium".to_string())
+    );
+}
+
+#[test]
+fn test_extra_body_reasoning_effort_chat_template_kwargs_shape() {
+    let provider = make_extra_body_provider(serde_json::json!({
+        "chat_template_kwargs": { "reasoning_effort": "low" }
+    }));
+    assert_eq!(
+        provider.effective_reasoning_effort(),
+        Some("low".to_string())
+    );
+}
+
+#[test]
+fn test_extra_body_reasoning_effort_normalizes_and_trims() {
+    let provider = make_extra_body_provider(serde_json::json!({
+        "reasoning_effort": "  High  "
+    }));
+    assert_eq!(
+        provider.effective_reasoning_effort(),
+        Some("high".to_string())
+    );
+}
+
+#[test]
+fn test_extra_body_reasoning_effort_switchable_effort_wins() {
+    let mut provider = make_extra_body_provider(serde_json::json!({
+        "reasoning_effort": "high"
+    }));
+    // Mark effort switchable so the stored value is honored; without it
+    // `reasoning_effort()` gates on support and always returns None.
+    provider.reasoning_effort_support = Some(true);
+    futures::executor::block_on(async {
+        *provider.reasoning_effort.write().await = Some("low".to_string());
+    });
+    // Live /effort selection wins over the extra_body fallback.
+    assert_eq!(provider.reasoning_effort(), Some("low".to_string()));
+    assert_eq!(
+        provider.effective_reasoning_effort(),
+        Some("low".to_string())
+    );
+}
+
+#[test]
+fn test_extra_body_reasoning_effort_absent_when_unset() {
+    let provider = make_custom_compatible_provider();
+    assert_eq!(provider.effective_reasoning_effort(), None);
+    let provider = make_extra_body_provider(serde_json::json!({
+        "reasoning_effort": "   "
+    }));
+    assert_eq!(provider.effective_reasoning_effort(), None);
+    let provider = make_extra_body_provider(serde_json::json!({
+        "reasoning_effort": 42
+    }));
+    assert_eq!(provider.effective_reasoning_effort(), None);
+}
+
+// Integration: the real acceptance path is config.toml `[providers.llmg-coding]`
+// with `extra_body` carrying a fixed reasoning effort and
+// `supports_reasoning_effort = false` (strict schema, no switchable /effort).
+// These tests go through the real named-profile constructor so the effort
+// surfaces exactly as it would for a user config.
+fn llmg_like_profile(extra_body: serde_json::Value) -> jcode_base::config::NamedProviderConfig {
+    jcode_base::config::NamedProviderConfig {
+        base_url: "https://llm.example.com/v1".to_string(),
+        api_key: Some("test-key".to_string()),
+        default_model: Some("together_ai/revolut-ltd/glm-5-2-nvfp4".to_string()),
+        supports_reasoning_effort: Some(false),
+        extra_body: Some(extra_body),
+        ..Default::default()
+    }
+}
+
+#[test]
+fn named_profile_extra_body_effort_surfaces_through_real_constructor() {
+    let _lock = ENV_LOCK.lock();
+    let _namespace = EnvVarGuard::remove("JCODE_OPENROUTER_CACHE_NAMESPACE");
+
+    let profile = llmg_like_profile(serde_json::json!({
+        "reasoning_effort": "high"
+    }));
+    let provider = OpenRouterProvider::new_named_openai_compatible("llmg-coding", &profile)
+        .expect("named profile should initialize");
+
+    // Strict-schema endpoint: switching is off, reasoning_effort() is None...
+    assert_eq!(provider.reasoning_effort(), None);
+    // ...but the effort that will actually be sent must surface.
+    assert_eq!(
+        provider.effective_reasoning_effort(),
+        Some("high".to_string())
+    );
+}
+
+#[test]
+fn named_profile_nim_chat_template_kwargs_effort_surfaces() {
+    let _lock = ENV_LOCK.lock();
+    let _namespace = EnvVarGuard::remove("JCODE_OPENROUTER_CACHE_NAMESPACE");
+
+    // NVIDIA NIM style from issue #341: effort nested under
+    // chat_template_kwargs rather than top-level.
+    let profile = llmg_like_profile(serde_json::json!({
+        "chat_template_kwargs": { "thinking": true, "reasoning_effort": "high" }
+    }));
+    let provider = OpenRouterProvider::new_named_openai_compatible("llmg-coding", &profile)
+        .expect("named profile should initialize");
+
+    assert_eq!(
+        provider.effective_reasoning_effort(),
+        Some("high".to_string())
+    );
+}
+
+#[test]
+fn named_profile_extra_body_env_var_path_surfaces_effort() {
+    let _lock = ENV_LOCK.lock();
+    let _namespace = EnvVarGuard::remove("JCODE_OPENROUTER_CACHE_NAMESPACE");
+    let _extra = EnvVarGuard::set(
+        "JCODE_OPENAI_EXTRA_BODY",
+        r#"{"reasoning":{"effort":"low"}}"#,
+    );
+
+    // No profile-level extra_body: the env-var source alone must surface.
+    let profile = jcode_base::config::NamedProviderConfig {
+        base_url: "https://llm.example.com/v1".to_string(),
+        api_key: Some("test-key".to_string()),
+        default_model: Some("glm-5-2-nvfp4".to_string()),
+        supports_reasoning_effort: Some(false),
+        ..Default::default()
+    };
+    let provider = OpenRouterProvider::new_named_openai_compatible("llmg-coding", &profile)
+        .expect("named profile should initialize");
+
+    assert_eq!(
+        provider.effective_reasoning_effort(),
+        Some("low".to_string())
+    );
+}
+
+// Full acceptance chain in one test: user config.toml on disk -> strict
+// config load -> real named-profile provider constructor -> display effort.
+// This is the exact path a user with `extra_body` effort sees in the UI.
+#[test]
+fn user_toml_extra_body_effort_reaches_provider_display() {
+    let _lock = ENV_LOCK.lock();
+    let home = tempfile::tempdir().expect("temp home");
+    let _home = EnvVarGuard::set("JCODE_HOME", home.path().to_str().expect("utf8 path"));
+    let _namespace = EnvVarGuard::remove("JCODE_OPENROUTER_CACHE_NAMESPACE");
+    let config_path = home.path().join("config.toml");
+    std::fs::write(
+        &config_path,
+        r#"
+[providers.llmg-coding]
+type = "openai-compatible"
+base_url = "https://llm.example.com/v1"
+auth = "Bearer"
+api_key = "test-key"
+supports_reasoning_effort = false
+
+[providers.llmg-coding.extra_body]
+reasoning_effort = "high"
+
+[[providers.llmg-coding.models]]
+id = "together_ai/revolut-ltd/glm-5-2-nvfp4"
+"#,
+    )
+    .expect("write config");
+
+    let config = jcode_base::config::Config::load_strict().expect("strict config load");
+    let profile = &config.providers["llmg-coding"];
+    let provider = OpenRouterProvider::new_named_openai_compatible("llmg-coding", profile)
+        .expect("provider from real config");
+
+    // Display path must surface the effort the backend will actually get.
+    assert_eq!(
+        provider.effective_reasoning_effort(),
+        Some("high".to_string()),
+        "extra_body effort from user TOML must surface for display"
+    );
+    // Control path stays off: no switchable effort for this profile.
+    assert_eq!(provider.reasoning_effort(), None);
+    assert!(provider.available_efforts().is_empty());
+}
+
+// Request-body precedence, empirically verified against a fake HTTP server:
+// when the user config sets BOTH switchable /effort support AND an extra_body
+// reasoning_effort, the extra_body merge (issue #341, merged last) overrides
+// the switchable field in the actual request. The display path intentionally
+// shows the switchable value (live /effort wins). This documents the
+// ambiguity warned about in the Provider trait docs: config that sets both
+// is a user error and should be avoided.
+#[test]
+fn request_body_extra_body_effort_overrides_switchable_when_both_configured() {
+    let _lock = ENV_LOCK.lock();
+    let _namespace = EnvVarGuard::remove("JCODE_OPENROUTER_CACHE_NAMESPACE");
+    let (base, request_rx) = spawn_single_response_chat_server();
+
+    let profile = jcode_base::config::NamedProviderConfig {
+        base_url: base,
+        api_key: Some("test-key".to_string()),
+        default_model: Some("glm-5-2-nvfp4".to_string()),
+        // Switchable effort enabled AND extra_body carries a different one:
+        // the ambiguous config the trait docs warn about.
+        supports_reasoning_effort: Some(true),
+        extra_body: Some(serde_json::json!({ "reasoning_effort": "high" })),
+        ..Default::default()
+    };
+    let mut provider = OpenRouterProvider::new_named_openai_compatible("llmg-coding", &profile)
+        .expect("named profile should initialize");
+    provider.reasoning_effort_support = Some(true);
+
+    // Simulate the user cycling /effort to "low" via the switchable state.
+    futures::executor::block_on(async {
+        *provider.reasoning_effort.write().await = Some("low".to_string());
+    });
+
+    // Display shows the switchable (live) value, per the agreed semantics.
+    assert_eq!(provider.reasoning_effort(), Some("low".to_string()));
+    assert_eq!(
+        provider.effective_reasoning_effort(),
+        Some("low".to_string()),
+        "live /effort must win in the UI even when extra_body also sets one"
+    );
+
+    // But the wire request carries the extra_body value, because the merge
+    // intentionally lets extra_body override jcode-generated fields (#341).
+    let rt = tokio::runtime::Runtime::new().expect("runtime");
+    let raw = rt.block_on(async {
+        use futures::StreamExt;
+        let stream = provider
+            .complete(&[jcode_base::message::Message::user("hi")], &[], "", None)
+            .await
+            .expect("stream starts");
+        let _ = stream.collect::<Vec<_>>().await;
+        request_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("server captured request")
+    });
+    let body: serde_json::Value =
+        serde_json::from_str(raw.split("\r\n\r\n").nth(1).expect("body")).expect("json body");
+    assert_eq!(
+        body["reasoning_effort"], "high",
+        "extra_body merge order means the config value wins on the wire"
+    );
 }

@@ -1505,9 +1505,22 @@ pub(super) fn handle_model_command(app: &mut App, trimmed: &str) -> bool {
         let current = app.provider.reasoning_effort();
         let efforts = app.provider.available_efforts();
         if efforts.is_empty() {
-            app.push_display_message(DisplayMessage::system(
-                "Reasoning effort not available for this provider.".to_string(),
-            ));
+            // Switching is unavailable, but the provider may still send a
+            // fixed effort (e.g. injected via OpenAI-compatible `extra_body`).
+            // Show it read-only instead of hiding it.
+            match app.provider.effective_reasoning_effort() {
+                Some(effort) => {
+                    app.push_display_message(DisplayMessage::system(format!(
+                        "Reasoning effort not switchable for this provider.\nEffort: {} (fixed, from provider config)",
+                        effort_display_label(&effort)
+                    )));
+                }
+                None => {
+                    app.push_display_message(DisplayMessage::system(
+                        "Reasoning effort not available for this provider.".to_string(),
+                    ));
+                }
+            }
         } else {
             let current_label = current
                 .as_deref()

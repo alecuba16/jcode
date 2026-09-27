@@ -284,6 +284,20 @@ pub trait Provider: Send + Sync {
         None
     }
 
+    /// The reasoning effort to display for this provider (info widget,
+    /// /context, remote metadata). Same as [`Provider::reasoning_effort`]
+    /// unless the provider injects an effort into request bodies outside the
+    /// switchable `/effort` state (e.g. OpenAI-compatible `extra_body`).
+    /// When both exist, the switchable `/effort` value wins here by design;
+    /// note `extra_body` is still merged last into requests, so a config that
+    /// sets both is ambiguous and should be avoided.
+    ///
+    /// Must not drive `/effort` switching, session restore, or prompt directives:
+    /// those keep using [`Provider::reasoning_effort`] / [`Provider::set_reasoning_effort`].
+    fn effective_reasoning_effort(&self) -> Option<String> {
+        self.reasoning_effort()
+    }
+
     /// Set the reasoning effort level (if applicable).
     fn set_reasoning_effort(&self, _effort: &str) -> Result<()> {
         Err(anyhow::anyhow!(

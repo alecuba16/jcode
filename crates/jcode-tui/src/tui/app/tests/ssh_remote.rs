@@ -164,6 +164,7 @@ fn ssh_remote_history_is_authoritative_even_when_empty_or_server_version_differs
             session_id: "remote-only-session".into(),
             messages: vec![],
             images: vec![],
+            applets: Default::default(),
             provider_name: Some("remote-provider".into()),
             provider_model: Some("remote-model".into()),
             subagent_model: None,
@@ -193,7 +194,6 @@ fn ssh_remote_history_is_authoritative_even_when_empty_or_server_version_differs
             compaction_mode: crate::config::CompactionMode::Reactive,
             activity: None,
             side_panel: crate::side_panel::SidePanelSnapshot::default(),
-            applets: Default::default(),
         };
         app.handle_server_event(event, &mut remote);
         assert!(remote.has_loaded_history());

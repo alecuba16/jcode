@@ -2,6 +2,41 @@ use serde::{Deserialize, Serialize};
 
 mod display;
 pub use display::DisplayConfig;
+
+/// Interval used for tokens-per-second measurements.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TpsIntervalMode {
+    /// Count only model generation time.
+    #[default]
+    Generation,
+    /// Count the full turn, including tools and network waits.
+    Total,
+}
+
+impl TpsIntervalMode {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Generation => "generation",
+            Self::Total => "total",
+        }
+    }
+
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Generation => "Generation",
+            Self::Total => "Total",
+        }
+    }
+
+    pub fn parse(input: &str) -> Option<Self> {
+        match input.trim().to_ascii_lowercase().as_str() {
+            "generation" | "gen" => Some(Self::Generation),
+            "total" | "wall" | "wall-clock" | "wallclock" => Some(Self::Total),
+            _ => None,
+        }
+    }
+}
 pub mod keybindings;
 mod serde_lenient;
 pub use keybindings::{

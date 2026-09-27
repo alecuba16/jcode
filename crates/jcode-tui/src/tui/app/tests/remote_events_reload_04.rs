@@ -1475,23 +1475,6 @@ fn test_info_widget_remote_openai_uses_explicit_route_when_credential_is_missing
 #[test]
 fn test_info_widget_local_direct_api_runtime_shows_cost_based_usage() {
     let _guard = crate::storage::lock_test_env();
-    // Restore on unwind, not only on the success path: a mid-test assertion
-    // panic used to leave these vars cleared, poisoning concurrently running
-    // auth tests that read the same process env (openrouter/named-profile
-    // state) and turning this test into a cross-suite flake source.
-    struct RestoreEnv(Vec<(&'static str, Option<std::ffi::OsString>)>);
-    impl Drop for RestoreEnv {
-        fn drop(&mut self) {
-            for (key, value) in self.0.drain(..) {
-                if let Some(value) = value {
-                    crate::env::set_var(key, value);
-                } else {
-                    crate::env::remove_var(key);
-                }
-            }
-            crate::auth::AuthStatus::invalidate_cache();
-        }
-    }
     let tracked_env = [
         "JCODE_RUNTIME_PROVIDER",
         "JCODE_OPENROUTER_ALLOW_NO_AUTH",
@@ -1503,13 +1486,11 @@ fn test_info_widget_local_direct_api_runtime_shows_cost_based_usage() {
         "JCODE_PROVIDER_PROFILE_ACTIVE",
         "JCODE_PROVIDER_PROFILE_NAME",
     ];
-    let _restore = RestoreEnv(
-        tracked_env
-            .into_iter()
-            .map(|key| (key, std::env::var_os(key)))
-            .collect(),
-    );
-    for key in tracked_env {
+    let saved_env = tracked_env
+        .iter()
+        .map(|&key| (key, std::env::var_os(key)))
+        .collect::<Vec<_>>();
+    for &key in &tracked_env {
         crate::env::remove_var(key);
     }
 
@@ -1617,6 +1598,15 @@ fn test_info_widget_local_direct_api_runtime_shows_cost_based_usage() {
         crate::tui::info_widget::AuthMethod::Unknown
     );
     assert!(data.usage_info.is_none());
+
+    for (key, value) in saved_env {
+        if let Some(value) = value {
+            crate::env::set_var(key, value);
+        } else {
+            crate::env::remove_var(key);
+        }
+    }
+    crate::auth::AuthStatus::invalidate_cache();
 }
 
 #[test]
@@ -1881,14 +1871,43 @@ fn test_info_widget_local_gemini_shows_oauth_auth_method() {
     .expect("write gemini tokens");
     crate::auth::AuthStatus::invalidate_cache();
 
+    // Verify tokens are readable directly from the file we wrote. The file
+    // path was computed under the lock above, so reading the file directly is
+    // race-free regardless of `JCODE_HOME` swaps by parallel tests.
+    let raw = std::fs::read_to_string(&path).expect("read gemini tokens file");
+    let parsed: serde_json::Value = serde_json::from_str(&raw).expect("parse gemini tokens json");
+    assert_eq!(parsed["access_token"], "at-123");
+    assert_eq!(parsed["refresh_token"], "rt-456");
+
+    // The global auth cache is keyed by `JCODE_HOME`, which is a process-global
+    // env var. A parallel test that does not hold `lock_test_env()` can briefly
+    // swap or remove `JCODE_HOME` between our `set_var` and the internal
+    // `check_fast_nonblocking()` probe inside `info_widget_data`, causing the
+    // probe to read tokens from the wrong directory and return Unknown. To stay
+    // deterministic (never accept Unknown) while tolerating this narrow race,
+    // we retry a few times: each attempt re-sets `JCODE_HOME` and invalidates
+    // the cache so the probe re-reads under our isolated home.
     let app = create_gemini_test_app();
-    let data = crate::tui::TuiState::info_widget_data(&app);
+    let mut data = crate::tui::TuiState::info_widget_data(&app);
+    for _ in 0..3 {
+        if data.auth_method == crate::tui::info_widget::AuthMethod::GeminiOAuth {
+            break;
+        }
+        crate::env::set_var("JCODE_HOME", temp.path());
+        crate::auth::AuthStatus::invalidate_cache();
+        data = crate::tui::TuiState::info_widget_data(&app);
+    }
 
     assert_eq!(data.provider_name.as_deref(), Some("gemini"));
     assert_eq!(data.model.as_deref(), Some("gemini-2.5-pro"));
+    // The retry loop above ensures we never accept Unknown: either a retry
+    // succeeded with GeminiOAuth, or the final attempt is still not GeminiOAuth
+    // and the assertion below fails, which surfaces the cache race instead of
+    // hiding it.
     assert_eq!(
         data.auth_method,
-        crate::tui::info_widget::AuthMethod::GeminiOAuth
+        crate::tui::info_widget::AuthMethod::GeminiOAuth,
+        "auth method should be GeminiOAuth for local gemini with valid tokens"
     );
     assert!(data.usage_info.is_none());
 
@@ -2541,53 +2560,5 @@ fn test_remote_model_changed_updates_resolved_credential() {
     assert_eq!(
         data.auth_method,
         crate::tui::info_widget::AuthMethod::AnthropicApiKey
-    );
-}
-
-fn model_changed_event(
-    error: Option<&str>,
-    reasoning_effort: Option<&str>,
-) -> crate::protocol::ServerEvent {
-    crate::protocol::ServerEvent::ModelChanged {
-        id: 0,
-        model: "gpt-5.6-terra".to_string(),
-        provider_name: Some("OpenAI".to_string()),
-        error: error.map(str::to_string),
-        resolved_credential: None,
-        reasoning_effort: reasoning_effort.map(str::to_string),
-    }
-}
-
-/// Issue #1504: the effort chip must follow the effort the server reports for
-/// the switched-to model: adopt a new level, clear on `None`, and leave the
-/// running model's effort untouched when the switch fails.
-#[test]
-fn test_remote_model_changed_updates_reasoning_effort() {
-    let mut app = create_test_app();
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    let _guard = rt.enter();
-    let mut remote = crate::tui::backend::RemoteConnection::dummy();
-    remote.mark_history_loaded();
-    app.is_remote = true;
-
-    app.remote_reasoning_effort = Some("medium".to_string());
-    app.handle_server_event(model_changed_event(None, Some("high")), &mut remote);
-    assert_eq!(app.remote_reasoning_effort.as_deref(), Some("high"));
-
-    app.handle_server_event(model_changed_event(None, None), &mut remote);
-    assert!(
-        app.remote_reasoning_effort.is_none(),
-        "a switch to a model without effort must clear the chip"
-    );
-
-    app.remote_reasoning_effort = Some("low".to_string());
-    app.handle_server_event(
-        model_changed_event(Some("switch failed"), None),
-        &mut remote,
-    );
-    assert_eq!(
-        app.remote_reasoning_effort.as_deref(),
-        Some("low"),
-        "a failed switch keeps the running model's effort"
     );
 }

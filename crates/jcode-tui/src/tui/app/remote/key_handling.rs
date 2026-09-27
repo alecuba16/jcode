@@ -75,7 +75,20 @@ async fn apply_remote_effort_direction(
     let efforts =
         app_mod::inferred_reasoning_efforts(provider_name.as_deref(), provider_model.as_deref());
     if efforts.is_empty() {
-        app.set_status_notice("Reasoning effort not available for this provider");
+        // Switching is unavailable, but the server may still run a fixed
+        // effort (e.g. injected via OpenAI-compatible `extra_body`). Show it
+        // read-only instead of hiding it.
+        match app.remote_reasoning_effort_hint() {
+            Some(effort) => {
+                app.set_status_notice(format!(
+                    "Reasoning effort not switchable for this provider. Effort: {} (fixed)",
+                    app_mod::effort_display_label(&effort)
+                ));
+            }
+            None => {
+                app.set_status_notice("Reasoning effort not available for this provider");
+            }
+        }
         return Ok(());
     }
     let current = app.remote_reasoning_effort_hint();
@@ -1231,9 +1244,22 @@ async fn handle_remote_key_internal(
                         provider_model.as_deref(),
                     );
                     if efforts.is_empty() {
-                        app.push_display_message(DisplayMessage::system(
-                            "Reasoning effort not available for this provider.".to_string(),
-                        ));
+                        // Switching is unavailable, but the server may still run
+                        // a fixed effort (e.g. injected via OpenAI-compatible
+                        // `extra_body`). Show it read-only instead of hiding it.
+                        match app.remote_reasoning_effort_hint() {
+                            Some(effort) => {
+                                app.push_display_message(DisplayMessage::system(format!(
+                                    "Reasoning effort not switchable for this provider.\nEffort: {} (fixed, from provider config)",
+                                    app_mod::effort_display_label(&effort)
+                                )));
+                            }
+                            None => {
+                                app.push_display_message(DisplayMessage::system(
+                                    "Reasoning effort not available for this provider.".to_string(),
+                                ));
+                            }
+                        }
                         return Ok(());
                     }
                     let list: Vec<String> = efforts

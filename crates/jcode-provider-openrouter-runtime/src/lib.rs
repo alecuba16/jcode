@@ -1145,6 +1145,49 @@ impl OpenRouterProvider {
         }
     }
 
+    /// Display-only effort actually sent to the backend when the switchable
+    /// `/effort` state is empty. Reads the `extra_body` fields that can carry
+    /// an effort on strict-schema OpenAI-compatible endpoints:
+    /// - top-level `reasoning_effort` (DeepSeek/OpenAI style),
+    /// - `reasoning` = `{ "effort": ... }` (unified style),
+    /// - `chat_template_kwargs` = `{ "reasoning_effort": ... }` (NVIDIA NIM style).
+    ///
+    /// Returns nothing when the switchable effort is already set, so live
+    /// `/effort` changes always win in the UI.
+    pub(crate) fn extra_body_reasoning_effort(&self) -> Option<String> {
+        if self
+            .reasoning_effort
+            .try_read()
+            .map(|guard| guard.is_some())
+            .unwrap_or(false)
+        {
+            return None;
+        }
+        let extra = self.extra_body.as_ref()?;
+        let effort = extra
+            .get("reasoning_effort")
+            .and_then(Value::as_str)
+            .or_else(|| {
+                extra
+                    .get("reasoning")
+                    .and_then(Value::as_object)
+                    .and_then(|reasoning| reasoning.get("effort"))
+                    .and_then(Value::as_str)
+            })
+            .or_else(|| {
+                extra
+                    .get("chat_template_kwargs")
+                    .and_then(Value::as_object)
+                    .and_then(|kwargs| kwargs.get("reasoning_effort"))
+                    .and_then(Value::as_str)
+            })?;
+        let effort = effort.trim();
+        if effort.is_empty() {
+            return None;
+        }
+        Some(effort.to_ascii_lowercase())
+    }
+
     /// Initial reasoning effort at construction. Named/compat profiles that
     /// support effort honor the user's configured `openai_reasoning_effort`
     /// (issue #352: previously hardcoded to None so the config was ignored).

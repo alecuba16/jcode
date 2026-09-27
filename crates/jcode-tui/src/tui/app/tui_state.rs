@@ -1367,7 +1367,7 @@ impl crate::tui::TuiState for App {
         } else {
             (
                 Some(self.provider.model()),
-                self.provider.reasoning_effort(),
+                self.provider.effective_reasoning_effort(),
                 self.provider.service_tier(),
                 self.provider.native_compaction_mode(),
                 self.provider.native_compaction_threshold_tokens(),
@@ -1386,6 +1386,8 @@ impl crate::tui::TuiState for App {
                 name
             }
         });
+
+        let memory_info = gather_memory_info(self.memory_enabled, self.session.working_dir.clone());
 
         // Gather swarm info
         let swarm_info = if self.swarm_enabled {
@@ -1650,14 +1652,18 @@ impl crate::tui::TuiState for App {
             session_name,
             working_dir: self.session.working_dir.clone(),
             client_count,
-            // Memory remains available through commands and tools, but no longer
-            // occupies a dedicated info widget.
-            memory_info: None,
+            memory_info,
             swarm_info,
             background_info,
             usage_info,
             usage_display_used: crate::config::config().display.usage_display_used(),
             tokens_per_second,
+            avg_tokens_per_second: if crate::config::config().display.show_tps {
+                self.avg_tps()
+            } else {
+                None
+            },
+            hide_tps: !crate::config::config().display.show_tps,
             provider_name: if uses_remote_widget_metadata {
                 self.remote_provider_name
                     .clone()
@@ -1685,6 +1691,13 @@ impl crate::tui::TuiState for App {
                 false
             },
             git_info: gather_git_info(),
+            // Current master renders the status line persistently. Keep these
+            // compatibility flags aligned so the merged info widgets do not
+            // repeat the identity facts already shown there.
+            status_line_active: true,
+            status_line_pinned: true,
+            mcp_servers: self.mcp_servers(),
+            available_skills: self.available_skills(),
             agent_edited: self.agent_edited_paths(),
         }
     }

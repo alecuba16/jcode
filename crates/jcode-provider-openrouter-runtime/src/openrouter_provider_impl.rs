@@ -453,6 +453,11 @@ impl Provider for OpenRouterProvider {
             .and_then(|effort| effort.clone())
     }
 
+    fn effective_reasoning_effort(&self) -> Option<String> {
+        self.reasoning_effort()
+            .or_else(|| self.extra_body_reasoning_effort())
+    }
+
     fn set_reasoning_effort(&self, effort: &str) -> Result<()> {
         if !self.supports_any_reasoning_effort() {
             anyhow::bail!(

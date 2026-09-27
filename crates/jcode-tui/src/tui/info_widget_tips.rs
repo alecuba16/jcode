@@ -109,29 +109,3 @@ pub(super) fn tips_widget_height(inner_width: usize) -> u16 {
     let lines = wrap_tip_text(&tip.text, effective_w);
     1 + lines.len() as u16
 }
-
-pub(super) fn render_tips_widget(inner: Rect) -> Vec<Line<'static>> {
-    let w = inner.width.saturating_sub(2) as usize;
-    let tip = current_tip(w);
-    let wrapped = wrap_tip_text(&tip.text, w);
-
-    let mut lines: Vec<Line<'static>> = Vec::new();
-    lines.push(Line::from(vec![
-        Span::styled("💡 ", Style::default().fg(rgb(255, 210, 80))),
-        Span::styled(
-            "Did you know?",
-            Style::default()
-                .fg(rgb(200, 200, 210))
-                .add_modifier(Modifier::BOLD),
-        ),
-    ]));
-
-    for line_text in wrapped {
-        lines.push(Line::from(vec![
-            Span::raw("  "),
-            Span::styled(line_text, Style::default().fg(rgb(160, 160, 175))),
-        ]));
-    }
-
-    lines
-}
