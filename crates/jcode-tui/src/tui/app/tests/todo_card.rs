@@ -332,8 +332,12 @@ fn pinned_todos_hide_todo_tool_messages_from_the_transcript() {
 fn pinned_todo_band_renders_below_sticky_prompt_without_separator() {
     let _env_lock = crate::storage::lock_test_env();
     let _render_lock = crate::tui::ui::render_state_test_lock();
+    let _widgets_off = crate::tui::info_widget::WidgetsDisabledGuard::new();
     let _pin = PinTodosEnvGuard::enable();
     let mut app = create_test_app();
+    // With the status line pinned on, the fixed Overview panel grabs the top
+    // rows of the 60x16 fixture and truncates the pinned todo band text, so
+    // disable the info widgets for this render.
     let session_id = app.session.id.clone();
     crate::todo::save_todos(
         &session_id,
@@ -410,7 +414,11 @@ fn pinned_todo_band_renders_below_sticky_prompt_without_separator() {
 fn background_task_rows_render_without_todos_or_transcript_cards() {
     let _env_lock = crate::storage::lock_test_env();
     let _render_lock = crate::tui::ui::render_state_test_lock();
+    let _widgets_off = crate::tui::info_widget::WidgetsDisabledGuard::new();
     let mut app = create_test_app();
+    // With the status line pinned on, the fixed Overview panel grabs the top
+    // rows of the small fixture and truncates the background task rows, so
+    // disable the info widgets for this render.
     app.session.short_name = Some("test".to_string());
     app.push_display_message(DisplayMessage::assistant("ordinary transcript content"));
     app.upsert_running_background_task(

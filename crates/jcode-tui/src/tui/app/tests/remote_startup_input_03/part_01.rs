@@ -1,26 +1,70 @@
 #[test]
 fn test_build_turn_footer_combines_compact_duration_with_streaming_stats() {
-    let mut app = create_test_app();
-    app.streaming.streaming_input_tokens = 210_000;
-    app.streaming.streaming_output_tokens = 440;
-    app.streaming.streaming_tps_collect_output = true;
-    app.streaming.streaming_total_output_tokens = 440;
-    app.streaming.streaming_tps_observed_output_tokens = 440;
-    app.streaming.streaming_tps_observed_elapsed = Duration::from_secs(220);
+    // The footer rate is gated on `display.show_tps`, read through the global
+    // config cache. Isolate in a fresh home (defaults on) and serialize with
+    // the sibling test that flips the preference off.
+    with_temp_jcode_home(|| {
+        let mut app = create_test_app();
+        app.streaming.streaming_input_tokens = 210_000;
+        app.streaming.streaming_output_tokens = 440;
+        app.streaming.streaming_tps_collect_output = true;
+        app.streaming.streaming_total_output_tokens = 440;
+        app.streaming.streaming_tps_observed_output_tokens = 440;
+        app.streaming.streaming_tps_observed_elapsed = Duration::from_secs(220);
 
-    let footer = app
-        .build_turn_footer(Some(316.1))
-        .expect("footer with stats");
+        let footer = app
+            .build_turn_footer(Some(316.1))
+            .expect("footer with stats");
 
-    assert!(
-        footer.starts_with("5m 16s · "),
-        "unexpected footer: {footer}"
-    );
-    assert!(footer.contains(" tps"), "unexpected footer: {footer}");
-    assert!(
-        footer.ends_with("↑210k ↓440"),
-        "unexpected footer: {footer}"
-    );
+        assert!(
+            footer.starts_with("5m 16s · "),
+            "unexpected footer: {footer}"
+        );
+        assert!(footer.contains(" tps"), "unexpected footer: {footer}");
+        assert!(
+            footer.ends_with("↑210k ↓440"),
+            "unexpected footer: {footer}"
+        );
+    });
+}
+
+#[test]
+fn test_build_turn_footer_hides_tps_when_show_tps_off() {
+    with_temp_jcode_home(|| {
+        crate::config::Config::set_show_tps(false).expect("save off");
+        // Pick the fresh file value up immediately instead of waiting out the
+        // reload throttle, and drop any stale cached state from earlier tests.
+        crate::config::invalidate_config_cache();
+
+        let mut app = create_test_app();
+        app.streaming.streaming_input_tokens = 210_000;
+        app.streaming.streaming_output_tokens = 440;
+        app.streaming.streaming_tps_collect_output = true;
+        app.streaming.streaming_total_output_tokens = 440;
+        app.streaming.streaming_tps_observed_output_tokens = 440;
+        app.streaming.streaming_tps_observed_elapsed = Duration::from_secs(220);
+
+        let footer = app
+            .build_turn_footer(Some(316.1))
+            .expect("footer with stats");
+
+        assert!(
+            !footer.contains("tps") && !footer.contains("t/s"),
+            "show_tps=false must hide the footer rate, got: {footer}"
+        );
+        // The non-rate parts stay visible.
+        assert!(
+            footer.starts_with("5m 16s"),
+            "duration and token counts must remain, got: {footer}"
+        );
+        assert!(
+            footer.contains("↑210k ↓440"),
+            "token counts must remain, got: {footer}"
+        );
+
+        // Do not leave the off value cached for later tests in this process.
+        crate::config::invalidate_config_cache();
+    });
 }
 
 #[test]

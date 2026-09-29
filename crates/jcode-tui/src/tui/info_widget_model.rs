@@ -12,6 +12,106 @@ use super::text::truncate_smart;
 use crate::tui::color_support::rgb;
 use ratatui::prelude::*;
 
+/// Render only the supplementary model info not shown in the status line:
+/// native compaction mode. Service tier is already shown inline on the
+/// model name line. Used when `status_line_active` suppresses the full
+/// `render_model_info`.
+pub(super) fn render_model_info_supplementary(
+    data: &InfoWidgetData,
+    _inner: Rect,
+) -> Vec<Line<'static>> {
+    let mut lines: Vec<Line<'static>> = Vec::new();
+
+    // Native compaction mode.
+    if let Some(mode) = &data.native_compaction_mode {
+        let label = if let Some(tokens) = data.native_compaction_threshold_tokens {
+            format!("native {} @ {}k", mode, tokens / 1000)
+        } else {
+            format!("native {}", mode)
+        };
+        lines.push(Line::from(vec![
+            Span::styled("📦 ", Style::default().fg(rgb(120, 210, 230))),
+            Span::styled(label, Style::default().fg(rgb(120, 210, 230))),
+        ]));
+    }
+
+    lines
+}
+
+#[allow(dead_code)] // Retained for status-bar model rendering; currently unused after a layout change.
+pub(crate) fn shorten_model_name(model: &str) -> String {
+    if model.contains("claude") {
+        if model.contains("opus-4-5") || model.contains("opus-4.5") {
+            return "opus-4.5".to_string();
+        }
+        if model.contains("sonnet-4") {
+            return "sonnet-4".to_string();
+        }
+        if model.contains("sonnet-3-5") || model.contains("sonnet-3.5") {
+            return "sonnet-3.5".to_string();
+        }
+        if model.contains("haiku") {
+            return "haiku".to_string();
+        }
+        if let Some(idx) = model.find("claude-") {
+            let rest = &model[idx + 7..];
+            if let Some(end) = rest.find('-') {
+                return rest[..end].to_string();
+            }
+        }
+    }
+
+    if model.contains("gpt")
+        && let Some(start) = model.find("gpt-")
+    {
+        let rest = &model[start..];
+        let parts: Vec<&str> = rest.splitn(3, '-').collect();
+        if parts.len() >= 2 {
+            return format!("{}-{}", parts[0], parts[1]);
+        }
+    }
+
+    if model.len() > 15 {
+        format!("{}…", crate::util::truncate_str(model, 14))
+    } else {
+        model.to_string()
+    }
+}
+
+fn short_reasoning_effort(effort: &str) -> Option<&str> {
+    let effort = effort.trim();
+    if effort.is_empty() {
+        return None;
+    }
+    Some(match effort {
+        "max" => "max",
+        "xhigh" => "xhi",
+        "high" => "hi",
+        "medium" => "med",
+        "low" => "lo",
+        "none" => "∅",
+        "swarm" => "swarm",
+        "swarm-deep" => "swarm+",
+        other => other,
+    })
+}
+
+fn short_service_tier(service_tier: &str) -> Option<&str> {
+    let service_tier = service_tier.trim();
+    if service_tier.is_empty() || service_tier == "off" || service_tier == "default" {
+        return None;
+    }
+    Some(match service_tier {
+        "priority" => "fast",
+        "flex" => "flex",
+        other => other,
+    })
+}
+
+pub(super) fn model_info_supplementary_height(data: &InfoWidgetData) -> u16 {
+    u16::from(data.native_compaction_mode.is_some())
+}
+
 /// Content rows the Runtime widget renders, mirroring [`render_model_widget`].
 pub(super) fn runtime_height(data: &InfoWidgetData) -> u16 {
     runtime_rows(data).len() as u16
@@ -156,19 +256,6 @@ fn runtime_rows(data: &InfoWidgetData) -> Vec<RuntimeRow> {
 fn non_empty(value: Option<&str>) -> Option<&str> {
     value.map(str::trim).filter(|s| !s.is_empty())
 }
-
-fn short_service_tier(service_tier: &str) -> Option<&str> {
-    let service_tier = service_tier.trim();
-    if service_tier.is_empty() || service_tier == "off" || service_tier == "default" {
-        return None;
-    }
-    Some(match service_tier {
-        "priority" => "fast",
-        "flex" => "flex",
-        other => other,
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -197,6 +284,17 @@ mod tests {
             })
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    fn first_line_text(lines: Vec<Line<'static>>) -> String {
+        lines
+            .into_iter()
+            .next()
+            .expect("first model line")
+            .spans
+            .into_iter()
+            .map(|span| span.content.into_owned())
+            .collect::<String>()
     }
 
     #[test]
@@ -247,5 +345,44 @@ mod tests {
         let framed = render_model_widget(&d, Rect::new(0, 0, 30, 8));
         assert_eq!(framed.lines.len() as u16, runtime_height(&d));
         assert!(text(framed.all_lines()).contains("sauropod · 3 sessions"));
+    }
+
+    #[test]
+    fn overview_shows_runtime_metadata() {
+        let rect = Rect::new(0, 0, 40, 8);
+        let mut data = data();
+        data.provider_name = Some("openai".to_string());
+
+        let out = text(render_model_info(&data, rect));
+        // The status line owns the identity facts (model, effort, provider);
+        // the Overview rows carry the runtime facts behind them.
+        assert!(out.contains("fast tier"), "{out}");
+    }
+
+    #[test]
+    fn openai_fast_badge_follows_service_tier_not_model_name() {
+        let rect = Rect::new(0, 0, 40, 8);
+        let mut data = data();
+        data.provider_name = Some("OpenAI".to_string());
+        data.model = Some("gpt-future-model".to_string());
+
+        for (tier, badge) in [(Some("priority"), "fast tier"), (Some("flex"), "flex tier")] {
+            data.service_tier = tier.map(str::to_string);
+            assert!(text(render_model_info(&data, rect)).contains(badge));
+        }
+        for tier in [None, Some("off"), Some("default")] {
+            data.service_tier = tier.map(str::to_string);
+            assert!(!text(render_model_info(&data, rect)).contains("tier"));
+        }
+    }
+
+    #[test]
+    fn non_openai_provider_hides_openai_service_tier() {
+        let rect = Rect::new(0, 0, 40, 8);
+        let mut data = data();
+        data.model = Some("deepseek-v4-flash".to_string());
+        data.provider_name = Some("deepseek".to_string());
+
+        assert!(!text(render_model_info(&data, rect)).contains("tier"));
     }
 }

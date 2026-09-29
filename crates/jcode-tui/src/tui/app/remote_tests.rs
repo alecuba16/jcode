@@ -641,6 +641,7 @@ fn startup_history(session_id: &str) -> ServerEvent {
         session_id: session_id.to_string(),
         messages: vec![],
         images: vec![],
+        applets: Default::default(),
         provider_name: None,
         provider_model: None,
         subagent_model: None,
@@ -670,7 +671,6 @@ fn startup_history(session_id: &str) -> ServerEvent {
         compaction_mode: crate::config::CompactionMode::Reactive,
         activity: None,
         side_panel: crate::side_panel::SidePanelSnapshot::default(),
-        applets: Default::default(),
     }
 }
 

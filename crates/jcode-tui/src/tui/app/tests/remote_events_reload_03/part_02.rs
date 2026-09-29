@@ -37,6 +37,7 @@ fn test_metadata_only_history_preserves_fast_restored_startup_state() {
             session_id: session_id.to_string(),
             messages: vec![],
             images: vec![],
+            applets: Default::default(),
             provider_name: Some("openai".to_string()),
             provider_model: Some("gpt-5.4".to_string()),
             subagent_model: None,
@@ -66,7 +67,6 @@ fn test_metadata_only_history_preserves_fast_restored_startup_state() {
             compaction_mode: crate::config::CompactionMode::Reactive,
             activity: None,
             side_panel: crate::side_panel::SidePanelSnapshot::default(),
-            applets: Default::default(),
         },
         &mut remote,
     );
@@ -116,6 +116,7 @@ fn test_duplicate_history_for_same_session_is_ignored_after_fast_path_restore() 
                 tool_data: None,
             }],
             images: vec![],
+            applets: Default::default(),
             provider_name: Some("claude".to_string()),
             provider_model: Some("claude-sonnet-4-20250514".to_string()),
             subagent_model: None,
@@ -145,7 +146,6 @@ fn test_duplicate_history_for_same_session_is_ignored_after_fast_path_restore() 
             compaction_mode: crate::config::CompactionMode::Reactive,
             activity: None,
             side_panel: crate::side_panel::SidePanelSnapshot::default(),
-            applets: Default::default(),
         },
         &mut remote,
     );
@@ -389,4 +389,3 @@ fn test_remote_error_with_retry_after_keeps_pending_for_auto_retry() {
     assert_eq!(last.role, "system");
     assert!(last.content.contains("Will auto-retry in 3 seconds"));
 }
-

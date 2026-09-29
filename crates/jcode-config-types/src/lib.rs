@@ -31,6 +31,41 @@ where
 
 mod display;
 pub use display::DisplayConfig;
+
+/// Interval used for tokens-per-second measurements.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TpsIntervalMode {
+    /// Count only model generation time.
+    #[default]
+    Generation,
+    /// Count the full turn, including tools and network waits.
+    Total,
+}
+
+impl TpsIntervalMode {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Generation => "generation",
+            Self::Total => "total",
+        }
+    }
+
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Generation => "Generation",
+            Self::Total => "Total",
+        }
+    }
+
+    pub fn parse(input: &str) -> Option<Self> {
+        match input.trim().to_ascii_lowercase().as_str() {
+            "generation" | "gen" => Some(Self::Generation),
+            "total" | "wall" | "wall-clock" | "wallclock" => Some(Self::Total),
+            _ => None,
+        }
+    }
+}
 pub mod keybindings;
 mod serde_lenient;
 pub use keybindings::{
@@ -1623,6 +1658,13 @@ pub struct ProviderConfig {
     /// Default: 3. Overridable via `JCODE_AUTO_RETRY_MAX_ATTEMPTS`. Raise this
     /// for shared services that need more time to free up capacity.
     pub auto_retry_max_attempts: u8,
+    /// Global `User-Agent` override for provider HTTP requests. Provider
+    /// profiles that set their own `user_agent` take precedence over this.
+    pub user_agent: Option<String>,
+    /// Global extra HTTP headers applied to provider requests. Provider
+    /// profiles' own `headers` take precedence per header name.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub headers: std::collections::BTreeMap<String, String>,
 }
 
 fn default_risk_gate_enabled() -> bool {

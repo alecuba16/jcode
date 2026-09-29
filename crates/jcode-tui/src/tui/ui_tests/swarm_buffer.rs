@@ -643,6 +643,11 @@ fn widgets_render_detail_layer_without_repeating_status_line_facts() {
     crate::tui::info_widget::clear_widget_placements_for_tests();
     let mut state = overscroll_line_state();
     state.suppress_info_widgets = false;
+    // Mirror the real app: the status line is pinned on, so identity facts
+    // (model, context counts, auth) belong to it and the widgets must only
+    // render the detail behind them.
+    state.info_widget_data.status_line_active = true;
+    state.info_widget_data.status_line_pinned = true;
     state.info_widget_data.session_name = Some("sauropod".to_string());
     state.info_widget_data.tokens_per_second = Some(62.0);
     state.info_widget_data.context_info = Some(crate::prompt::ContextInfo {

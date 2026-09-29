@@ -2,7 +2,7 @@
 
 use crate::{
     DiagramDisplayMode, DiffDisplayMode, LatexRenderingMode, MarkdownSpacingMode,
-    NativeScrollbarConfig, ReasoningDisplayMode, default_true,
+    NativeScrollbarConfig, ReasoningDisplayMode, TpsIntervalMode, default_true,
 };
 use serde::{Deserialize, Serialize};
 
@@ -119,6 +119,12 @@ pub struct DisplayConfig {
     pub external_sessions: bool,
     /// Usage percentage wording: "left" (default) or "used".
     pub usage_display: String,
+    /// Whether throughput readouts are rendered in the TUI.
+    #[serde(default = "default_true")]
+    pub show_tps: bool,
+    /// Which interval is used for throughput measurement.
+    #[serde(default)]
+    pub tps_interval: TpsIntervalMode,
 }
 impl Default for DisplayConfig {
     fn default() -> Self {
@@ -157,6 +163,8 @@ impl Default for DisplayConfig {
             active_sessions_manager: false,
             external_sessions: true,
             usage_display: "left".to_string(),
+            show_tps: true,
+            tps_interval: TpsIntervalMode::default(),
         }
     }
 }

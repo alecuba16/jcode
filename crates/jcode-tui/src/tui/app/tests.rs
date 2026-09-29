@@ -27,6 +27,7 @@ include!("tests/remote_events_reload_03/part_01.rs");
 include!("tests/remote_events_reload_03/part_02.rs");
 include!("tests/remote_events_reload_04.rs");
 include!("tests/remote_events_reload_05.rs");
+include!("tests/tps_interval_lifecycle.rs");
 include!("tests/swarm_plan_no_inline_graph.rs");
 include!("tests/remote_model_picker_hotkeys.rs");
 include!("tests/scroll_copy_01/part_01.rs");
@@ -1195,6 +1196,7 @@ fn stale_server_history_is_deferred_before_remote_state_is_applied() {
                 tool_data: None,
             }],
             images: vec![],
+            applets: Default::default(),
             provider_name: Some("stale-provider".to_string()),
             provider_model: Some("stale-model".to_string()),
             subagent_model: Some("stale-subagent".to_string()),
@@ -1224,7 +1226,6 @@ fn stale_server_history_is_deferred_before_remote_state_is_applied() {
             compaction_mode: crate::config::CompactionMode::Reactive,
             activity: None,
             side_panel: crate::side_panel::SidePanelSnapshot::default(),
-            applets: Default::default(),
         },
         &mut remote,
     );
@@ -1287,6 +1288,7 @@ fn deferred_stale_server_history_captures_session_id_for_reload_handoff() {
                 tool_data: None,
             }],
             images: vec![],
+            applets: Default::default(),
             provider_name: Some("stale-provider".to_string()),
             provider_model: Some("stale-model".to_string()),
             subagent_model: None,
@@ -1318,7 +1320,6 @@ fn deferred_stale_server_history_captures_session_id_for_reload_handoff() {
             compaction_mode: crate::config::CompactionMode::Reactive,
             activity: None,
             side_panel: crate::side_panel::SidePanelSnapshot::default(),
-            applets: Default::default(),
         },
         &mut remote,
     );
@@ -1371,6 +1372,7 @@ fn ancient_server_history_is_deferred_via_client_side_release_check() {
                 tool_data: None,
             }],
             images: vec![],
+            applets: Default::default(),
             provider_name: Some("ancient-provider".to_string()),
             provider_model: Some("ancient-model".to_string()),
             subagent_model: Some("ancient-subagent".to_string()),
@@ -1402,7 +1404,6 @@ fn ancient_server_history_is_deferred_via_client_side_release_check() {
             compaction_mode: crate::config::CompactionMode::Reactive,
             activity: None,
             side_panel: crate::side_panel::SidePanelSnapshot::default(),
-            applets: Default::default(),
         },
         &mut remote,
     );
@@ -1454,6 +1455,7 @@ fn older_server_reporting_no_update_is_still_deferred_via_client_check() {
             session_id: "session_from_old_server".to_string(),
             messages: vec![],
             images: vec![],
+            applets: Default::default(),
             provider_name: Some("p".to_string()),
             provider_model: Some("m".to_string()),
             subagent_model: None,
@@ -1485,7 +1487,6 @@ fn older_server_reporting_no_update_is_still_deferred_via_client_check() {
             compaction_mode: crate::config::CompactionMode::Reactive,
             activity: None,
             side_panel: crate::side_panel::SidePanelSnapshot::default(),
-            applets: Default::default(),
         },
         &mut remote,
     );
@@ -1559,6 +1560,7 @@ fn older_server_history_repairs_stale_shared_server_channel_end_to_end() {
             session_id: "session_from_old_server".to_string(),
             messages: vec![],
             images: vec![],
+            applets: Default::default(),
             provider_name: Some("p".to_string()),
             provider_model: Some("m".to_string()),
             subagent_model: None,
@@ -1588,7 +1590,6 @@ fn older_server_history_repairs_stale_shared_server_channel_end_to_end() {
             compaction_mode: crate::config::CompactionMode::Reactive,
             activity: None,
             side_panel: crate::side_panel::SidePanelSnapshot::default(),
-            applets: Default::default(),
         },
         &mut remote,
     );
@@ -1636,6 +1637,7 @@ fn current_release_server_history_is_not_deferred_by_client_check() {
             session_id: "session_current".to_string(),
             messages: vec![],
             images: vec![],
+            applets: Default::default(),
             provider_name: Some("p".to_string()),
             provider_model: Some("m".to_string()),
             subagent_model: None,
@@ -1665,7 +1667,6 @@ fn current_release_server_history_is_not_deferred_by_client_check() {
             compaction_mode: crate::config::CompactionMode::Reactive,
             activity: None,
             side_panel: crate::side_panel::SidePanelSnapshot::default(),
-            applets: Default::default(),
         },
         &mut remote,
     );

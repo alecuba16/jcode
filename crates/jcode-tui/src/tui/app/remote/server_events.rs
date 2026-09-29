@@ -1094,6 +1094,7 @@ pub(in crate::tui::app) fn handle_server_event(
             app.status = ProcessingStatus::Idle;
             app.stream_message_ended = false;
             app.processing_started = None;
+            app.reset_streaming_tps();
             app.current_message_id = None;
             remote.clear_pending();
             remote.reset_call_output_tokens_seen();
@@ -1201,6 +1202,8 @@ pub(in crate::tui::app) fn handle_server_event(
                     app.push_turn_footer(duration);
                 }
                 crate::tui::mermaid::clear_streaming_preview_diagram();
+                app.record_turn_tps();
+                app.reset_streaming_tps();
                 app.is_processing = false;
                 app.status = ProcessingStatus::Idle;
                 app.stream_message_ended = false;
@@ -1304,6 +1307,7 @@ pub(in crate::tui::app) fn handle_server_event(
                     app.status = ProcessingStatus::Idle;
                     app.stream_message_ended = false;
                     app.processing_started = None;
+                    app.reset_streaming_tps();
                     app.clear_visible_turn_started();
                     app.current_message_id = None;
                     remote.clear_pending();
@@ -1340,6 +1344,7 @@ pub(in crate::tui::app) fn handle_server_event(
             app.stream_message_ended = false;
             let recovered_local = recover_local_interleave_to_queue(app, "request error");
             crate::tui::mermaid::clear_streaming_preview_diagram();
+            app.reset_streaming_tps();
             app.thought_line_inserted = false;
             app.thinking_prefix_emitted = false;
             app.thinking_buffer.clear();
@@ -1709,6 +1714,7 @@ pub(in crate::tui::app) fn handle_server_event(
                 }
                 app.replay_processing_started_ms = None;
                 app.replay_elapsed_override = None;
+                app.record_turn_tps();
                 app.reset_streaming_tps();
                 app.stream_message_ended = false;
                 app.remote_resume_activity = None;
