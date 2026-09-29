@@ -1487,10 +1487,7 @@ pub(crate) struct WidgetsDisabledGuard {
 impl WidgetsDisabledGuard {
     pub(crate) fn new() -> Self {
         let mut guard = get_or_init_state();
-        let previous = guard
-            .as_ref()
-            .map(|s| s.enabled)
-            .unwrap_or(true);
+        let previous = guard.as_ref().map(|s| s.enabled).unwrap_or(true);
         if let Some(state) = guard.as_mut() {
             state.enabled = false;
         }
@@ -1967,7 +1964,9 @@ fn render_widget_content(kind: WidgetKind, data: &InfoWidgetData, inner: Rect) -
         // shows (native compaction mode, threshold).
         WidgetKind::ModelInfo => {
             let mut framed = render_model_widget(data, inner);
-            framed.lines.extend(render_model_info_supplementary(data, inner));
+            framed
+                .lines
+                .extend(render_model_info_supplementary(data, inner));
             framed
         }
         WidgetKind::Tips => render_tips_widget(inner),
@@ -2157,7 +2156,10 @@ fn render_kv_cache_summary_line(cache: &CacheHitInfo) -> Vec<Line<'static>> {
     )];
 
     if let Some(warm_pct) = warm_pct {
-        spans1.push(Span::styled("yield ", Style::default().fg(rgb(140, 140, 150))));
+        spans1.push(Span::styled(
+            "yield ",
+            Style::default().fg(rgb(140, 140, 150)),
+        ));
         spans1.push(Span::styled(
             format!("{}%", warm_pct),
             Style::default().fg(color).bold(),
@@ -2169,7 +2171,10 @@ fn render_kv_cache_summary_line(cache: &CacheHitInfo) -> Vec<Line<'static>> {
         ));
     }
     spans1.push(Span::styled(" · ", Style::default().fg(rgb(80, 80, 90))));
-    spans1.push(Span::styled("session ", Style::default().fg(rgb(140, 140, 150))));
+    spans1.push(Span::styled(
+        "session ",
+        Style::default().fg(rgb(140, 140, 150)),
+    ));
     spans1.push(Span::styled(
         format!("{}%", lifetime_pct),
         Style::default().fg(color).bold(),
@@ -2179,7 +2184,10 @@ fn render_kv_cache_summary_line(cache: &CacheHitInfo) -> Vec<Line<'static>> {
     // Line 2: last-turn stats when present.
     if let Some(last_pct) = last_pct {
         let mut spans2 = vec![Span::styled("  ", Style::default())];
-        spans2.push(Span::styled("last ", Style::default().fg(rgb(140, 140, 150))));
+        spans2.push(Span::styled(
+            "last ",
+            Style::default().fg(rgb(140, 140, 150)),
+        ));
         spans2.push(Span::styled(
             format!("{}%", last_pct),
             Style::default().fg(color).bold(),
@@ -2864,7 +2872,6 @@ fn render_compaction_compact(info: &CompactionInfo, width: u16) -> Vec<Line<'sta
         )),
     ]
 }
-
 
 fn render_skills_line(skills: &[String], _width: u16) -> Vec<Line<'static>> {
     vec![Line::from(Span::styled(

@@ -14,8 +14,8 @@ pub use jcode_config_types::{
     NativeScrollbarConfig, NotificationsConfig, PowerConfig, ProviderConfig,
     REASONING_EFFORT_MAP_KEYS, ReasoningDisplayMode, ReasoningEffortMapConfig,
     ReasoningEffortRungConfig, SafetyConfig, SessionPickerResumeAction, SponsorsConfig,
-    SwarmSpawnMode, SwarmStripLayout, TerminalConfig, TpsIntervalMode,
-    UpdateChannel, WebSearchConfig, WebSearchEngine,
+    SwarmSpawnMode, SwarmStripLayout, TerminalConfig, TpsIntervalMode, UpdateChannel,
+    WebSearchConfig, WebSearchEngine,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashSet};

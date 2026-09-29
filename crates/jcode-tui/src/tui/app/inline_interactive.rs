@@ -2388,7 +2388,8 @@ impl App {
         // same way the global side-panel toggle does.
         let is_memory = (modifiers.contains(KeyModifiers::ALT)
             && key_char_eq_ignore_ascii_case(code, 'm'))
-            || crate::tui::keybind::shortcut_char_for_macos_option_key(code, modifiers) == Some('m');
+            || crate::tui::keybind::shortcut_char_for_macos_option_key(code, modifiers)
+                == Some('m');
         let is_sidecar =
             modifiers.contains(KeyModifiers::ALT) && key_char_eq_ignore_ascii_case(code, 's');
         // Ctrl+S is reserved for the swarm model sub-picker

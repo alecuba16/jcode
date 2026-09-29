@@ -1276,10 +1276,6 @@ impl OpenRouterProvider {
             .filter(|map| !map.is_empty())
     }
 
-    fn model_reasoning_support(&self) -> Option<bool> {
-        self.model_reasoning_config().and_then(|config| config.0)
-    }
-
     fn configured_effort_for_model(&self) -> Option<String> {
         let model_reasoning_map = self.model_reasoning_map();
         if model_reasoning_map.is_some() {

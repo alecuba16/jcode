@@ -924,7 +924,6 @@ mod tests {
         );
     }
 
-
     #[test]
     fn infer_protocol_misses_inside_masking_multiplexer() {
         // Herdr/tmux advertise a bland TERM with no graphics hints.

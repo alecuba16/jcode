@@ -101,7 +101,6 @@ pub(crate) fn compute_page_layout(
         .max()
         .unwrap_or(0);
 
-
     PageLayout {
         pages,
         max_page_height,
