@@ -2391,8 +2391,17 @@ impl App {
             || crate::tui::keybind::shortcut_char_for_macos_option_key(code, modifiers) == Some('m');
         let is_sidecar =
             modifiers.contains(KeyModifiers::ALT) && key_char_eq_ignore_ascii_case(code, 's');
+        // Ctrl+S is reserved for the swarm model sub-picker
+        // (fix/swarm-model-picker) so the chords never collide.
+        let is_swarm =
+            modifiers.contains(KeyModifiers::CONTROL) && key_char_eq_ignore_ascii_case(code, 's');
         if is_default || is_favorite || is_memory || is_sidecar {
             self.handle_inline_interactive_key(code, modifiers)?;
+            return Ok(true);
+        }
+        if is_swarm {
+            // Open the swarm model sub-picker from the /model preview.
+            self.open_agent_model_picker(crate::tui::AgentModelTarget::Swarm);
             return Ok(true);
         }
         Ok(false)
@@ -3732,6 +3741,22 @@ impl App {
                 && key_char_eq_ignore_ascii_case(code, 's') =>
             {
                 self.set_selected_model_as_sidecar();
+            }
+            code if modifiers.contains(KeyModifiers::CONTROL)
+                && key_char_eq_ignore_ascii_case(code, 's') =>
+            {
+                // Ctrl+S inside the /model picker opens the swarm model
+                // sub-picker so users can choose which model spawned swarm
+                // agents use, without leaving the /model flow. If no swarm
+                // model override is saved, agents inherit the current model.
+                if self
+                    .inline_interactive_state
+                    .as_ref()
+                    .map(picker_is_runtime_model_picker)
+                    .unwrap_or(false)
+                {
+                    self.open_agent_model_picker(crate::tui::AgentModelTarget::Swarm);
+                }
             }
             KeyCode::Enter => {
                 let Some(ref mut picker) = self.inline_interactive_state else {
