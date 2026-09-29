@@ -924,6 +924,42 @@ reasoning_effort = "max"
     }
 
     #[test]
+    fn set_show_tps_accepts_lenient_bool_in_file_and_saves_plain_bool() {
+        let _lock = crate::storage::lock_test_env();
+        let home = tempfile::tempdir().unwrap();
+        let _home = EnvGuard::set("JCODE_HOME", home.path());
+        let path = home.path().join("config.toml");
+        // A lenient bool spelling must parse (lenient_bool_true), and the
+        // load-modify-save cycle must write a plain bool back while keeping
+        // unrelated preferences.
+        std::fs::write(
+            &path,
+            "[display]\nshow_tps = \"on\"\ntps_interval = \"total\"\ncompact_notifications = true\n",
+        )
+        .unwrap();
+
+        Config::set_show_tps(false).unwrap();
+
+        let saved = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            saved.contains("show_tps = false"),
+            "show_tps must be written as a plain bool, file: {saved}"
+        );
+        assert!(
+            !saved.contains("show_tps = \"on\""),
+            "the lenient spelling must be replaced by the saved value, file: {saved}"
+        );
+        assert!(
+            saved.contains("compact_notifications = true"),
+            "unrelated display preferences must survive the save, file: {saved}"
+        );
+        assert!(
+            saved.contains("tps_interval = \"total\""),
+            "the pre-existing tps_interval preference must survive the save, file: {saved}"
+        );
+    }
+
+    #[test]
     fn set_tps_interval_does_not_bake_env_overrides_into_the_file() {
         let _lock = crate::storage::lock_test_env();
         let home = tempfile::tempdir().unwrap();
