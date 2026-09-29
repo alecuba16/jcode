@@ -5,15 +5,16 @@
 
 pub use jcode_config_types::{
     AgentsConfig, AmbientConfig, AuthConfig, AutoJudgeConfig, AutoReviewConfig, CompactionConfig,
-    CompactionMode, CrossProviderFailoverMode, DiagramDisplayMode, DiagramPanePosition,
-    DiffDisplayMode, DisplayConfig, FeatureConfig, GatewayConfig, HookCommands, HooksConfig,
-    KeybindingsConfig, LatexRenderingMode, LaunchHotkeyEntry, LaunchHotkeysConfig,
-    MarkdownSpacingMode, ModelCostConfig, NamedProviderAuth, NamedProviderConfig,
-    NamedProviderModelConfig, NamedProviderType, NativeScrollbarConfig, NotificationsConfig,
-    PowerConfig, ProviderConfig, REASONING_EFFORT_MAP_KEYS,
-    ReasoningDisplayMode, ReasoningEffortMapConfig, ReasoningEffortRungConfig, SafetyConfig,
-    SessionPickerResumeAction, SponsorsConfig, SwarmSpawnMode, SwarmStripLayout, TerminalConfig,
-    TpsIntervalMode,
+    CompactionMode, CrossProviderFailoverMode, DEFAULT_FILE_MENTION_MAX_FILES,
+    DEFAULT_FILE_MENTION_MAX_RESULTS, DEFAULT_FILE_MENTION_REFRESH_TTL_SECS, DiagramDisplayMode,
+    DiagramPanePosition, DiffDisplayMode, DisplayConfig, FeatureConfig, FileMentionConfig,
+    GatewayConfig, HookCommands, HooksConfig, KeybindingsConfig, LatexRenderingMode,
+    LaunchHotkeyEntry, LaunchHotkeysConfig, MarkdownSpacingMode, ModelCostConfig,
+    NamedProviderAuth, NamedProviderConfig, NamedProviderModelConfig, NamedProviderType,
+    NativeScrollbarConfig, NotificationsConfig, PowerConfig, ProviderConfig,
+    REASONING_EFFORT_MAP_KEYS, ReasoningDisplayMode, ReasoningEffortMapConfig,
+    ReasoningEffortRungConfig, SafetyConfig, SessionPickerResumeAction, SponsorsConfig,
+    SwarmSpawnMode, SwarmStripLayout, TerminalConfig, TpsIntervalMode,
     UpdateChannel, WebSearchConfig, WebSearchEngine,
 };
 use serde::{Deserialize, Serialize};
@@ -579,6 +580,9 @@ pub struct Config {
     /// them verbatim so a CLI settings save never wipes Desktop preferences.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub desktop: Option<toml::Table>,
+
+    /// Configuration for the `@file` mention picker (indexing and list sizing).
+    pub file_mention: FileMentionConfig,
 }
 
 /// Controls who owns autonomous wake execution.

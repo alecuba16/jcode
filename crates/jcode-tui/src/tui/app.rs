@@ -64,6 +64,7 @@ mod auth;
 mod auth_account_picker_saved_accounts;
 mod auth_remote;
 mod catchup;
+mod char_bag;
 mod commands;
 mod commands_cloud;
 mod commands_colors;
@@ -78,6 +79,7 @@ mod copy_selection;
 mod debug;
 mod dictation;
 mod event_wrappers;
+mod file_mention;
 mod handterm_native_scroll;
 pub(crate) mod helpers;
 mod hotkey_feedback;
@@ -931,6 +933,10 @@ pub struct App {
     /// `command_suggestions_cache` to a single frame.
     command_suggestions_epoch: std::cell::Cell<u64>,
     cursor_pos: usize,
+    /// @file search cache and index
+    file_mention_cache: RefCell<crate::tui::app::file_mention::FileMentionCache>,
+    /// Confirmed @file references (absolute paths); loaded on send
+    file_chips: Vec<PathBuf>,
     scroll_offset: usize,
     /// Pauses auto-scroll when user scrolls up during streaming
     auto_scroll_paused: bool,
@@ -1588,8 +1594,9 @@ pub struct App {
     scroll_bookmark: Option<usize>,
     // Stashed input: saved via Ctrl+S for later retrieval
     stashed_input: Option<(String, usize)>,
-    // Undo history for in-progress input editing (Ctrl+Z)
-    input_undo_stack: Vec<(String, usize)>,
+    // Undo history for in-progress input editing (Ctrl+Z). File chips are
+    // snapshot alongside the text so undo restores attachments too.
+    input_undo_stack: Vec<InputUndoEntry>,
     // Draft replaced by an explicit jump into prompt history (Ctrl+Up),
     // restored when Down walks back past the newest entry
     history_draft: Option<(String, usize)>,
@@ -1769,6 +1776,14 @@ pub struct App {
     /// Lazily-loaded persisted cross-session prompt history (oldest first,
     /// deduped). None until first use; see `prompt_history.rs`.
     persisted_prompt_history: Option<Vec<String>>,
+}
+
+/// One Ctrl+Z snapshot of the composer state.
+#[derive(Clone, PartialEq, Debug)]
+pub(crate) struct InputUndoEntry {
+    pub(crate) input: String,
+    pub(crate) cursor_pos: usize,
+    pub(crate) file_chips: Vec<PathBuf>,
 }
 
 /// Inert provider used by runtime modes whose output is supplied by another source.

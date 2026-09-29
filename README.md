@@ -381,6 +381,34 @@ The **Overview** is a compact info widget that merges several status signals int
 | Usage | Cost and token throughput |
 
 When space is tight the Overview collapses to its most important lines and expands back as room frees up, with hysteresis so the layout does not jitter. The memory section shows `0 memories` when empty (but enabled) and `Memory disabled` when the sidecar is off; when memories were injected during the turn, their content is wrapped inline below the count. Swarm shows a `0 sessions` line when no swarm is active. The auth indicator appends the upstream provider (`via <name>`) and connection type in brackets when available.
+### File mentions (`@file` completion)
+
+Type `@` in the input box to trigger file-path completion. A popup lists workspace files ranked by **frecency** (frequency + recency decay): files you have selected before rank higher, and the score is `frequency / (1 + days_since_last_open)`. Frecency history persists to `~/.jcode/file_frecency.jsonl` (capped at 1000 entries) so ranking carries across sessions.
+
+The index uses a two-layer strategy:
+
+| Layer | Source | When built |
+|-------|--------|-----------|
+| Base | `git ls-files --cached --others --exclude-standard` | Background task with adaptive TTL (30 s–2 min) |
+| Lazy | `fs::read_dir` on demand | When a query points inside a gitignored directory |
+
+Matching is case-insensitive and substring-based (a `CharBag` pre-filter narrows candidates before a regex pass). Selected files appear as inline chips in the input box; backspace on a chip deletes the whole path token rather than one character at a time. Binary files are filtered out of results.
+
+The picker is tunable via the `[file_mention]` section in `~/.jcode/config.toml`:
+
+```toml
+[file_mention]
+# Base index refresh TTL in seconds (large workspaces use 4x this).
+refresh_ttl_secs = 30
+# Maximum suggestions shown in the @file popover per query.
+max_results = 15
+# Maximum files indexed per workspace (safety cap).
+max_files = 5000
+```
+
+Zero or missing values fall back to the built-in defaults shown above.
+
+Outside-workspace files are reachable too. Type `@~` to browse your home directory (`@~/Doc…` expands `$HOME`) or `@/` for an absolute path from the filesystem root. These queries skip the frecency index entirely: they read the parent directory live, so they never pollute your ranking history. Selected files attach as chips exactly like workspace files, with the `~` expanded to the real path when the prompt is sent.
 
 Jcode can render at over a thousand fps. Your monitor will not have the refresh rate to show you, but this means you will not have silly flicker problems. 
 
