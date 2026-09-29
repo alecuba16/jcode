@@ -422,6 +422,7 @@ pub fn get_shared_pool() -> Option<Arc<SharedMcpPool>> {
     SHARED_POOL.get().cloned()
 }
 
+#[cfg_attr(test, allow(clippy::await_holding_lock))] // env guards held across async test bodies
 #[cfg(test)]
 mod tests {
     use super::{ConnectAttempt, SharedMcpPool};
