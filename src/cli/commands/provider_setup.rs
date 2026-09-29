@@ -191,6 +191,7 @@ pub(crate) fn configure_provider_profile(
         auto_retry_base_delay_secs: None,
         auto_retry_enabled: None,
         auto_retry_max_attempts: None,
+        display_name: None,
     };
 
     let config_path = Config::path().ok_or_else(|| anyhow::anyhow!("No config path"))?;
