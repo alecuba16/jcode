@@ -40,6 +40,12 @@ fn env_is_set(value: Option<&str>) -> bool {
     value.map(|v| !v.trim().is_empty()).unwrap_or(false)
 }
 
+/// HERDR_WEBUI exported by herdr-webui's builtin backend into every pane.
+/// Read via `var_os` so a non-UTF-8 value cannot fail the lookup.
+fn herdr_webui_env() -> Option<String> {
+    std::env::var_os("HERDR_WEBUI").map(|v| v.to_string_lossy().into_owned())
+}
+
 /// Detect whether jcode is running inside a known multiplexer, using the same
 /// signals the multiplexers themselves expose to child processes.
 pub(super) fn detect_multiplexer(
@@ -364,7 +370,7 @@ fn fast_picker() -> Picker {
         std::env::var("TERM_PROGRAM").ok().as_deref(),
         std::env::var("LC_TERMINAL").ok().as_deref(),
         std::env::var("KITTY_WINDOW_ID").ok().as_deref(),
-        std::env::var("HERDR_WEBUI").ok().as_deref(),
+        herdr_webui_env().as_deref(),
     ) {
         picker.set_protocol_type(protocol);
     }
@@ -386,7 +392,7 @@ fn probe_picker() -> Picker {
     match Picker::from_query_stdio() {
         Ok(probed) => {
             let mut protocol = probed.protocol_type();
-            if env_is_set(std::env::var("HERDR_WEBUI").ok().as_deref())
+            if env_is_set(herdr_webui_env().as_deref())
                 && matches!(
                     protocol,
                     ProtocolType::Kitty | ProtocolType::Iterm2 | ProtocolType::Sixel
@@ -456,7 +462,7 @@ pub fn init_picker() {
             std::env::var("TERM_PROGRAM").ok().as_deref(),
             std::env::var("LC_TERMINAL").ok().as_deref(),
             std::env::var("KITTY_WINDOW_ID").ok().as_deref(),
-            std::env::var("HERDR_WEBUI").ok().as_deref(),
+            herdr_webui_env().as_deref(),
         );
         let multiplexer = detect_multiplexer_from_env();
         let probe_override = std::env::var("JCODE_MERMAID_PICKER_PROBE")
@@ -874,24 +880,6 @@ mod tests {
     }
 
     #[test]
-    fn explicit_wezterm_identity_avoids_incomplete_kitty_placeholders() {
-        assert_eq!(
-            infer_protocol_from_env(
-                Some("xterm-kitty"),
-                Some("WezTerm"),
-                None,
-                Some("stale-kitty-window"),
-                None
-            ),
-            Some(ProtocolType::Iterm2)
-        );
-        assert_eq!(
-            infer_protocol_from_env(Some("xterm-256color"), Some("konsole"), None, None, None),
-            None
-        );
-    }
-
-    #[test]
     fn herdr_webui_overrides_kitty_hints_to_keep_halfblocks() {
         // herdr-webui advertises a Ghostty-capable pane so inline read-tool
         // images keep Kitty, but its browser renderer cannot draw the
@@ -917,6 +905,25 @@ mod tests {
             Some(ProtocolType::Kitty)
         );
     }
+
+    #[test]
+    fn explicit_wezterm_identity_avoids_incomplete_kitty_placeholders() {
+        assert_eq!(
+            infer_protocol_from_env(
+                Some("xterm-kitty"),
+                Some("WezTerm"),
+                None,
+                Some("stale-kitty-window"),
+                None
+            ),
+            Some(ProtocolType::Iterm2)
+        );
+        assert_eq!(
+            infer_protocol_from_env(Some("xterm-256color"), Some("konsole"), None, None, None),
+            None
+        );
+    }
+
 
     #[test]
     fn infer_protocol_misses_inside_masking_multiplexer() {
