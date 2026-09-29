@@ -1337,10 +1337,15 @@ fn remote_effort_cycle_shows_fixed_effort_when_switching_unavailable() {
     let rt = tokio::runtime::Runtime::new().expect("runtime");
     rt.block_on(async {
         let mut remote = crate::tui::backend::RemoteConnection::dummy();
-        let event = crossterm::event::KeyEvent::new(
-            crossterm::event::KeyCode::Right,
-            crossterm::event::KeyModifiers::SUPER,
-        );
+        // The default effort-cycle chord is platform-specific: Cmd+Right on
+        // macOS, Alt+Right elsewhere (see `load_effort_switch_keys`).
+        let increase_modifier = if cfg!(target_os = "macos") {
+            crossterm::event::KeyModifiers::SUPER
+        } else {
+            crossterm::event::KeyModifiers::ALT
+        };
+        let event =
+            crossterm::event::KeyEvent::new(crossterm::event::KeyCode::Right, increase_modifier);
         crate::tui::app::remote::key_handling::handle_remote_key_event(
             &mut app,
             event,

@@ -689,11 +689,21 @@ mod tests {
         assert!(decrease.matches(KeyCode::Left, KeyModifiers::SUPER));
         assert!(!decrease.matches(KeyCode::Left, KeyModifiers::ALT));
         assert!(!decrease.matches(KeyCode::Left, KeyModifiers::CONTROL));
-        assert_eq!(format_binding(&decrease), "Cmd+Left");
+        let super_left = if cfg!(target_os = "macos") {
+            "Cmd+Left"
+        } else {
+            "Super+Left"
+        };
+        assert_eq!(format_binding(&decrease), super_left);
 
         let increase = parse_keybinding("cmd+right").expect("cmd+right should parse");
         assert!(increase.matches(KeyCode::Right, KeyModifiers::SUPER));
-        assert_eq!(format_binding(&increase), "Cmd+Right");
+        let super_right = if cfg!(target_os = "macos") {
+            "Cmd+Right"
+        } else {
+            "Super+Right"
+        };
+        assert_eq!(format_binding(&increase), super_right);
 
         let keys = EffortSwitchKeys { increase, decrease };
         assert_eq!(
