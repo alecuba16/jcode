@@ -397,6 +397,7 @@ fn config_header_overrides_apply_to_native_ollama_probes() {
             context_length: None,
             pricing: Default::default(),
             created: None,
+            input: Vec::new(),
         }];
         maybe_enrich(&client, &api_base, Some("ollama"), &overrides, &mut models).await;
 
