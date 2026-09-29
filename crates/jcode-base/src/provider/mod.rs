@@ -664,35 +664,35 @@ impl MultiProvider {
 
         // External runtimes not in the ActiveProvider enum (cursor-acp) bypass
         // the normal failover loop and dispatch directly to their sub-provider.
-        if let Some(ext_key) = self.active_external_provider() {
-            if ext_key == external::CURSOR_ACP_RUNTIME {
-                let Some(cursor_acp) = self.cursor_acp_provider() else {
-                    anyhow::bail!(
-                        "Cursor ACP runtime is not available. Ensure the Cursor CLI is installed and configured."
-                    );
-                };
-                return match mode {
-                    CompletionMode::Unified { system } => {
-                        cursor_acp
-                            .complete(messages, tools, system, resume_session_id)
-                            .await
-                    }
-                    CompletionMode::Split {
-                        system_static,
-                        system_dynamic,
-                    } => {
-                        cursor_acp
-                            .complete_split(
-                                messages,
-                                tools,
-                                system_static,
-                                system_dynamic,
-                                resume_session_id,
-                            )
-                            .await
-                    }
-                };
-            }
+        if let Some(ext_key) = self.active_external_provider()
+            && ext_key == external::CURSOR_ACP_RUNTIME
+        {
+            let Some(cursor_acp) = self.cursor_acp_provider() else {
+                anyhow::bail!(
+                    "Cursor ACP runtime is not available. Ensure the Cursor CLI is installed and configured."
+                );
+            };
+            return match mode {
+                CompletionMode::Unified { system } => {
+                    cursor_acp
+                        .complete(messages, tools, system, resume_session_id)
+                        .await
+                }
+                CompletionMode::Split {
+                    system_static,
+                    system_dynamic,
+                } => {
+                    cursor_acp
+                        .complete_split(
+                            messages,
+                            tools,
+                            system_static,
+                            system_dynamic,
+                            resume_session_id,
+                        )
+                        .await
+                }
+            };
         }
 
         // Deferred definitions are only meaningful to providers with native
@@ -2457,7 +2457,7 @@ impl Provider for MultiProvider {
             return self
                 .cursor_acp_provider()
                 .map(|p| p.available_models_for_switching())
-                .unwrap_or_else(|| Vec::new());
+                .unwrap_or_default();
         }
         match self.active_provider() {
             ActiveProvider::Claude => {
@@ -3236,13 +3236,13 @@ impl Provider for MultiProvider {
             // Cursor ACP was active on the template — replicate the selection
             // on the fork instead of going through set_model, which cannot
             // route bare cursor-acp model names.
-            if let Some(cursor_acp) = provider.cursor_acp_provider() {
-                if let Err(err) = cursor_acp.set_model(&current_model) {
-                    crate::logging::warn(&format!(
-                        "Failed to preserve Cursor ACP model '{}' for forked session: {err}",
-                        current_model
-                    ));
-                }
+            if let Some(cursor_acp) = provider.cursor_acp_provider()
+                && let Err(err) = cursor_acp.set_model(&current_model)
+            {
+                crate::logging::warn(&format!(
+                    "Failed to preserve Cursor ACP model '{}' for forked session: {err}",
+                    current_model
+                ));
             }
             provider.set_active_provider_external("cursor-acp");
         } else {

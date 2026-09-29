@@ -1298,9 +1298,7 @@ impl OpenRouterProvider {
             let map = model_reasoning_map?;
             // Only enabled rungs are valid defaults; `resolve` rejects disabled
             // and absent rungs.
-            if map.resolve(&rung).is_none() {
-                return None;
-            }
+            map.resolve(&rung)?;
             return Some(rung);
         }
         self.model_reasoning_config()

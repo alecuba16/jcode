@@ -1441,7 +1441,7 @@ fn multi_provider_effective_reasoning_effort_none_without_slot() {
             effective: None,
         });
         // Active provider has no OpenRouter slot: delegation returns None.
-        let mut provider = multi_provider_with_openrouter_stub(stub);
+        let provider = multi_provider_with_openrouter_stub(stub);
         *provider.active.write().unwrap() = ActiveProvider::OpenAI;
 
         assert_eq!(provider.effective_reasoning_effort(), None);

@@ -115,14 +115,8 @@ fn gather_memory_info_inner(working_dir: Option<String>) -> Option<MemoryInfo> {
         _ => MemoryManager::new(),
     };
     // Load errors fall back to an empty info block: display-only counts.
-    let project_graph = match manager.load_project_graph() {
-        Ok(graph) => Some(graph),
-        Err(_) => None,
-    };
-    let global_graph = match manager.load_global_graph() {
-        Ok(graph) => Some(graph),
-        Err(_) => None,
-    };
+    let project_graph = manager.load_project_graph().ok();
+    let global_graph = manager.load_global_graph().ok();
 
     let (project_count, global_count, by_category) = {
         let mut by_category = std::collections::HashMap::new();

@@ -1210,7 +1210,7 @@ mod tests {
         let _guard = crate::storage::lock_test_env();
         let _runtime = IsolatedRuntimeDir::new();
 
-        let (provider, agent, client_event_tx, mut client_event_rx) =
+        let (_provider, agent, client_event_tx, mut client_event_rx) =
             test_agent("session_cycle_model_effort_push").await;
 
         agent

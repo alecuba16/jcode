@@ -485,13 +485,13 @@ impl Sidecar {
         // Apply the user's memory_model override if one was configured. If the
         // provider does not support model switching, we log a warning and proceed
         // with the default model rather than failing the sidecar call.
-        if let Some(model) = &self.provider_model_override {
-            if let Err(err) = provider.set_model(model) {
-                crate::logging::warn(&format!(
-                    "Sidecar: provider does not support switching to memory_model '{}': {}; using provider default model",
-                    model, err
-                ));
-            }
+        if let Some(model) = &self.provider_model_override
+            && let Err(err) = provider.set_model(model)
+        {
+            crate::logging::warn(&format!(
+                "Sidecar: provider does not support switching to memory_model '{}': {}; using provider default model",
+                model, err
+            ));
         }
         provider
             .complete_simple(user_message, system)

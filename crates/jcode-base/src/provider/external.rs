@@ -49,6 +49,7 @@ pub const GROK_BUILD_RUNTIME: &str = "grok-build";
 /// composition root registers one parameterized factory instead of one
 /// zero-arg factory per identity.
 #[derive(Debug, Clone)]
+#[allow(clippy::large_enum_variant)]
 pub enum OpenRouterRuntimeSpec {
     /// Environment-derived default runtime (`OpenRouterProvider::new()`).
     Default,

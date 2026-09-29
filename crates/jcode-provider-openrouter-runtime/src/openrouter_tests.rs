@@ -6390,9 +6390,8 @@ fn image_modality_rejection_records_under_stripped_model_key() {
             .expect("complete returns a stream handle");
         let mut saw_text = false;
         while let Some(event) = stream.next().await {
-            match event.expect("stream event") {
-                StreamEvent::TextDelta(_) => saw_text = true,
-                _ => {}
+            if let StreamEvent::TextDelta(_) = event.expect("stream event") {
+                saw_text = true
             }
         }
         assert!(

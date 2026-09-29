@@ -4123,18 +4123,18 @@ fn toggle_mcp_server_from_tui(app: &mut App, server_name: &str, enable: bool) {
             // Disconnect the server and unregister its tool proxies.
             let mgr = manager.read().await;
             let connected = mgr.connected_servers().await;
-            if connected.contains(&server_name_owned) {
-                if let Err(error) = mgr.disconnect(&server_name_owned).await {
-                    // The toggle already reported success; keep the failure
-                    // visible in the event log for diagnosis.
-                    crate::logging::event_error(
-                        "mcp_toggle_disconnect_failed",
-                        vec![
-                            ("server", server_name_owned.clone()),
-                            ("error", error.to_string()),
-                        ],
-                    );
-                }
+            if connected.contains(&server_name_owned)
+                && let Err(error) = mgr.disconnect(&server_name_owned).await
+            {
+                // The toggle already reported success; keep the failure
+                // visible in the event log for diagnosis.
+                crate::logging::event_error(
+                    "mcp_toggle_disconnect_failed",
+                    vec![
+                        ("server", server_name_owned.clone()),
+                        ("error", error.to_string()),
+                    ],
+                );
             }
             drop(mgr);
             registry.unregister_prefix(&prefix).await;

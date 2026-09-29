@@ -1,14 +1,11 @@
 use super::{
-    BackgroundInfo, CacheHitInfo, CacheMissAttribution, DirtyFile, GraphEdge, GraphNode,
-    InfoWidgetData, InjectedMemoryItem, Margins, MemoryActivity, MemoryEvent, MemoryEventKind,
-    MemoryInfo, MemoryState, PipelineState, StepStatus, SwarmInfo, UsageInfo, UsageProvider,
-    WidgetKind, calculate_placements, calculate_widget_height, dashed_separator,
-    effective_prompt_tokens, format_age, format_memory_count, memory_active_summary,
-    occasional_status_tip, render_cost_tokens_line, render_kv_cache_summary_line,
-    render_kv_cache_widget, render_mcp_servers_line, render_memory_compact, render_memory_widget,
-    render_model_widget, render_recovered_memories_widget, render_sections, render_skills_line,
+    BackgroundInfo, CacheHitInfo, CacheMissAttribution, GraphEdge, GraphNode, InfoWidgetData,
+    Margins, MemoryActivity, MemoryEvent, MemoryEventKind, MemoryInfo, MemoryState, PipelineState,
+    StepStatus, SwarmInfo, UsageInfo, UsageProvider, WidgetKind, calculate_placements,
+    calculate_widget_height, effective_prompt_tokens, occasional_status_tip,
+    render_kv_cache_widget, render_memory_compact, render_memory_widget, render_model_widget,
     render_todos_compact, render_todos_expanded, render_todos_widget, render_usage_compact,
-    render_usage_widget, swarm_plan_todos, truncate_smart, wrap_text,
+    render_usage_widget, swarm_plan_todos, truncate_smart,
 };
 use crate::protocol::SwarmMemberStatus;
 use jcode_tui_style::color::rgb;

@@ -14,7 +14,11 @@ pub(crate) mod frame;
 /// A dashed horizontal separator line that fills the panel width.
 fn dashed_separator(width: u16) -> Line<'static> {
     let w = width as usize;
-    let dash = "- ".repeat((w + 1) / 2).chars().take(w).collect::<String>();
+    let dash = "- "
+        .repeat(w.div_ceil(2))
+        .chars()
+        .take(w)
+        .collect::<String>();
     Line::from(Span::styled(dash, Style::default().fg(rgb(60, 60, 70))))
 }
 #[path = "info_widget_git.rs"]
@@ -1949,12 +1953,12 @@ fn render_widget_content(kind: WidgetKind, data: &InfoWidgetData, inner: Rect) -
             // Swarm/background/context compact content joined into the Overview
             // sections; standalone framed rendering is handled via their own
             // widgets below for the fallback layout.
-            let framed = match kind {
+
+            match kind {
                 WidgetKind::SwarmStatus => render_swarm_widget(data, inner),
                 WidgetKind::ContextUsage => Framed::body(render_context_compact(data, inner)),
                 _ => render_background_widget(data, inner),
-            };
-            framed
+            }
         }
         WidgetKind::AmbientMode => render_ambient_widget(data, inner),
         WidgetKind::Compaction => render_compaction_widget(data, inner),
@@ -2601,7 +2605,7 @@ fn render_sections(
 
     // Swarm status (subagents, managed members, plan progress)
     // Always show: full widget when swarm active, "0 sessions" when inactive.
-    if let Some(_) = &data.swarm_info {
+    if data.swarm_info.is_some() {
         let framed = swarm_background::render_swarm_widget(data, inner);
         lines.extend(framed.lines);
     } else {

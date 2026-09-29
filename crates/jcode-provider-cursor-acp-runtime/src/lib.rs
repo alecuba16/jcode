@@ -181,10 +181,10 @@ fn parse_bracket_setting(model: &str, key: &str) -> Option<String> {
     let (_, rest) = model.split_once('[')?;
     let rest = rest.strip_suffix(']').unwrap_or(rest);
     for pair in rest.split(',') {
-        if let Some((k, v)) = pair.split_once('=') {
-            if k.trim() == key {
-                return Some(v.trim().to_string());
-            }
+        if let Some((k, v)) = pair.split_once('=')
+            && k.trim() == key
+        {
+            return Some(v.trim().to_string());
         }
     }
     None
@@ -232,11 +232,11 @@ fn set_bracket_setting(model: &str, key: &str, value: &str) -> String {
     let parts: Vec<String> = rest
         .split(',')
         .map(|pair| {
-            if let Some((k, _)) = pair.split_once('=') {
-                if k.trim() == key {
-                    replaced = true;
-                    return format!("{key}={value}");
-                }
+            if let Some((k, _)) = pair.split_once('=')
+                && k.trim() == key
+            {
+                replaced = true;
+                return format!("{key}={value}");
             }
             pair.to_string()
         })
@@ -1220,10 +1220,10 @@ impl Provider for CursorAcpProvider {
         // `gpt-5.6-sol[context=272k,...]`. Parse it so auto-compact targets
         // the real limit instead of the 200k default.
         let model = self.model();
-        if let Some(ctx_str) = parse_bracket_setting(&model, "context") {
-            if let Some(tokens) = parse_token_count(&ctx_str) {
-                return tokens;
-            }
+        if let Some(ctx_str) = parse_bracket_setting(&model, "context")
+            && let Some(tokens) = parse_token_count(&ctx_str)
+        {
+            return tokens;
         }
         DEFAULT_CONTEXT_LIMIT
     }
@@ -1357,6 +1357,13 @@ fn build_prompt(system: &str, messages: &[Message]) -> Vec<Value> {
 mod tests {
     use super::*;
 
+    /// Serializes tests that touch `SHARED_DISCOVERED_MODELS`. The catalog is
+    /// process-global, so parallel tests seed/restore it concurrently and read
+    /// each other's fixtures (e.g. `reasoning_effort_reads_bracket` resolving
+    /// against `set_reasoning_effort_replaces_bracket`'s seed). The guard
+    /// recovers from a poisoned mutex so one panic does not cascade.
+    static CATALOG_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     fn ids(values: &[&str]) -> Vec<String> {
         values.iter().map(|value| (*value).to_string()).collect()
     }
@@ -1367,6 +1374,12 @@ mod tests {
     /// tests must pin their own catalog instead of depending on which tests
     /// happened to run before them. Restores the previous value afterwards.
     fn with_seeded_discovered_models<T>(models: &[&str], f: impl FnOnce() -> T) -> T {
+        // Serialize against other tests seeding/reading the shared catalog:
+        // without the lock, a parallel test can reseed (or restore) the global
+        // between our seed and the closure's reads.
+        let _catalog = CATALOG_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let shared = shared_discovered_models();
         let previous = shared.read().map(|known| known.clone()).unwrap_or_default();
         if let Ok(mut guard) = shared.write() {
@@ -1496,10 +1509,16 @@ mod tests {
         // `sh` always exists on unix, so configured() is true, but the catalog
         // is still empty until a real ACP process advertises models. This
         // guards against the picker showing a bogus row before prefetch runs.
-        let provider = CursorAcpProvider::with_command(CursorAcpCommand::new("sh", ["-c", "true"]));
-        assert!(provider.command.configured());
-        assert!(provider.available_models_display().is_empty());
-        assert_eq!(provider.model(), "unknown");
+        // Seed-empty under the catalog lock: without this, a parallel
+        // bracket-setting test's shared catalog makes the is_empty() assert
+        // order-dependent.
+        with_seeded_discovered_models(&[], || {
+            let provider =
+                CursorAcpProvider::with_command(CursorAcpCommand::new("sh", ["-c", "true"]));
+            assert!(provider.command.configured());
+            assert!(provider.available_models_display().is_empty());
+            assert_eq!(provider.model(), "unknown");
+        })
     }
 
     #[cfg(unix)]

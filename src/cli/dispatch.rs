@@ -1039,7 +1039,7 @@ async fn run_default_command(args: Args) -> Result<()> {
         if args.model.is_some() {
             output::stderr_info(format!(
                 "Current server settings control `/model`. Restart server to apply: --model {}",
-                args.model.as_ref().map(|m| m.as_str()).unwrap_or("")
+                args.model.as_deref().unwrap_or("")
             ));
         }
     }
