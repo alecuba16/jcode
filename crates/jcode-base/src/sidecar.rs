@@ -4,8 +4,8 @@
 //! need the full Agent SDK infrastructure.
 //!
 //! Automatically selects the best available backend:
-//! - OpenAI (gpt-5.6-luna, reasoning=none) if Codex credentials are available
 //! - Claude (claude-haiku-4-5-20241022) if Claude credentials are available
+//! - OpenAI (gpt-5.6-luna, reasoning=none) if Codex credentials are available
 
 use crate::auth;
 use anyhow::{Context, Result};
@@ -175,7 +175,7 @@ pub struct Sidecar {
 
 impl Sidecar {
     /// Create a new sidecar client, auto-selecting the best available backend.
-    /// Prefers OpenAI (GPT-5.6 Luna with no reasoning) if creds exist, falls back to Claude.
+    /// Prefers Claude (haiku) if creds exist, falls back to OpenAI.
     pub fn new() -> Self {
         let cfg = &crate::config::config().agents;
         let configured_model = cfg.memory_model.clone();
@@ -304,9 +304,9 @@ impl Sidecar {
 
     /// Pick the best available sidecar backend.
     ///
-    /// Preference order:
-    /// 1. OpenAI GPT-5.6 Luna at reasoning=none if Codex creds exist.
-    /// 2. Claude haiku (dedicated fast/cheap OAuth path) if Claude creds exist.
+    /// Preference order (inverted from original):
+    /// 1. Claude haiku (dedicated fast/cheap OAuth path) if Claude creds exist.
+    /// 2. OpenAI GPT-5.6 Luna at reasoning=none if Codex creds exist.
     /// 3. The live agent provider (works for EVERY provider jcode supports:
     ///    Copilot, Antigravity, Gemini, Cursor, Bedrock, OpenRouter, and even
     ///    OpenAI/Claude API-key setups), dispatched via `complete_simple`.
@@ -318,16 +318,16 @@ impl Sidecar {
         String,
         Option<Arc<dyn crate::provider::Provider>>,
     ) {
-        if auth::codex::load_credentials().is_ok() {
-            (
-                SidecarBackend::OpenAI,
-                SIDECAR_OPENAI_MODEL.to_string(),
-                None,
-            )
-        } else if auth::claude::load_credentials().is_ok() {
+        if auth::claude::load_credentials().is_ok() {
             (
                 SidecarBackend::Claude,
                 SIDECAR_CLAUDE_MODEL.to_string(),
+                None,
+            )
+        } else if auth::codex::load_credentials().is_ok() {
+            (
+                SidecarBackend::OpenAI,
+                SIDECAR_OPENAI_MODEL.to_string(),
                 None,
             )
         } else if let Some(provider) = crate::provider::active_provider_fork() {
@@ -1371,8 +1371,10 @@ mod tests {
     }
 
     #[test]
-    fn test_backend_selection_prefers_openai() {
-        // Make backend selection deterministic by isolating credentials.
+    fn test_backend_selection_prefers_claude() {
+        // After inverting auto-select, Claude wins over OpenAI when both
+        // credential sets are present. Make backend selection deterministic by
+        // isolating credentials.
         let _guard = crate::storage::lock_test_env();
         let temp = tempfile::TempDir::new().expect("create temp jcode home");
         let _home = EnvVarGuard::set_path("JCODE_HOME", temp.path());
@@ -1392,8 +1394,8 @@ mod tests {
         .expect("write Claude test auth");
 
         let sidecar = Sidecar::with_configured_model(None, None);
-        assert_eq!(sidecar.backend, SidecarBackend::OpenAI);
-        assert_eq!(sidecar.model, SIDECAR_OPENAI_MODEL);
+        assert_eq!(sidecar.backend, SidecarBackend::Claude);
+        assert_eq!(sidecar.model, SIDECAR_CLAUDE_MODEL);
         codex::set_active_account_override(None);
         crate::auth::claude::set_active_account_override(None);
     }
