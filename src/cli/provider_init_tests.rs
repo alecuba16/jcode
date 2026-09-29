@@ -79,6 +79,7 @@ fn test_provider_choice_arg_values() {
         "openai-compatible"
     );
     assert_eq!(ProviderChoice::Cursor.as_arg_value(), "cursor");
+    assert_eq!(ProviderChoice::CursorAcp.as_arg_value(), "cursor-acp");
     assert_eq!(ProviderChoice::Copilot.as_arg_value(), "copilot");
     assert_eq!(ProviderChoice::Gemini.as_arg_value(), "gemini");
     assert_eq!(ProviderChoice::Antigravity.as_arg_value(), "antigravity");
@@ -343,6 +344,8 @@ fn test_init_provider_jcode_delegates_runtime_profile_to_wrapper() {
         provider.name(),
         crate::subscription_catalog::JCODE_PROVIDER_DISPLAY_NAME
     );
+
+    assert_eq!(provider.name(), "Jcode Subscription");
     assert!(crate::subscription_catalog::is_runtime_mode_enabled());
     assert_eq!(
         std::env::var("JCODE_OPENROUTER_MODEL").ok().as_deref(),
@@ -1012,6 +1015,19 @@ async fn auto_provider_noninteractive_skips_untrusted_external_auth_instead_of_b
         "JCODE_RUNTIME_PROVIDER",
         "JCODE_ACTIVE_PROVIDER",
         "JCODE_INITIAL_PROVIDER_EXPLICIT",
+        "JCODE_PROVIDER_PROFILE_NAME",
+        "JCODE_NAMED_PROVIDER_PROFILE",
+        "JCODE_PROVIDER_PROFILE_ACTIVE",
+        "JCODE_OPENROUTER_API_BASE",
+        "JCODE_OPENROUTER_API_KEY_NAME",
+        "JCODE_OPENROUTER_ENV_FILE",
+        "JCODE_OPENROUTER_ALLOW_NO_AUTH",
+        "JCODE_OPENROUTER_MODEL",
+        "JCODE_OPENROUTER_STATIC_MODELS",
+        "JCODE_OPENROUTER_CACHE_NAMESPACE",
+        "JCODE_OPENROUTER_PROVIDER_FEATURES",
+        "JCODE_OPENROUTER_TRANSPORT_STATE",
+        "JCODE_OPENROUTER_MODEL_CATALOG",
     ]
     .iter()
     .chain(PROFILE_ENV_KEYS.iter())
@@ -1062,6 +1078,9 @@ async fn auto_provider_noninteractive_skips_untrusted_external_auth_instead_of_b
     .chain(PROFILE_ENV_KEYS.iter())
     {
         crate::env::remove_var(*key);
+    }
+    for key in &profile_key_vars {
+        crate::env::remove_var(key);
     }
     for key in &profile_key_vars {
         crate::env::remove_var(key);
