@@ -78,24 +78,6 @@ pub(crate) fn shorten_model_name(model: &str) -> String {
     }
 }
 
-fn short_reasoning_effort(effort: &str) -> Option<&str> {
-    let effort = effort.trim();
-    if effort.is_empty() {
-        return None;
-    }
-    Some(match effort {
-        "max" => "max",
-        "xhigh" => "xhi",
-        "high" => "hi",
-        "medium" => "med",
-        "low" => "lo",
-        "none" => "∅",
-        "swarm" => "swarm",
-        "swarm-deep" => "swarm+",
-        other => other,
-    })
-}
-
 fn short_service_tier(service_tier: &str) -> Option<&str> {
     let service_tier = service_tier.trim();
     if service_tier.is_empty() || service_tier == "off" || service_tier == "default" {
@@ -115,10 +97,6 @@ pub(super) fn model_info_supplementary_height(data: &InfoWidgetData) -> u16 {
 /// Content rows the Runtime widget renders, mirroring [`render_model_widget`].
 pub(super) fn runtime_height(data: &InfoWidgetData) -> u16 {
     runtime_rows(data).len() as u16
-}
-
-pub(super) fn runtime_has_data(data: &InfoWidgetData) -> bool {
-    !runtime_rows(data).is_empty()
 }
 
 /// Border layout: ` Runtime ` top-left, live throughput bottom-right (it is
@@ -324,7 +302,7 @@ mod tests {
         for tier in [None, Some("off"), Some("default")] {
             let mut d = data();
             d.service_tier = tier.map(str::to_string);
-            assert!(!runtime_has_data(&d), "tier {tier:?}");
+            assert_eq!(runtime_height(&d), 0, "tier {tier:?}");
         }
     }
 
@@ -332,7 +310,6 @@ mod tests {
     fn identity_only_session_has_no_runtime_widget() {
         let mut d = data();
         d.service_tier = None;
-        assert!(!runtime_has_data(&d));
         assert_eq!(runtime_height(&d), 0);
     }
 

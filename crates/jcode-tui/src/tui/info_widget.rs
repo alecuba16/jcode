@@ -80,9 +80,9 @@ use model::{
     render_model_widget, runtime_height,
 };
 use swarm_background::{render_background_compact, render_background_widget, render_swarm_widget};
-use text::{truncate_chars, truncate_smart, truncate_with_ellipsis, wrap_line_count};
+use text::{truncate_chars, truncate_smart, truncate_with_ellipsis};
 pub(crate) use tips::occasional_status_tip;
-use tips::{render_tips_widget, tips_widget_height};
+use tips::render_tips_widget;
 #[cfg(test)]
 use todos_render::render_todos_compact;
 use todos_render::render_todos_expanded;

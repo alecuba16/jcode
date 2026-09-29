@@ -482,6 +482,7 @@ fn login_provider_menu_shows_autodetected_auth_and_skip() {
     assert!(menu.contains("Skip: press Enter"));
 }
 
+#[test]
 fn login_provider_choice_table_round_trips_catalog_providers() {
     let mut seen_choices = HashSet::new();
     let mut reverse_mapped_provider_ids = HashSet::new();

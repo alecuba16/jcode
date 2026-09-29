@@ -124,10 +124,3 @@ pub(super) fn render_tips_widget(inner: Rect) -> super::frame::Framed {
         super::frame::label("Did you know?"),
     ]))
 }
-
-pub(super) fn tips_widget_height(inner_width: usize) -> u16 {
-    let effective_w = inner_width.saturating_sub(2);
-    let tip = current_tip(effective_w);
-    let lines = wrap_tip_text(&tip.text, effective_w);
-    1 + lines.len() as u16
-}

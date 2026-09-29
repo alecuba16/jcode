@@ -120,7 +120,10 @@ pub struct DisplayConfig {
     /// Usage percentage wording: "left" (default) or "used".
     pub usage_display: String,
     /// Whether throughput readouts are rendered in the TUI.
-    #[serde(default = "default_true")]
+    #[serde(
+        default = "default_true",
+        deserialize_with = "crate::serde_lenient::lenient_bool_true"
+    )]
     pub show_tps: bool,
     /// Which interval is used for throughput measurement.
     #[serde(default)]
