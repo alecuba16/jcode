@@ -62,6 +62,7 @@ include!("tests/skill_invocation_multi_word.rs");
 include!("tests/slash_command_boundaries.rs");
 include!("tests/prompt_history_cross_session.rs");
 include!("tests/ssh_remote.rs");
+include!("tests/model_persist_config.rs");
 include!("tests/skill_startup.rs");
 include!("tests/mcp_server_names.rs");
 include!("tests/auto_retry_config.rs");

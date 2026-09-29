@@ -936,6 +936,10 @@ In the `/model` picker, **Alt+S** sets the highlighted model as the memory sidec
 | `Ctrl+N` | Toggle favorite on selected model |
 | `Shift+Tab` | Cycle favorite models |
 
+### Model selection persistence
+
+When you switch models via `/model <name>`, the `/model` picker, or the cycle shortcut, jcode now persists that choice to `[provider].default_model` (and the provider key) in `config.toml`, so it survives a relaunch and carries over to new sessions. Previously the switch was only saved to the *session* file, so resuming a session restored it but starting a new session or relaunch reverted to the configured default. Failover- and auth-driven switches are **not** persisted, so they never silently override your chosen default.
+
 ---
 
 ## Customizability / Self-Dev

@@ -990,6 +990,9 @@ async fn auto_provider_noninteractive_skips_untrusted_external_auth_instead_of_b
     for key in &profile_key_vars {
         crate::env::remove_var(key);
     }
+    for key in &profile_key_vars {
+        crate::env::remove_var(key);
+    }
 
     let opencode_path = crate::auth::claude::ExternalClaudeAuthSource::OpenCode
         .path()
