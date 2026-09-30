@@ -1,6 +1,29 @@
 use super::loading::session_matches_picker_query;
 use super::*;
 
+/// Short label for the current-directory group header: keep the path readable
+/// in a one-line list row. Full paths up to ~40 chars render as-is; longer
+/// ones collapse to the leading segments plus the basename so the project
+/// name stays visible (e.g. `~/jcode`).
+pub(super) fn short_dir_label(dir: &str) -> String {
+    const MAX_LABEL_CHARS: usize = 40;
+    if dir.chars().count() <= MAX_LABEL_CHARS {
+        return dir.to_string();
+    }
+    let (dir_part, basename) = match dir.rfind('/') {
+        // Root itself is longer than the budget: keep it intact.
+        Some(0) => return dir.to_string(),
+        Some(idx) => (&dir[..idx], &dir[idx + 1..]),
+        None => ("", dir),
+    };
+    let prefix: &str = if dir_part.starts_with("/home/") || dir_part.starts_with("/Users/") {
+        "~/"
+    } else {
+        "/…/"
+    };
+    format!("{}{}", prefix, basename)
+}
+
 impl SessionPicker {
     fn normalized_search_query(query: &str) -> String {
         query.trim().to_lowercase()
@@ -215,12 +238,45 @@ impl SessionPicker {
             return;
         }
 
+        // Sessions from the directory `/resume` was opened from float to the
+        // top of the All view under their own header so the current project is
+        // immediately visible. They stay there even when saved or grouped under
+        // a server (the later sections skip them) so a session never renders
+        // twice. `filtered_refs` is recency-sorted, so the pinned group is
+        // newest-first too.
+        let current_dir = self.current_dir.clone();
+        let mut current_dir_ids: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
+        let mut current_dir_sessions: Vec<SessionRef> = Vec::new();
+        if let Some(dir_label) = current_dir.as_deref() {
+            for session_ref in &filtered_refs {
+                if let Some(session) = self.session_by_ref(*session_ref)
+                    && self.session_in_current_dir(session)
+                {
+                    current_dir_ids.insert(session.id.clone());
+                    current_dir_sessions.push(*session_ref);
+                }
+            }
+            if !current_dir_sessions.is_empty() {
+                self.items.push(PickerItem::CurrentDirHeader {
+                    label: short_dir_label(dir_label),
+                    session_count: current_dir_sessions.len(),
+                });
+                self.item_to_session.push(None);
+
+                for session_ref in current_dir_sessions {
+                    self.push_visible_session(session_ref);
+                }
+            }
+        }
+
         let mut saved_sessions: Vec<SessionRef> = Vec::new();
         let mut saved_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
 
         for session_ref in &filtered_refs {
             if let Some(session) = self.session_by_ref(*session_ref)
                 && session.saved
+                && !current_dir_ids.contains(&session.id)
             {
                 saved_ids.insert(session.id.clone());
                 saved_sessions.push(*session_ref);
@@ -264,10 +320,9 @@ impl SessionPicker {
                     session_idx,
                 } = session_ref
                     && let Some(group) = self.all_server_groups.get(group_idx)
-                    && group
-                        .sessions
-                        .get(session_idx)
-                        .is_some_and(|session| !saved_ids.contains(&session.id))
+                    && let Some(session) = group.sessions.get(session_idx)
+                    && !saved_ids.contains(&session.id)
+                    && !current_dir_ids.contains(&session.id)
                 {
                     group_buckets[group_idx].push(session_ref);
                 }
@@ -305,10 +360,12 @@ impl SessionPicker {
                 .iter()
                 .copied()
                 .filter(|session_ref| match session_ref {
-                    SessionRef::Orphan(idx) => self
-                        .all_orphan_sessions
-                        .get(*idx)
-                        .is_some_and(|session| !saved_ids.contains(&session.id)),
+                    SessionRef::Orphan(idx) => {
+                        self.all_orphan_sessions.get(*idx).is_some_and(|session| {
+                            !saved_ids.contains(&session.id)
+                                && !current_dir_ids.contains(&session.id)
+                        })
+                    }
                     _ => false,
                 })
                 .collect();
@@ -327,10 +384,9 @@ impl SessionPicker {
                 .iter()
                 .copied()
                 .filter(|session_ref| match session_ref {
-                    SessionRef::Flat(idx) => self
-                        .all_sessions
-                        .get(*idx)
-                        .is_some_and(|session| !saved_ids.contains(&session.id)),
+                    SessionRef::Flat(idx) => self.all_sessions.get(*idx).is_some_and(|session| {
+                        !saved_ids.contains(&session.id) && !current_dir_ids.contains(&session.id)
+                    }),
                     _ => false,
                 })
                 .collect();
