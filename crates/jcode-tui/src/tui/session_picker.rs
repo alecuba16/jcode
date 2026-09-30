@@ -2442,7 +2442,14 @@ pub fn pick_session() -> Result<Option<PickerResult>> {
         return Ok(None);
     }
 
-    let picker = SessionPicker::new_grouped(server_groups, orphan_sessions);
+    let mut picker = SessionPicker::new_grouped(server_groups, orphan_sessions);
+    // Pin sessions from the folder the picker was launched from, matching the
+    // in-app `/resume` behavior.
+    picker.set_current_dir(
+        std::env::current_dir()
+            .ok()
+            .map(|p| p.to_string_lossy().into_owned()),
+    );
     picker.run()
 }
 
