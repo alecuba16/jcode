@@ -104,6 +104,7 @@ pub(super) fn handle_tick(app: &mut App) -> bool {
     needs_redraw |= app.prune_irrelevant_background_tasks();
     needs_redraw |= app.refresh_side_panel_linked_content_if_due();
     needs_redraw |= app.poll_model_picker_load();
+    needs_redraw |= app.maybe_flush_pending_model_config_persist();
     needs_redraw |= app.poll_session_picker_load();
     needs_redraw |= app.poll_session_picker_presence();
     needs_redraw |= app.onboarding_tick();
@@ -606,6 +607,8 @@ fn handle_input_shell_completed(app: &mut App, shell: InputShellCompleted) {
 
 pub(super) fn finish_turn(app: &mut App) {
     app.remember_terminal_title_work();
+    // Record the final t/s for this turn before any state is cleared.
+    app.record_turn_tps();
     let turn_duration_secs = app.display_turn_duration_secs();
     app.token_accounting.total_input_tokens += app.streaming.streaming_input_tokens;
     app.token_accounting.total_output_tokens += app.streaming.streaming_output_tokens;

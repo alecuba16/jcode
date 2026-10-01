@@ -89,13 +89,16 @@ fn ssh_remote_subscribe_keeps_remote_only_id_and_filters_control_done() {
             let id = match request {
                 crate::protocol::Request::Subscribe {
                     id, target_session_id, client_has_local_history, continue_on_disconnect,
-                    working_dir, terminal_env, ..
+                    working_dir, terminal_env, supports_decisions, ..
                 } => {
                     assert_eq!(target_session_id.as_deref(), Some("remote-only-session"));
                     assert!(!client_has_local_history);
                     assert!(continue_on_disconnect);
                     assert!(terminal_env.is_empty());
                     assert_eq!(working_dir.as_deref(), Some("/remote/project"));
+                    // The TUI renders the ask_user chooser: it must always
+                    // opt in so the daemon wires the decision channel.
+                    assert!(supports_decisions);
                     assert!(id >= 1_u64 << 62);
                     id
                 }
@@ -164,6 +167,7 @@ fn ssh_remote_history_is_authoritative_even_when_empty_or_server_version_differs
             session_id: "remote-only-session".into(),
             messages: vec![],
             images: vec![],
+            applets: Default::default(),
             provider_name: Some("remote-provider".into()),
             provider_model: Some("remote-model".into()),
             subagent_model: None,
@@ -193,7 +197,6 @@ fn ssh_remote_history_is_authoritative_even_when_empty_or_server_version_differs
             compaction_mode: crate::config::CompactionMode::Reactive,
             activity: None,
             side_panel: crate::side_panel::SidePanelSnapshot::default(),
-            applets: Default::default(),
         };
         app.handle_server_event(event, &mut remote);
         assert!(remote.has_loaded_history());

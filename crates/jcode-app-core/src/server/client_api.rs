@@ -83,6 +83,9 @@ impl Client {
         let request = Request::Subscribe {
             system_prompt: None,
             supports_pdf_panels: false,
+            // This programmatic client has no interactive chooser: never
+            // opt in, so ask_user degrades to plain-text asking.
+            supports_decisions: false,
             id,
             working_dir: Some(working_dir),
             selfdev,

@@ -415,3 +415,320 @@ fn cache_extend_saves_preference_and_reset_survives_reload() {
     );
     assert_eq!(std::fs::read_to_string(path).unwrap(), "[broken");
 }
+
+/// Behavioral tests for `/settings risk-gate`, driven through the real `App`
+/// dispatch path to cover what a user types: show status, toggle on/off,
+/// persistence, and error handling.
+mod settings {
+    use crate::tui::app::commands_dispatch::dispatch_local_command;
+    use crate::tui::app::tests::create_test_app;
+
+    fn lock_shared_state() -> std::sync::MutexGuard<'static, ()> {
+        crate::storage::lock_test_env()
+    }
+
+    /// Text of the last message the app pushed, whatever its role.
+    fn last_message(app: &crate::tui::app::App) -> String {
+        app.display_messages
+            .last()
+            .map(|message| message.content.clone())
+            .unwrap_or_default()
+    }
+
+    fn with_clean_config(body: impl FnOnce()) {
+        struct Restore;
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                let mut config = crate::config::Config::load();
+                config.provider.risk_gate_enabled = true;
+                config.features.decisions = true;
+                config.features.decision_timeout_secs = 0;
+                let _ = config.save();
+            }
+        }
+        let _lock = lock_shared_state();
+        let _restore = Restore;
+        {
+            let mut config = crate::config::Config::load();
+            config.provider.risk_gate_enabled = true;
+            config.features.decisions = true;
+            config.features.decision_timeout_secs = 0;
+            let _ = config.save();
+        }
+        body();
+    }
+
+    #[test]
+    fn settings_show_displays_current_risk_gate_status() {
+        with_clean_config(|| {
+            let mut app = create_test_app();
+            assert!(dispatch_local_command(&mut app, "/settings"));
+            let output = last_message(&app);
+            assert!(
+                output.contains("Risk Gate ..... enabled"),
+                "/settings should show 'Risk Gate ..... enabled', got: {output}"
+            );
+        });
+    }
+
+    #[test]
+    fn settings_risk_gate_off_persists_and_reports() {
+        with_clean_config(|| {
+            let mut app = create_test_app();
+            assert!(dispatch_local_command(&mut app, "/settings risk-gate off"));
+            let output = last_message(&app);
+            assert!(
+                output.contains("disabled"),
+                "toggling off should report 'disabled', got: {output}"
+            );
+            assert!(
+                !crate::config::Config::load().provider.risk_gate_enabled,
+                "risk_gate_enabled should be false after /settings risk-gate off"
+            );
+        });
+    }
+
+    #[test]
+    fn settings_risk_gate_on_persists_and_reports() {
+        with_clean_config(|| {
+            // First disable, then re-enable
+            let mut app = create_test_app();
+            assert!(dispatch_local_command(&mut app, "/settings risk-gate off"));
+            assert!(dispatch_local_command(&mut app, "/settings risk-gate on"));
+            let output = last_message(&app);
+            assert!(
+                output.contains("enabled"),
+                "toggling on should report 'enabled', got: {output}"
+            );
+            assert!(
+                crate::config::Config::load().provider.risk_gate_enabled,
+                "risk_gate_enabled should be true after /settings risk-gate on"
+            );
+        });
+    }
+
+    #[test]
+    fn settings_risk_gate_invalid_value_shows_usage() {
+        with_clean_config(|| {
+            let mut app = create_test_app();
+            assert!(dispatch_local_command(
+                &mut app,
+                "/settings risk-gate maybe"
+            ));
+            let output = last_message(&app);
+            assert!(
+                output.contains("Usage"),
+                "invalid value should show usage, got: {output}"
+            );
+        });
+    }
+
+    #[test]
+    fn settings_bare_risk_gate_shows_usage() {
+        with_clean_config(|| {
+            let mut app = create_test_app();
+            assert!(dispatch_local_command(&mut app, "/settings risk-gate"));
+            let output = last_message(&app);
+            assert!(
+                output.contains("Usage"),
+                "bare '/settings risk-gate' should show usage, got: {output}"
+            );
+        });
+    }
+
+    #[test]
+    fn settings_unknown_subcommand_shows_usage() {
+        with_clean_config(|| {
+            let mut app = create_test_app();
+            assert!(dispatch_local_command(&mut app, "/settings frobnicate"));
+            let output = last_message(&app);
+            assert!(
+                output.contains("Usage"),
+                "unknown subcommand should show usage, got: {output}"
+            );
+        });
+    }
+
+    #[test]
+    fn non_settings_command_is_not_swallowed() {
+        with_clean_config(|| {
+            let mut app = create_test_app();
+            assert!(
+                !dispatch_local_command(&mut app, "/setting"),
+                "/setting must not be claimed by /settings"
+            );
+        });
+    }
+
+    #[test]
+    fn settings_show_displays_decisions_status() {
+        with_clean_config(|| {
+            let mut app = create_test_app();
+            assert!(dispatch_local_command(&mut app, "/settings"));
+            let output = last_message(&app);
+            assert!(
+                output.contains("Decision Chooser ..... enabled"),
+                "/settings should show 'Decision Chooser ..... enabled', got: {output}"
+            );
+            assert!(
+                output.contains("Decision Timeout ..... wait forever"),
+                "default timeout should read 'wait forever', got: {output}"
+            );
+        });
+    }
+
+    #[test]
+    fn settings_decisions_off_persists_and_reports() {
+        with_clean_config(|| {
+            let mut app = create_test_app();
+            assert!(dispatch_local_command(&mut app, "/settings decisions off"));
+            let output = last_message(&app);
+            assert!(
+                output.contains("disabled"),
+                "toggling off should report 'disabled', got: {output}"
+            );
+            assert!(
+                !crate::config::Config::load().features.decisions,
+                "features.decisions should be false after /settings decisions off"
+            );
+        });
+    }
+
+    #[test]
+    fn settings_decisions_on_persists_and_reports() {
+        with_clean_config(|| {
+            let mut app = create_test_app();
+            assert!(dispatch_local_command(&mut app, "/settings decisions off"));
+            assert!(dispatch_local_command(&mut app, "/settings decisions on"));
+            let output = last_message(&app);
+            assert!(
+                output.contains("enabled"),
+                "toggling on should report 'enabled', got: {output}"
+            );
+            assert!(
+                crate::config::Config::load().features.decisions,
+                "features.decisions should be true after /settings decisions on"
+            );
+        });
+    }
+
+    #[test]
+    fn settings_decision_timeout_persists_and_reports() {
+        with_clean_config(|| {
+            let mut app = create_test_app();
+            assert!(dispatch_local_command(
+                &mut app,
+                "/settings decision-timeout 30"
+            ));
+            let output = last_message(&app);
+            assert!(
+                output.contains("30s"),
+                "setting timeout should report '30s', got: {output}"
+            );
+            assert_eq!(
+                crate::config::Config::load().features.decision_timeout_secs,
+                30,
+                "decision_timeout_secs should be 30 after /settings decision-timeout 30"
+            );
+
+            // 0 restores wait-forever.
+            assert!(dispatch_local_command(
+                &mut app,
+                "/settings decision-timeout 0"
+            ));
+            let output = last_message(&app);
+            assert!(
+                output.contains("wait forever"),
+                "zero timeout should report 'wait forever', got: {output}"
+            );
+            assert_eq!(
+                crate::config::Config::load().features.decision_timeout_secs,
+                0,
+                "decision_timeout_secs should be 0 after /settings decision-timeout 0"
+            );
+        });
+    }
+
+    #[test]
+    fn settings_decisions_invalid_value_shows_usage() {
+        with_clean_config(|| {
+            let mut app = create_test_app();
+            assert!(dispatch_local_command(
+                &mut app,
+                "/settings decisions maybe"
+            ));
+            let output = last_message(&app);
+            assert!(
+                output.contains("Usage"),
+                "invalid value should show usage, got: {output}"
+            );
+        });
+    }
+
+    #[test]
+    fn settings_decision_timeout_invalid_value_shows_usage() {
+        with_clean_config(|| {
+            let mut app = create_test_app();
+            assert!(dispatch_local_command(
+                &mut app,
+                "/settings decision-timeout soon"
+            ));
+            let output = last_message(&app);
+            assert!(
+                output.contains("Usage"),
+                "non-numeric timeout should show usage, got: {output}"
+            );
+        });
+    }
+}
+
+mod session_picker_query_parsing {
+    use super::super::parse_session_picker_query;
+
+    #[test]
+    fn extracts_query_from_all_three_aliases() {
+        assert_eq!(
+            parse_session_picker_query("/sessions deploy bug"),
+            Some("deploy bug")
+        );
+        assert_eq!(
+            parse_session_picker_query("/session refactor"),
+            Some("refactor")
+        );
+        assert_eq!(parse_session_picker_query("/resume api"), Some("api"));
+    }
+
+    #[test]
+    fn trims_surrounding_whitespace_from_query() {
+        assert_eq!(
+            parse_session_picker_query("/sessions   deploy  "),
+            Some("deploy")
+        );
+        assert_eq!(parse_session_picker_query("/session\ttabs"), Some("tabs"));
+    }
+
+    #[test]
+    fn bare_and_whitespace_only_commands_yield_no_query() {
+        assert_eq!(parse_session_picker_query("/sessions"), None);
+        assert_eq!(parse_session_picker_query("/session"), None);
+        assert_eq!(parse_session_picker_query("/resume"), None);
+        assert_eq!(parse_session_picker_query("/sessions   "), None);
+        assert_eq!(parse_session_picker_query("/session\t"), None);
+    }
+
+    #[test]
+    fn similar_longer_commands_do_not_match() {
+        assert_eq!(parse_session_picker_query("/resumeall"), None);
+        assert_eq!(parse_session_picker_query("/resume-all"), None);
+        assert_eq!(parse_session_picker_query("/sessions-all deploy"), None);
+        assert_eq!(parse_session_picker_query("/sessionship"), None);
+    }
+
+    #[test]
+    fn non_matching_input_yields_none() {
+        assert_eq!(parse_session_picker_query(""), None);
+        assert_eq!(parse_session_picker_query("/active"), None);
+        assert_eq!(parse_session_picker_query("sessions deploy"), None);
+        assert_eq!(parse_session_picker_query("/Save deploy"), None);
+    }
+}

@@ -1,10 +1,17 @@
 use super::*;
 use crate::tui::info_widget::InfoWidgetData;
 
-/// Build widget data that yields a stable overview widget (model + queue line etc).
+/// Build widget data that yields a stable overview widget: one supplementary
+/// runtime row (native compaction) keeps the standalone ModelInfo fallback
+/// 3 rows tall for the pockets where the taller Overview cannot dock. The
+/// session row is gone by design (it lives in the status line now).
 fn sample_data() -> InfoWidgetData {
     InfoWidgetData {
-        session_name: Some("sauropod".to_string()),
+        // One supplementary runtime row (native compaction) keeps the
+        // standalone ModelInfo fallback 3 rows tall for the pockets where
+        // the taller Overview cannot dock. The session row is gone by
+        // design (it lives in the status line now).
+        native_compaction_mode: Some("auto".to_string()),
         queue_mode: Some(true),
         ..Default::default()
     }

@@ -142,6 +142,7 @@ mod tests {
             kind: WidgetKind::Overview,
             rect: Rect::new(x, y, w, h),
             side,
+            overview_layout: None,
         }
     }
 

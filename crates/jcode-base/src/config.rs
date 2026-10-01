@@ -5,13 +5,17 @@
 
 pub use jcode_config_types::{
     AgentsConfig, AmbientConfig, AuthConfig, AutoJudgeConfig, AutoReviewConfig, CompactionConfig,
-    CompactionMode, CrossProviderFailoverMode, DiagramDisplayMode, DiagramPanePosition,
-    DiffDisplayMode, DisplayConfig, FeatureConfig, GatewayConfig, HookCommands, HooksConfig,
-    KeybindingsConfig, LatexRenderingMode, LaunchHotkeyEntry, LaunchHotkeysConfig,
-    MarkdownSpacingMode, NamedProviderAuth, NamedProviderConfig, NamedProviderModelConfig,
-    NamedProviderType, NativeScrollbarConfig, NotificationsConfig, PowerConfig, ProviderConfig,
-    ReasoningDisplayMode, SafetyConfig, SessionPickerResumeAction, SponsorsConfig, SwarmSpawnMode,
-    SwarmStripLayout, TerminalConfig, UpdateChannel, WebSearchConfig, WebSearchEngine,
+    CompactionMode, CrossProviderFailoverMode, DEFAULT_FILE_MENTION_MAX_FILES,
+    DEFAULT_FILE_MENTION_MAX_RESULTS, DEFAULT_FILE_MENTION_REFRESH_TTL_SECS, DiagramDisplayMode,
+    DiagramPanePosition, DiffDisplayMode, DisplayConfig, FeatureConfig, FileMentionConfig,
+    GatewayConfig, HookCommands, HooksConfig, KeybindingsConfig, LatexRenderingMode,
+    LaunchHotkeyEntry, LaunchHotkeysConfig, MarkdownSpacingMode, ModelCostConfig,
+    NamedProviderAuth, NamedProviderConfig, NamedProviderModelConfig, NamedProviderType,
+    NativeScrollbarConfig, NotificationsConfig, PowerConfig, ProviderConfig,
+    REASONING_EFFORT_MAP_KEYS, ReasoningDisplayMode, ReasoningEffortMapConfig,
+    ReasoningEffortRungConfig, SafetyConfig, SessionPickerResumeAction, SponsorsConfig,
+    SwarmSpawnMode, SwarmStripLayout, TerminalConfig, TpsIntervalMode, UpdateChannel,
+    WebSearchConfig, WebSearchEngine,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
@@ -29,7 +33,9 @@ const CONFIG_CACHE_CHECK_INTERVAL: Duration = if cfg!(test) {
 const CONFIG_ENV_KEYS: &[&str] = &[
     "HOME",
     "JCODE_ACP_PROFILE",
+    "JCODE_ACP_PERMISSION",
     "JCODE_ACP_TOOL_PROFILE",
+    "JCODE_CURSOR_ACP_PERMISSION",
     "JCODE_ACTIVE_SESSIONS_MANAGER",
     "JCODE_EXTERNAL_SESSIONS",
     "JCODE_AMBIENT_ENABLED",
@@ -46,8 +52,13 @@ const CONFIG_ENV_KEYS: &[&str] = &[
     "JCODE_AUTOREVIEW_ENABLED",
     "JCODE_AUTOREVIEW_MODEL",
     "JCODE_AUTO_POKE",
+    "JCODE_AUTO_RETRY_BASE_DELAY_SECS",
+    "JCODE_AUTO_RETRY_ENABLED",
+    "JCODE_AUTO_RETRY_MAX_ATTEMPTS",
     "JCODE_AUTO_SERVER_RELOAD",
     "JCODE_CHECK_UPDATES",
+    "JCODE_DECISIONS",
+    "JCODE_DECISION_TIMEOUT_SECS",
     "JCODE_BING_API_KEY",
     "JCODE_BLOCK_LID_CLOSE",
     "JCODE_BING_API_KEY_ENV",
@@ -124,7 +135,10 @@ const CONFIG_ENV_KEYS: &[&str] = &[
     "JCODE_MEMORY_JEV_PROVIDER",
     "JCODE_ENABLE_MERMAID",
     "JCODE_MEMORY_MODEL",
+    "JCODE_MEMORY_JEV_PROVIDER",
     "JCODE_MEMORY_SIDECAR_ENABLED",
+    "JCODE_MEMORY_SIDECAR_BACKEND",
+    "JCODE_MEMORY_SIDECAR_FALLBACK",
     "JCODE_PERSIST_MEMORY_INJECTIONS",
     "JCODE_MESSAGE_TIMESTAMPS",
     "JCODE_MODEL",
@@ -151,6 +165,7 @@ const CONFIG_ENV_KEYS: &[&str] = &[
     "JCODE_QUEUE_MODE",
     "JCODE_REASONING_DISPLAY",
     "JCODE_REDRAW_FPS",
+    "JCODE_RISK_GATE_ENABLED",
     "JCODE_SAME_PROVIDER_ACCOUNT_FAILOVER",
     "JCODE_SCROLL_BOOKMARK_KEY",
     "JCODE_SCROLL_DOWN_FALLBACK_KEY",
@@ -165,6 +180,7 @@ const CONFIG_ENV_KEYS: &[&str] = &[
     "JCODE_SHOW_AGENTGREP_OUTPUT",
     "JCODE_SHOW_BASH_OUTPUT",
     "JCODE_SHOW_DIFFS",
+    "JCODE_SHOW_TPS",
     "JCODE_SHOW_THINKING",
     "JCODE_SIDE_PANEL_TOGGLE_KEY",
     "JCODE_SIDE_PANEL_NATIVE_SCROLLBAR",
@@ -570,6 +586,9 @@ pub struct Config {
     /// them verbatim so a CLI settings save never wipes Desktop preferences.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub desktop: Option<toml::Table>,
+
+    /// Configuration for the `@file` mention picker (indexing and list sizing).
+    pub file_mention: FileMentionConfig,
 }
 
 /// Controls who owns autonomous wake execution.
@@ -608,6 +627,14 @@ pub struct AcpConfig {
     pub profile: String,
     /// Tool profile to request when `jcode acp` starts a daemon itself.
     pub tool_profile: String,
+    /// Permission mode for the Cursor ACP subprocess when jcode acts as the ACP
+    /// client. `jcode` (default) applies jcode's safety classification
+    /// (auto-allow read-only/search, cancel destructive). `yolo`/`allow_all`
+    /// auto-approves all permission requests and must be explicitly opted into —
+    /// it bypasses jcode's safety classification. A specific option ID (e.g.
+    /// `allow-always`, `reject-once`) matches only that option. Overridable by
+    /// `JCODE_CURSOR_ACP_PERMISSION`.
+    pub permission_mode: String,
 }
 
 impl Default for AcpConfig {
@@ -615,6 +642,7 @@ impl Default for AcpConfig {
         Self {
             profile: "standard".to_string(),
             tool_profile: "acp".to_string(),
+            permission_mode: "jcode".to_string(),
         }
     }
 }

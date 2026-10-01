@@ -134,8 +134,9 @@ impl Agent {
             .and_then(|name| skills.get(name).map(|skill| skill.get_prompt().to_string()));
 
         // Frozen per session so skill installs never rewrite the cached
-        // system prefix. Later installs are announced in the transcript.
-        let available_skills = &self.prompt_skills_snapshot;
+        // system prefix (see `prompt_skills_snapshot`). Later installs are
+        // announced in the transcript instead.
+        let available_skills = self.prompt_skills_snapshot.clone();
 
         let working_dir = self
             .session
@@ -143,14 +144,20 @@ impl Agent {
             .as_ref()
             .map(std::path::PathBuf::from);
 
-        let (mut split, _context_info) = crate::prompt::build_system_prompt_split_with_agents_md(
-            skill_prompt.as_deref(),
-            available_skills,
-            self.session.is_canary,
-            memory_prompt,
-            working_dir.as_deref(),
-            self.agents_md_snapshot.clone(),
-        );
+        let (mut split, _context_info) =
+            crate::prompt::build_system_prompt_split_with_capabilities_and_agents_md(
+                skill_prompt.as_deref(),
+                &available_skills,
+                self.session.is_canary,
+                memory_prompt,
+                working_dir.as_deref(),
+                {
+                    let mut capabilities = crate::prompt::PromptCapabilities::current();
+                    capabilities.text_only_model = !self.provider.supports_image_input();
+                    capabilities
+                },
+                self.agents_md_snapshot.clone(),
+            );
 
         self.append_current_turn_system_reminder(&mut split);
         crate::prompt::append_swarm_effort_directive(

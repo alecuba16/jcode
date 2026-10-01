@@ -73,15 +73,28 @@ async fn apply_remote_effort_direction(
     // provider does not support it until the History payload settles.
     let (provider_name, provider_model) = app.remote_effort_identity();
     let efforts =
-        app_mod::inferred_reasoning_efforts(provider_name.as_deref(), provider_model.as_deref());
+        app_mod::remote_reasoning_efforts(provider_name.as_deref(), provider_model.as_deref());
     if efforts.is_empty() {
-        app.set_status_notice("Reasoning effort not available for this provider");
+        // Switching is unavailable, but the server may still run a fixed
+        // effort (e.g. injected via OpenAI-compatible `extra_body`). Show it
+        // read-only instead of hiding it.
+        match app.remote_reasoning_effort_hint() {
+            Some(effort) => {
+                app.set_status_notice(format!(
+                    "Reasoning effort not switchable for this provider. Effort: {} (fixed)",
+                    app_mod::effort_display_label(&effort)
+                ));
+            }
+            None => {
+                app.set_status_notice("Reasoning effort not available for this provider");
+            }
+        }
         return Ok(());
     }
     let current = app.remote_reasoning_effort_hint();
     let current = current.as_deref();
     let current_index = current
-        .and_then(|c| efforts.iter().position(|e| *e == c))
+        .and_then(|c| efforts.iter().position(|e| e == c))
         .unwrap_or(efforts.len() - 1);
     let len = efforts.len();
     let next_index = if direction > 0 {
@@ -95,22 +108,22 @@ async fn apply_remote_effort_direction(
     } else {
         current_index - 1
     };
-    let next_effort = efforts[next_index];
-    if Some(next_effort) == current {
-        let label = app_mod::effort_display_label(next_effort);
+    let next_effort = efforts[next_index].clone();
+    if current == Some(next_effort.as_str()) {
+        let label = app_mod::effort_display_label(&next_effort);
         app.set_status_notice(format!(
             "Effort: {} (already at {})",
             label,
             if direction > 0 { "max" } else { "min" }
         ));
     } else {
-        app.remote_reasoning_effort = Some(next_effort.to_string());
+        app.remote_reasoning_effort = Some(next_effort.clone());
         app.invalidate_model_picker_cache();
         app.set_status_notice(format!(
             "Effort: {} (will apply to next request)",
-            app_mod::effort_display_label(next_effort)
+            app_mod::effort_display_label(&next_effort)
         ));
-        remote.set_reasoning_effort(next_effort).await?;
+        remote.set_reasoning_effort(&next_effort).await?;
     }
     Ok(())
 }
@@ -306,6 +319,19 @@ async fn handle_remote_key_internal(
     }
 
     if app.handle_onboarding_continue_prompt_key(code) {
+        return Ok(());
+    }
+
+    // The blocking ask_user chooser owns the keyboard while visible: the
+    // main input box is disabled (rendered locked) and free-form answers
+    // are typed into the chooser's "Your answer" row. Keys the chooser
+    // itself does not consume are discarded, never routed to the composer.
+    // Ctrl+C/Ctrl+D still fall through so the user can interrupt the blocked
+    // turn (and quit when idle) exactly like before the chooser existed.
+    if app.pending_decision.is_some()
+        && !(modifiers.contains(KeyModifiers::CONTROL) && matches!(code, KeyCode::Char('c' | 'd')))
+    {
+        let _ = app.handle_decision_key(code, modifiers, remote).await;
         return Ok(());
     }
 
@@ -923,9 +949,12 @@ async fn handle_remote_key_internal(
         KeyCode::Backspace => {
             if app.cursor_pos > 0 {
                 let prev = core::prev_char_boundary(&app.input, app.cursor_pos);
+                let drain_start =
+                    input::file_chip_backspace_start(&app.input, app.cursor_pos, &app.file_chips)
+                        .unwrap_or(prev);
                 app.remember_input_undo_state();
-                app.input.drain(prev..app.cursor_pos);
-                app.cursor_pos = prev;
+                app.input.drain(drain_start..app.cursor_pos);
+                app.cursor_pos = drain_start;
                 app.reset_tab_completion();
                 app.sync_model_picker_preview_from_input();
             }
@@ -933,8 +962,11 @@ async fn handle_remote_key_internal(
         KeyCode::Delete => {
             if app.cursor_pos < app.input.len() {
                 let next = core::next_char_boundary(&app.input, app.cursor_pos);
+                let drain_end =
+                    input::file_chip_delete_end(&app.input, app.cursor_pos, &app.file_chips)
+                        .unwrap_or(next);
                 app.remember_input_undo_state();
-                app.input.drain(app.cursor_pos..next);
+                app.input.drain(app.cursor_pos..drain_end);
                 app.reset_tab_completion();
                 app.sync_model_picker_preview_from_input();
             }
@@ -1244,6 +1276,10 @@ async fn handle_remote_key_internal(
                     app.upstream_provider = None;
                     remote.set_model(model_name).await?;
                     app.remote_model_switch_in_flight = true;
+                    // Persist user-initiated /model switch to config after
+                    // server confirms (same as picker). The provider_key is
+                    // resolved from the model name.
+                    app.pending_persist_model_spec = Some(model_name.to_string());
                     return Ok(());
                 }
 
@@ -1254,20 +1290,33 @@ async fn handle_remote_key_internal(
                         .map(app_mod::effort_display_label)
                         .unwrap_or("default");
                     let (provider_name, provider_model) = app.remote_effort_identity();
-                    let efforts = app_mod::inferred_reasoning_efforts(
+                    let efforts = app_mod::remote_reasoning_efforts(
                         provider_name.as_deref(),
                         provider_model.as_deref(),
                     );
                     if efforts.is_empty() {
-                        app.push_display_message(DisplayMessage::system(
-                            "Reasoning effort not available for this provider.".to_string(),
-                        ));
+                        // Switching is unavailable, but the server may still run
+                        // a fixed effort (e.g. injected via OpenAI-compatible
+                        // `extra_body`). Show it read-only instead of hiding it.
+                        match app.remote_reasoning_effort_hint() {
+                            Some(effort) => {
+                                app.push_display_message(DisplayMessage::system(format!(
+                                    "Reasoning effort not switchable for this provider.\nEffort: {} (fixed, from provider config)",
+                                    app_mod::effort_display_label(&effort)
+                                )));
+                            }
+                            None => {
+                                app.push_display_message(DisplayMessage::system(
+                                    "Reasoning effort not available for this provider.".to_string(),
+                                ));
+                            }
+                        }
                         return Ok(());
                     }
                     let list: Vec<String> = efforts
                         .iter()
                         .map(|e| {
-                            if Some(*e) == current {
+                            if Some(e.as_str()) == current {
                                 format!("{} <- current", app_mod::effort_display_label(e))
                             } else {
                                 app_mod::effort_display_label(e).to_string()
@@ -1290,11 +1339,11 @@ async fn handle_remote_key_internal(
                         return Ok(());
                     }
                     let (provider_name, provider_model) = app.remote_effort_identity();
-                    let efforts = app_mod::inferred_reasoning_efforts(
+                    let efforts = app_mod::remote_reasoning_efforts(
                         provider_name.as_deref(),
                         provider_model.as_deref(),
                     );
-                    if efforts.contains(&level) {
+                    if efforts.iter().any(|e| e == level) {
                         app.remote_reasoning_effort = Some(level.to_string());
                         app.invalidate_model_picker_cache();
                         app.set_status_notice(format!(
@@ -1802,6 +1851,7 @@ async fn handle_remote_key_internal(
                         raw_input: prompt.to_string(),
                         expanded: prompt.to_string(),
                         images,
+                        file_chips: Vec::new(),
                     };
                     route_prepared_input_to_new_remote_session(app, remote, prepared).await?;
                     return Ok(());
@@ -1894,6 +1944,16 @@ async fn handle_remote_key_internal(
 
                 if trimmed == "/resume" || trimmed == "/sessions" || trimmed == "/session" {
                     app.open_session_picker();
+                    app.record_keybinding_slow(
+                        crate::tui::app::shortcut_hints::LearnableAction::Resume,
+                    );
+                    return Ok(());
+                }
+
+                // `/sessions <query>` (and aliases) opens the picker
+                // pre-filtered with the search bar active.
+                if let Some(query) = super::super::commands::parse_session_picker_query(trimmed) {
+                    app.open_session_picker_with_query(Some(query));
                     app.record_keybinding_slow(
                         crate::tui::app::shortcut_hints::LearnableAction::Resume,
                     );

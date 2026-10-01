@@ -454,7 +454,7 @@ pub(super) fn copy_to_clipboard(text: &str) -> bool {
                     }
                 }
             }
-            return copy_to_clipboard_osc52(text);
+            copy_to_clipboard_osc52(text)
         }
 
         // Linux has the same failure class (issue #504, Kali/X11): wl-copy fails
@@ -558,6 +558,37 @@ pub(super) fn inferred_reasoning_efforts(
     model_name: Option<&str>,
 ) -> Vec<&'static str> {
     jcode_provider_core::inferred_reasoning_efforts(provider_name, model_name)
+}
+
+/// Effort ladder for a remote session, honoring a configured per-model
+/// `reasoning_map` on a named provider profile.
+///
+/// Remote sessions only know the provider display name and model id, so the
+/// built-in family inference cannot see the map and would show a wrong (often
+/// empty) ladder for named OpenAI-compatible profiles. The client reads the
+/// same `config.toml` the server does, so when the identity resolves to a
+/// mapped model the map's enabled rungs (plus swarm sentinels) win; otherwise
+/// this falls back to the static family inference.
+pub(super) fn remote_reasoning_efforts(
+    provider_name: Option<&str>,
+    model_name: Option<&str>,
+) -> Vec<String> {
+    if crate::tui::is_ssh_remote() {
+        // SSH clients must not trust the local config: the server may run on a
+        // different machine with a different config.toml.
+        return jcode_provider_core::inferred_reasoning_efforts(provider_name, model_name)
+            .into_iter()
+            .map(ToString::to_string)
+            .collect();
+    }
+    if let Some(efforts) = crate::provider::configured_reasoning_efforts(provider_name, model_name)
+    {
+        return efforts;
+    }
+    jcode_provider_core::inferred_reasoning_efforts(provider_name, model_name)
+        .into_iter()
+        .map(ToString::to_string)
+        .collect()
 }
 
 pub(super) fn effort_bar(index: usize, total: usize) -> String {
@@ -931,13 +962,13 @@ pub(super) fn clipboard_image() -> Option<(String, String)> {
             .output()
         {
             let result = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if result == "ok" {
-                if let Ok(data) = std::fs::read(&temp_path) {
-                    let _ = std::fs::remove_file(&temp_path);
-                    if !data.is_empty() {
-                        let b64 = base64::engine::general_purpose::STANDARD.encode(&data);
-                        return Some(("image/png".to_string(), b64));
-                    }
+            if result == "ok"
+                && let Ok(data) = std::fs::read(&temp_path)
+            {
+                let _ = std::fs::remove_file(&temp_path);
+                if !data.is_empty() {
+                    let b64 = base64::engine::general_purpose::STANDARD.encode(&data);
+                    return Some(("image/png".to_string(), b64));
                 }
             }
         }

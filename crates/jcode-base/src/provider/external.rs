@@ -24,6 +24,9 @@ pub const GEMINI_RUNTIME: &str = "gemini";
 /// Registry key for the Cursor provider runtime.
 pub const CURSOR_RUNTIME: &str = "cursor";
 
+/// Registry key for the Cursor CLI ACP provider runtime.
+pub const CURSOR_ACP_RUNTIME: &str = "cursor-acp";
+
 /// Registry key for the Antigravity provider runtime.
 pub const ANTIGRAVITY_RUNTIME: &str = "antigravity";
 
@@ -46,6 +49,7 @@ pub const GROK_BUILD_RUNTIME: &str = "grok-build";
 /// composition root registers one parameterized factory instead of one
 /// zero-arg factory per identity.
 #[derive(Debug, Clone)]
+#[allow(clippy::large_enum_variant)]
 pub enum OpenRouterRuntimeSpec {
     /// Environment-derived default runtime (`OpenRouterProvider::new()`).
     Default,

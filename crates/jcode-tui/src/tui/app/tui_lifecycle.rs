@@ -2,6 +2,14 @@ use super::state_ui::RestoredReloadInput;
 use super::*;
 use crate::tui::{backend, keybind};
 
+fn parse_auto_retry_env_bool(raw: &str) -> Option<bool> {
+    match raw.trim().to_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" => Some(true),
+        "0" | "false" | "no" | "off" => Some(false),
+        _ => None,
+    }
+}
+
 impl App {
     pub(super) fn apply_restored_reload_input(&mut self, restored: RestoredReloadInput) {
         self.input = restored.input;
@@ -133,8 +141,68 @@ impl App {
         remote::begin_remote_send(self, remote, content, images, is_system, None, false, 0).await
     }
 
+    /// Resolve the effective auto-retry base delay for the active provider.
+    /// Checks env first, then the named provider profile override, then falls
+    /// back to the global `[provider]` value stored on App at construction.
+    pub(crate) fn effective_auto_retry_base_delay_secs(&self) -> u64 {
+        if let Ok(raw) = std::env::var("JCODE_AUTO_RETRY_BASE_DELAY_SECS")
+            && let Ok(parsed) = raw.trim().parse::<u64>()
+        {
+            return jcode_config_types::clamp_auto_retry_base_delay_secs(parsed);
+        }
+        if let Some(key) = self.session.provider_key.as_deref()
+            && let Some(profile) = crate::config::config().providers.get(key)
+            && let Some(override_val) = profile.auto_retry_base_delay_secs
+        {
+            return jcode_config_types::clamp_auto_retry_base_delay_secs(override_val);
+        }
+        jcode_config_types::clamp_auto_retry_base_delay_secs(self.auto_retry_base_delay_secs)
+    }
+
+    /// Resolve whether auto-retry is enabled for the active provider.
+    /// Precedence is env, named provider profile, then global `[provider]`.
+    pub(crate) fn effective_auto_retry_enabled(&self) -> bool {
+        if let Ok(raw) = std::env::var("JCODE_AUTO_RETRY_ENABLED")
+            && let Some(enabled) = parse_auto_retry_env_bool(&raw)
+        {
+            return enabled;
+        }
+        if let Some(key) = self.session.provider_key.as_deref()
+            && let Some(profile) = crate::config::config().providers.get(key)
+            && let Some(override_val) = profile.auto_retry_enabled
+        {
+            return override_val;
+        }
+        self.auto_retry_enabled
+    }
+
+    /// Resolve the effective auto-retry max attempts for the active provider.
+    /// Checks env first, then the named provider profile override, then falls
+    /// back to the global `[provider]` value stored on App at construction.
+    pub(crate) fn effective_auto_retry_max_attempts(&self) -> u8 {
+        if let Ok(raw) = std::env::var("JCODE_AUTO_RETRY_MAX_ATTEMPTS")
+            && let Ok(parsed) = raw.trim().parse::<u8>()
+            && parsed > 0
+        {
+            return parsed;
+        }
+        if let Some(key) = self.session.provider_key.as_deref()
+            && let Some(profile) = crate::config::config().providers.get(key)
+            && let Some(override_val) = profile.auto_retry_max_attempts
+        {
+            return override_val;
+        }
+        self.auto_retry_max_attempts
+    }
+
     pub(super) fn schedule_pending_remote_retry(&mut self, reason: &str) -> bool {
-        self.schedule_pending_remote_retry_with_limit(reason, Self::AUTO_RETRY_MAX_ATTEMPTS)
+        if !self.effective_auto_retry_enabled() {
+            return false;
+        }
+        self.schedule_pending_remote_retry_with_limit(
+            reason,
+            self.effective_auto_retry_max_attempts(),
+        )
     }
 
     pub(super) fn schedule_pending_remote_network_wait(&mut self, reason: &str) -> bool {
@@ -155,6 +223,9 @@ impl App {
         reason: &str,
         force: bool,
     ) -> bool {
+        if !self.effective_auto_retry_enabled() {
+            return false;
+        }
         let Some(pending) = self.rate_limit_pending_message.as_mut() else {
             return false;
         };
@@ -208,6 +279,10 @@ impl App {
         reason: &str,
         max_attempts: u8,
     ) -> bool {
+        if !self.effective_auto_retry_enabled() {
+            return false;
+        }
+        let base_delay_secs = self.effective_auto_retry_base_delay_secs();
         let Some(pending) = self.rate_limit_pending_message.as_mut() else {
             return false;
         };
@@ -221,7 +296,9 @@ impl App {
             } else {
                 pending.retry_attempts += 1;
                 let retry_attempts = pending.retry_attempts;
-                let backoff_secs = Self::AUTO_RETRY_BASE_DELAY_SECS * u64::from(retry_attempts);
+                let backoff_secs = base_delay_secs
+                    .saturating_mul(u64::from(retry_attempts))
+                    .min(jcode_config_types::MAX_AUTO_RETRY_BACKOFF_SECS);
                 let retry_at = Instant::now() + Duration::from_secs(backoff_secs);
                 pending.retry_at = Some(retry_at);
                 Ok((retry_attempts, backoff_secs, retry_at))
@@ -355,6 +432,7 @@ impl App {
         registry: Registry,
         mut session: Session,
     ) -> Self {
+        crate::tui::theme_detect::apply_configured_palette();
         let skills = Arc::new(SkillRegistry::default());
         let mcp_manager = Arc::new(RwLock::new(McpManager::new()));
         if session.model.is_none() {
@@ -365,6 +443,9 @@ impl App {
         }
         let display = config().display.clone();
         let features = config().features.clone();
+        let mcp_config = crate::mcp::McpConfig::load_for_dir(
+            session.working_dir.as_deref().map(std::path::Path::new),
+        );
         let autoreview_enabled = session
             .autoreview_enabled
             .unwrap_or(config().autoreview.enabled);
@@ -422,6 +503,8 @@ impl App {
             command_suggestions_cache: RefCell::new(None),
             command_suggestions_epoch: std::cell::Cell::new(0),
             cursor_pos: 0,
+            file_mention_cache: RefCell::new(crate::tui::app::file_mention::FileMentionCache::new()),
+            file_chips: Vec::new(),
             scroll_offset: 0,
             auto_scroll_paused: false,
             active_skill: None,
@@ -470,9 +553,13 @@ impl App {
             last_auto_poke_fingerprint: None,
             turn_guardrail_stopped: false,
             consecutive_guardrail_stops: 0,
+            auto_retry_base_delay_secs: config().provider.auto_retry_base_delay_secs,
+            auto_retry_enabled: config().provider.auto_retry_enabled,
+            auto_retry_max_attempts: config().provider.auto_retry_max_attempts,
             overnight_auto_poke: None,
             pending_provider_failover: None,
             pending_fallback_offer: None,
+            pending_decision: None,
             pending_fallback_resend: None,
             pending_merge_offer: None,
             session_save_pending: false,
@@ -485,6 +572,7 @@ impl App {
             last_resize_redraw: None,
             resize_redraw_pending: false,
             mcp_server_names: Vec::new(),
+            mcp_config,
             connection_phase_started: None,
             stream_buffer: StreamBuffer::new(),
             thinking_start: None,
@@ -664,6 +752,8 @@ impl App {
             pending_route_selection: None,
             pending_reasoning_effort: None,
             remote_model_switch_in_flight: false,
+            pending_persist_model_spec: None,
+            pending_model_config_persist: None,
             pending_prompt_after_model_switch: None,
             pending_prompt_before_history: None,
             pending_startup_prompt_echo: None,
@@ -783,6 +873,7 @@ impl App {
     }
 
     pub fn new(provider: Arc<dyn Provider>, registry: Registry) -> Self {
+        crate::tui::theme_detect::apply_configured_palette();
         let t0 = std::time::Instant::now();
         let skills = SkillRegistry::shared_snapshot();
         let t_skills = t0.elapsed();
@@ -794,6 +885,9 @@ impl App {
         session.ensure_initial_session_context_message();
         let display = config().display.clone();
         let features = config().features.clone();
+        let mcp_config = crate::mcp::McpConfig::load_for_dir(
+            session.working_dir.as_deref().map(std::path::Path::new),
+        );
         let autoreview_enabled = session
             .autoreview_enabled
             .unwrap_or(config().autoreview.enabled);
@@ -827,6 +921,12 @@ impl App {
             let provider_clone = Arc::clone(&provider);
             handle.spawn(async move {
                 let _ = provider_clone.prefetch_models().await;
+                // Standalone providers (e.g. Cursor ACP) discover their model
+                // catalog asynchronously via prefetch. The `/model` picker
+                // opened before prefetch completes shows a placeholder; publish
+                // ModelsUpdated so the picker cache invalidates and the next
+                // `/model` open reads the populated catalog.
+                crate::bus::Bus::global().publish_models_updated();
             });
         }
 
@@ -881,6 +981,8 @@ impl App {
             command_suggestions_cache: RefCell::new(None),
             command_suggestions_epoch: std::cell::Cell::new(0),
             cursor_pos: 0,
+            file_mention_cache: RefCell::new(crate::tui::app::file_mention::FileMentionCache::new()),
+            file_chips: Vec::new(),
             scroll_offset: 0,
             auto_scroll_paused: false,
             active_skill: None,
@@ -929,9 +1031,13 @@ impl App {
             last_auto_poke_fingerprint: None,
             turn_guardrail_stopped: false,
             consecutive_guardrail_stops: 0,
+            auto_retry_base_delay_secs: config().provider.auto_retry_base_delay_secs,
+            auto_retry_enabled: config().provider.auto_retry_enabled,
+            auto_retry_max_attempts: config().provider.auto_retry_max_attempts,
             overnight_auto_poke: None,
             pending_provider_failover: None,
             pending_fallback_offer: None,
+            pending_decision: None,
             pending_fallback_resend: None,
             pending_merge_offer: None,
             session_save_pending: false,
@@ -944,6 +1050,7 @@ impl App {
             last_resize_redraw: None,
             resize_redraw_pending: false,
             mcp_server_names: Vec::new(), // Vec<(name, tool_count)>
+            mcp_config,
             connection_phase_started: None,
             stream_buffer: StreamBuffer::new(),
             thinking_start: None,
@@ -1123,6 +1230,8 @@ impl App {
             pending_route_selection: None,
             pending_reasoning_effort: None,
             remote_model_switch_in_flight: false,
+            pending_persist_model_spec: None,
+            pending_model_config_persist: None,
             pending_prompt_after_model_switch: None,
             pending_prompt_before_history: None,
             pending_startup_prompt_echo: None,

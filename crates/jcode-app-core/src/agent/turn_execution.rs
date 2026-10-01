@@ -431,6 +431,28 @@ impl Agent {
         self.stdin_request_tx = Some(tx);
     }
 
+    /// Set the decision request channel for ask_user forwarding
+    pub fn set_decision_request_tx(
+        &mut self,
+        tx: tokio::sync::mpsc::UnboundedSender<crate::tool::DecisionInputRequest>,
+    ) {
+        self.decision_request_tx = Some(tx);
+    }
+
+    /// Drop the decision request channel. Used when a re-subscribing client
+    /// declares it cannot answer decision requests (e.g. a desktop/SDK client
+    /// taking over a session previously driven by the TUI), so ask_user
+    /// degrades to asking in plain text instead of blocking.
+    pub fn clear_decision_request_tx(&mut self) {
+        self.decision_request_tx = None;
+    }
+
+    /// Whether a decision request channel is currently wired. Test and
+    /// diagnostics helper for the `supports_decisions` gating.
+    pub fn has_decision_request_tx(&self) -> bool {
+        self.decision_request_tx.is_some()
+    }
+
     /// Prepare the static provider prefix while a client is idle. Unlike
     /// `tool_definitions`, this does not pin the tool snapshot or consume the
     /// one-shot late-MCP-discovery check before the first real turn.
@@ -974,6 +996,7 @@ impl Agent {
             tool_call_id: call_id,
             working_dir: self.working_dir().map(PathBuf::from),
             stdin_request_tx: self.stdin_request_tx.clone(),
+            decision_request_tx: self.decision_request_tx.clone(),
             graceful_shutdown_signal: Some(self.graceful_shutdown.clone()),
             execution_mode: ToolExecutionMode::Direct,
         };
@@ -1005,7 +1028,11 @@ impl Agent {
         output: crate::tool::ToolOutput,
         duration_ms: u64,
     ) -> Result<()> {
-        let blocks = tool_output_to_content_blocks(tool_call_id, output);
+        let blocks = tool_output_to_content_blocks_with_image_support(
+            tool_call_id,
+            output,
+            self.provider.supports_image_input(),
+        );
         self.add_message_with_duration(Role::User, blocks, Some(duration_ms));
         self.session.save()?;
         Ok(())
@@ -1438,7 +1465,7 @@ impl Agent {
         }
 
         // Extract using sidecar
-        let sidecar = crate::sidecar::Sidecar::new();
+        let sidecar = crate::memory::sidecar_for_memory(None);
         match sidecar.extract_memories(&transcript).await {
             Ok(extracted) if !extracted.is_empty() => {
                 let manager = self

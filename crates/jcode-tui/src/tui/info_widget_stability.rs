@@ -537,6 +537,7 @@ pub fn simulate_scroll_mode(
             right_reliable,
             left_reliable: Vec::new(),
             scroll_top: scroll,
+            top_band_rows: 0,
         };
         // Greedy mode forgets all anchors each frame, so every frame independently
         // maximizes coverage (the old "fill the biggest pocket now" philosophy).

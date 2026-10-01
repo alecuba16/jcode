@@ -56,6 +56,127 @@ impl App {
         active_model
     }
 
+    /// Persist a user-initiated model switch to `config.toml` so it survives
+    /// across jcode relaunches and new sessions.
+    ///
+    /// `finalize_model_switch` only saves the model to the *session* file, so a
+    /// resumed session restores it but a **new** session or relaunch reads
+    /// `config.toml`'s `[provider].default_model` and reverts to the old
+    /// default. This writes the active model + provider key back to config so
+    /// the choice is sticky globally. It must only be called for
+    /// user-initiated switches (cycle_model, `/model <name>`, model picker),
+    /// never for failover- or auth-driven switches which should not override
+    /// the user's configured default.
+    ///
+    /// `model_spec` is the user-facing route spec the user chose (e.g.
+    /// "llmg-coding:my-model", "copilot:gpt-5", or a bare model id). It already
+    /// encodes the routing the user picked. `provider_key` is the resolved
+    /// session provider key; when `None`, the caller wants to use the session's
+    /// current `provider_key` (the common case for cycle/slash which already
+    /// finalized the switch and updated `session.provider_key`). When `Some`,
+    /// the caller passes the key explicitly (the model picker computes it from
+    /// the route before the switch is applied).
+    pub(super) fn persist_model_switch_to_config(
+        &mut self,
+        model_spec: &str,
+        provider_key: Option<&str>,
+    ) {
+        let provider_key = match provider_key {
+            Some(key) => Some(key.to_string()),
+            None => self.session.provider_key.clone(),
+        };
+
+        let cfg = crate::config::config();
+        if !cfg.provider.persist_model_switch {
+            self.pending_model_config_persist = None;
+            crate::logging::info(&format!(
+                "Skipped persisting model switch because provider.persist_model_switch=false: {} via {}",
+                model_spec,
+                provider_key.as_deref().unwrap_or("auto")
+            ));
+            return;
+        }
+
+        if cfg.provider.default_model.as_deref() == Some(model_spec)
+            && cfg.provider.default_provider.as_deref() == provider_key.as_deref()
+        {
+            self.pending_model_config_persist = None;
+            crate::logging::info(&format!(
+                "Skipped persisting unchanged model default: {} via {}",
+                model_spec,
+                provider_key.as_deref().unwrap_or("auto")
+            ));
+            return;
+        }
+
+        if self
+            .pending_model_config_persist
+            .as_ref()
+            .is_some_and(|pending| {
+                pending.model_spec == model_spec && pending.provider_key == provider_key
+            })
+        {
+            crate::logging::info(&format!(
+                "Model switch config persist already pending: {} via {}",
+                model_spec,
+                provider_key.as_deref().unwrap_or("auto")
+            ));
+            return;
+        }
+
+        self.pending_model_config_persist = Some(super::PendingModelConfigPersist {
+            model_spec: model_spec.to_string(),
+            provider_key,
+            due_at: Instant::now() + super::MODEL_CONFIG_PERSIST_DEBOUNCE,
+        });
+        crate::logging::info(&format!(
+            "Scheduled debounced model switch persist to config.toml: {}",
+            model_spec
+        ));
+    }
+
+    pub(super) fn maybe_flush_pending_model_config_persist(&mut self) -> bool {
+        let Some(pending) = self.pending_model_config_persist.as_ref() else {
+            return false;
+        };
+        if Instant::now() < pending.due_at {
+            return false;
+        }
+        let Some(pending) = self.pending_model_config_persist.take() else {
+            return false;
+        };
+
+        match crate::config::Config::set_default_model_if_changed(
+            Some(&pending.model_spec),
+            pending.provider_key.as_deref(),
+        ) {
+            Ok(true) => {
+                self.set_status_notice("Default model saved");
+                crate::logging::info(&format!(
+                    "Persisted model switch to config.toml: {} via {} (survives relaunch)",
+                    pending.model_spec,
+                    pending.provider_key.as_deref().unwrap_or("auto")
+                ));
+                true
+            }
+            Ok(false) => {
+                crate::logging::info(&format!(
+                    "Skipped unchanged model switch persist at flush: {} via {}",
+                    pending.model_spec,
+                    pending.provider_key.as_deref().unwrap_or("auto")
+                ));
+                false
+            }
+            Err(e) => {
+                crate::logging::warn(&format!(
+                    "Failed to persist model switch to config.toml (session still saved): {}",
+                    e
+                ));
+                false
+            }
+        }
+    }
+
     fn apply_provider_switch_for_failover(
         &mut self,
         prompt: &crate::provider::ProviderFailoverPrompt,
@@ -544,6 +665,7 @@ impl App {
         match self.provider.set_model(&next_model) {
             Ok(()) => {
                 self.finalize_model_switch(&next_model);
+                self.persist_model_switch_to_config(&next_model, None);
                 let auth_suffix = self
                     .provider
                     .active_auth_method_label()
@@ -572,9 +694,13 @@ impl App {
         // and the picker consistent (both expose swarm / swarm-deep).
         let efforts = if self.is_remote {
             let (provider_name, provider_model) = self.remote_effort_identity();
-            inferred_reasoning_efforts(provider_name.as_deref(), provider_model.as_deref())
+            remote_reasoning_efforts(provider_name.as_deref(), provider_model.as_deref())
         } else {
-            self.provider.available_efforts()
+            self.provider
+                .available_efforts()
+                .into_iter()
+                .map(ToString::to_string)
+                .collect()
         };
         if efforts.is_empty() {
             self.set_status_notice("Reasoning effort not available for this provider");
@@ -588,7 +714,7 @@ impl App {
         };
         let current_index = current
             .as_ref()
-            .and_then(|c| efforts.iter().position(|e| *e == c.as_str()))
+            .and_then(|c| efforts.iter().position(|e| e == c))
             .unwrap_or(efforts.len() - 1); // default to last (highest)
 
         let len = efforts.len();
@@ -604,9 +730,9 @@ impl App {
             current_index - 1
         };
 
-        let next_effort = efforts[next_index];
-        if Some(next_effort.to_string()) == current {
-            let label = effort_display_label(next_effort);
+        let next_effort = efforts[next_index].clone();
+        if Some(next_effort.clone()) == current {
+            let label = effort_display_label(&next_effort);
             self.set_status_notice(format!(
                 "Effort: {} (already at {})",
                 label,
@@ -615,9 +741,9 @@ impl App {
             return;
         }
 
-        match self.provider.set_reasoning_effort(next_effort) {
+        match self.provider.set_reasoning_effort(&next_effort) {
             Ok(()) => {
-                let label = effort_display_label(next_effort);
+                let label = effort_display_label(&next_effort);
                 let bar = effort_bar(next_index, len);
                 self.set_status_notice(format!("Effort: {} {}", label, bar));
             }
@@ -1474,6 +1600,7 @@ pub(super) fn handle_model_command(app: &mut App, trimmed: &str) -> bool {
         match app.provider.set_model(model_name) {
             Ok(()) => {
                 let active_model = app.finalize_model_switch(model_name);
+                app.persist_model_switch_to_config(model_name, None);
                 let auth_suffix = app
                     .provider
                     .active_auth_method_label()
@@ -1505,9 +1632,22 @@ pub(super) fn handle_model_command(app: &mut App, trimmed: &str) -> bool {
         let current = app.provider.reasoning_effort();
         let efforts = app.provider.available_efforts();
         if efforts.is_empty() {
-            app.push_display_message(DisplayMessage::system(
-                "Reasoning effort not available for this provider.".to_string(),
-            ));
+            // Switching is unavailable, but the provider may still send a
+            // fixed effort (e.g. injected via OpenAI-compatible `extra_body`).
+            // Show it read-only instead of hiding it.
+            match app.provider.effective_reasoning_effort() {
+                Some(effort) => {
+                    app.push_display_message(DisplayMessage::system(format!(
+                        "Reasoning effort not switchable for this provider.\nEffort: {} (fixed, from provider config)",
+                        effort_display_label(&effort)
+                    )));
+                }
+                None => {
+                    app.push_display_message(DisplayMessage::system(
+                        "Reasoning effort not available for this provider.".to_string(),
+                    ));
+                }
+            }
         } else {
             let current_label = current
                 .as_deref()
@@ -1804,6 +1944,10 @@ impl App {
                     "Model list refreshed: +{} models, +{} routes, ~{} changed",
                     summary.models_added, summary.routes_added, summary.routes_changed
                 ));
+                // Reopen the picker in place if it is open so the freshly
+                // refreshed catalog is shown immediately rather than leaving
+                // stale rows on screen until the user closes and reopens `/model`.
+                self.refresh_open_model_picker_after_catalog_update();
             }
             Err(error) => {
                 self.finish_background_task(
