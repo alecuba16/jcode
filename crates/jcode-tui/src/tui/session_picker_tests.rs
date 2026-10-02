@@ -2709,3 +2709,5 @@ fn start_search_accepts_unicode_query() {
         .collect();
     assert_eq!(visible, vec!["session_utf8_1"]);
 }
+
+mod cwd_tests;

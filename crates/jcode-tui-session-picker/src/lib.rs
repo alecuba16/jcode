@@ -188,6 +188,13 @@ pub enum PickerItem {
     SavedHeader {
         session_count: usize,
     },
+    /// Sessions whose working directory matches the directory the picker was
+    /// opened from, pinned to the top of the All view so the user's current
+    /// project is immediately visible.
+    CurrentDirHeader {
+        label: String,
+        session_count: usize,
+    },
 }
 
 pub fn session_is_claude_code(source: SessionSource, id: &str) -> bool {

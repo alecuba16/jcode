@@ -537,6 +537,26 @@ impl SessionPicker {
                             ]);
                             ListItem::new(vec![line1])
                         }
+                        PickerItem::CurrentDirHeader {
+                            label,
+                            session_count,
+                        } => {
+                            // Same green as the per-row "this folder" highlight
+                            // so the pinned group reads as one visual unit.
+                            let dir_color: Color = rgb(120, 200, 140);
+                            let line1 = Line::from(vec![
+                                Span::styled("📁 ", Style::default().fg(dir_color)),
+                                Span::styled(
+                                    "This folder",
+                                    Style::default().fg(dir_color).add_modifier(Modifier::BOLD),
+                                ),
+                                Span::styled(
+                                    format!("  {} · {}", label, session_count),
+                                    Style::default().fg(dim),
+                                ),
+                            ]);
+                            ListItem::new(vec![line1])
+                        }
                         PickerItem::Session => self
                             .item_to_session
                             .get(idx)
