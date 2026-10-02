@@ -132,6 +132,7 @@ const CONFIG_ENV_KEYS: &[&str] = &[
     "JCODE_MEMORY_EMBEDDING_DIM",
     "JCODE_MEMORY_EMBEDDING_MODEL",
     "JCODE_MEMORY_ENABLED",
+    "JCODE_MEMORY_EFFORT",
     "JCODE_MEMORY_JEV_PROVIDER",
     "JCODE_ENABLE_MERMAID",
     "JCODE_MEMORY_MODEL",
@@ -656,6 +657,7 @@ impl Default for Config {
             autojudge: AutoJudgeConfig::default(),
             sponsors: SponsorsConfig::default(),
             launch_hotkeys: LaunchHotkeysConfig::default(),
+            file_mention: FileMentionConfig::default(),
             desktop: None,
         }
     }

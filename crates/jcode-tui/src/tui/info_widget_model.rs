@@ -396,4 +396,36 @@ mod tests {
 
         assert!(!text(render_model_info(&data, rect)).contains("tier"));
     }
+
+    #[test]
+    fn swarm_and_memory_override_rows_render_when_set() {
+        let mut d = data();
+        d.service_tier = None;
+        d.swarm_model_override = Some("glm-5.2".to_string());
+        d.swarm_model_effort = Some("low".to_string());
+        d.memory_model_override = Some("gemini-3.8-flash".to_string());
+        d.memory_model_effort = Some("none".to_string());
+        let out = text(render_model_widget(&d, Rect::new(0, 0, 40, 8)).all_lines());
+        assert!(out.contains("🐝 glm-5.2 · low"), "{out}");
+        assert!(out.contains("🧠 gemini-3.8-flash · none"), "{out}");
+        // Selected model row plus the two override rows.
+        assert_eq!(runtime_height(&d), 3);
+    }
+
+    #[test]
+    fn memory_effort_without_model_override_renders_no_row() {
+        let mut d = data();
+        d.service_tier = None;
+        d.memory_model_effort = Some("low".to_string());
+        // The effort rides the model row; with no model override there is
+        // nothing to annotate.
+        assert_eq!(runtime_height(&d), 1);
+    }
+
+    #[test]
+    fn inherit_overrides_render_no_row() {
+        let mut d = data();
+        d.service_tier = None;
+        assert_eq!(runtime_height(&d), 1);
+    }
 }

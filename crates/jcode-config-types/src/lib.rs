@@ -903,6 +903,13 @@ pub struct AgentsConfig {
     /// Env override: `JCODE_MEMORY_SIDECAR_FALLBACK`.
     #[serde(default)]
     pub memory_sidecar_fallback: String,
+    /// Optional reasoning effort override for the memory extraction sidecar
+    /// (`"none"`, `"minimal"`, `"low"`, `"medium"`, `"high"`, `"xhigh"`, ...).
+    /// Effective on every backend: OpenAI effort, Claude thinking budget or
+    /// `output_config` effort (model-dependent), or the live provider's effort
+    /// knob. Leave unset for the per-model default.
+    #[serde(default)]
+    pub memory_effort: Option<String>,
     /// Whether optional automatic memory extraction may use a text-generating
     /// sidecar. Recall always uses Jev and is independent of this setting.
     #[serde(default = "default_memory_sidecar_enabled")]
@@ -989,6 +996,7 @@ impl Default for AgentsConfig {
             memory_model: None,
             memory_sidecar_backend: None,
             memory_sidecar_fallback: String::new(),
+            memory_effort: None,
             memory_sidecar_enabled: default_memory_sidecar_enabled(),
             memory_rerank_cadence: default_memory_rerank_cadence(),
             memory_rerank_votes: default_memory_rerank_votes(),

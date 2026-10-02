@@ -68,7 +68,8 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use unicode_width::UnicodeWidthStr;
 
-use commits::{commits_has_data, render_commits_widget};
+pub(crate) use commits::{OVERVIEW_COMMITS_MAX_ROWS, commits_has_data};
+use commits::{render_commits_compact, render_commits_widget};
 use frame::Framed;
 use git::{
     changes_has_data, changes_height, changes_legend, render_changes_framed, render_git_widget,
@@ -280,6 +281,9 @@ impl Side {
 }
 
 pub(crate) fn is_overview_mergeable(kind: WidgetKind) -> bool {
+    // MemoryActivity is deliberately NOT here: the overview strips
+    // `memory_info` (the dedicated MemoryActivity widget owns that content),
+    // so marking it mergeable would suppress the only renderer of it.
     matches!(
         kind,
         WidgetKind::Todos
@@ -291,6 +295,7 @@ pub(crate) fn is_overview_mergeable(kind: WidgetKind) -> bool {
             | WidgetKind::UsageLimits
             | WidgetKind::KvCache
             | WidgetKind::GitStatus
+            | WidgetKind::Commits
     )
 }
 
@@ -869,6 +874,14 @@ impl InfoWidgetData {
                     sections += 1;
                 }
                 if self
+                    .memory_info
+                    .as_ref()
+                    .map(MemoryInfo::should_render)
+                    .unwrap_or(false)
+                {
+                    sections += 1;
+                }
+                if self
                     .background_info
                     .as_ref()
                     .map(|b| b.running_count > 0)
@@ -1155,6 +1168,10 @@ struct WidgetsState {
     /// of popping back for a few frames (which resizes the bottom chrome and
     /// bounces the transcript).
     swarm_dock_last_engaged: Option<Instant>,
+    /// Whether the last placement pass placed an Overview dock whose swarm
+    /// section has data (the Overview folds the swarm rows in, so the inline
+    /// strip stands down while it shows).
+    overview_carries_swarm: bool,
 }
 
 impl Default for WidgetsState {
@@ -1167,6 +1184,7 @@ impl Default for WidgetsState {
             settlement: super::info_widget_settle::SettlementTracker::default(),
             anchors_area_width: 0,
             swarm_dock_last_engaged: None,
+            overview_carries_swarm: false,
         }
     }
 }
@@ -1366,6 +1384,15 @@ pub fn calculate_placements(
     if swarm_dock_engaged(state) {
         state.swarm_dock_last_engaged = Some(Instant::now());
     }
+    state.overview_carries_swarm = state
+        .placements
+        .iter()
+        .any(|p| p.kind == WidgetKind::Overview)
+        && data
+            .swarm_info
+            .as_ref()
+            .map(|s| !s.managed_members.is_empty())
+            .unwrap_or(false);
     outcome.visible
 }
 
@@ -1426,9 +1453,12 @@ fn calculate_fixed_overview_placement(
 /// strip's return by this much, once.
 const SWARM_STRIP_STAND_DOWN_LINGER: Duration = Duration::from_millis(2000);
 
-/// Whether the SwarmStatus dock widget is engaged: either actually placed, or
-/// hidden-in-place behind a live anchor (a wide transcript line is momentarily
-/// covering its slot and it will pop back into the same spot).
+/// Whether the swarm dock is engaged: either the SwarmStatus dock widget is
+/// actually placed, or hidden-in-place behind a live anchor (a wide transcript
+/// line is momentarily covering its slot and it will pop back into the same
+/// spot). Also engaged when the Overview dock is placed and its swarm section
+/// has data: the Overview folds the swarm rows in, so the inline strip would
+/// only duplicate it.
 fn swarm_dock_engaged(state: &WidgetsState) -> bool {
     state.enabled
         && (state
@@ -1438,7 +1468,8 @@ fn swarm_dock_engaged(state: &WidgetsState) -> bool {
             || state
                 .anchors
                 .iter()
-                .any(|a| a.placement.kind == WidgetKind::SwarmStatus))
+                .any(|a| a.placement.kind == WidgetKind::SwarmStatus)
+            || state.overview_carries_swarm)
 }
 
 /// Whether the inline swarm strip (above the status line) should stand down
@@ -1476,6 +1507,7 @@ pub(crate) fn note_widget_pass_skipped() {
         state.placements.clear();
         state.anchors.clear();
         state.swarm_dock_last_engaged = None;
+        state.overview_carries_swarm = false;
     }
 }
 
@@ -1490,6 +1522,7 @@ pub(crate) fn clear_widget_placements_for_tests() {
         state.placements.clear();
         state.anchors.clear();
         state.swarm_dock_last_engaged = None;
+        state.overview_carries_swarm = false;
     }
 }
 
@@ -2446,11 +2479,6 @@ fn render_sections(
     // git counts all live there, so the widget skips this line entirely.
     if !data.status_line_active {
         let dir_label = data
-            .working_dir
-            .as_deref()
-            .filter(|d| !d.trim().is_empty())
-            .and_then(crate::tui::session_facts::dir_label_short)
-            .map(|label| truncate_smart(&label, w.saturating_sub(2)));
 
         let git_info = data.git_info.as_ref().filter(|g| !g.branch.is_empty());
 

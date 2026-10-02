@@ -146,9 +146,16 @@ pub fn sidecar_for_memory(session_memory_model: Option<&str>) -> crate::sidecar:
             persisted_memory_model
         }
     };
+    // An empty/whitespace effort from the config file (the env override
+    // already trims) must mean "unset", not an invalid `""` effort pin.
+    let configured_effort = cfg
+        .memory_effort
+        .clone()
+        .filter(|e| !e.trim().is_empty());
     crate::sidecar::Sidecar::with_session_memory_model(
         cfg.memory_model.clone(),
         cfg.memory_sidecar_backend.clone(),
+        configured_effort,
         session_memory_model,
     )
 }

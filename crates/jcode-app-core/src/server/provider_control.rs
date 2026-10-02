@@ -373,26 +373,6 @@ async fn apply_auth_route_to_agent(
     }
 }
 
-fn send_effort_after_model_change(
-    agent: &Agent,
-    id: u64,
-    client_event_tx: &mpsc::UnboundedSender<ServerEvent>,
-) {
-    // Fan-out send, same shape as client_lifecycle.rs acks: a closed client
-    // channel just drops the notification, but log the drop for debugging.
-    let effort_queued = client_event_tx.send(ServerEvent::ReasoningEffortChanged {
-        id,
-        effort: agent.provider_reasoning_effort(),
-        error: None,
-    });
-    if !effort_queued.is_ok() {
-        crate::logging::event_info(
-            "server_effort_changed_send_dropped",
-            vec![("id", id.to_string())],
-        );
-    }
-}
-
 fn send_model_changed_result(
     id: u64,
     result: anyhow::Result<(

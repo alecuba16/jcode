@@ -329,15 +329,21 @@ fn swarm_strip_stands_down_through_dock_blinks() {
         "no dock engagement yet: strip should be free to show"
     );
 
-    // Dock places: strip stands down.
+    // Dock places: strip stands down. The Overview dock folds the swarm
+    // rows in (SwarmStatus is a mergeable section of it), so the standalone
+    // SwarmStatus dock stays suppressed and Overview carries the strip's job.
     let placed = calculate_placements(messages_area, &wide_margins, &data);
     assert!(
-        placed.iter().any(|p| p.kind == WidgetKind::SwarmStatus),
-        "dock should place with a wide free margin"
+        placed.iter().any(|p| p.kind == WidgetKind::Overview),
+        "overview dock should place with a wide free margin"
+    );
+    assert!(
+        !placed.iter().any(|p| p.kind == WidgetKind::SwarmStatus),
+        "standalone swarm dock stays merged into the overview"
     );
     assert!(
         swarm_strip_stands_down_for_dock(),
-        "strip must stand down while the dock shows"
+        "strip must stand down while the overview dock shows the swarm rows"
     );
 
     // Full-draw integration: with the dock engaged, ui::draw omits the strip
@@ -382,7 +388,9 @@ fn swarm_strip_stands_down_through_dock_blinks() {
     calculate_placements(messages_area, &wide_margins, &data);
     let blink = calculate_placements(messages_area, &covered_margins, &data);
     assert!(
-        blink.iter().all(|p| p.kind != WidgetKind::SwarmStatus),
+        blink
+            .iter()
+            .all(|p| p.kind != WidgetKind::Overview && p.kind != WidgetKind::SwarmStatus),
         "covered margin must hide the dock this frame"
     );
     assert!(
@@ -406,12 +414,36 @@ fn swarm_strip_stands_down_through_dock_blinks() {
         !swarm_strip_stands_down_for_dock(),
         "strip should be free to return once the dock is genuinely gone"
     );
+
+    // An overview without swarm data must NOT stand the strip down: only the
+    // overview's swarm section carries the strip's job.
+    let mut no_swarm = data.clone();
+    no_swarm
+        .swarm_info
+        .as_mut()
+        .expect("swarm info")
+        .managed_members
+        .clear();
+    // Keep a non-swarm section (runtime) so the overview still has a
+    // reason to place; the point is that its swarm section is what gates
+    // the strip.
+    no_swarm.queue_mode = Some(true);
+    no_swarm.model = Some("gpt-test".to_string());
+    let placed = calculate_placements(messages_area, &wide_margins, &no_swarm);
+    assert!(
+        placed.iter().any(|p| p.kind == WidgetKind::Overview),
+        "overview should still place without swarm data"
+    );
+    assert!(
+        !swarm_strip_stands_down_for_dock(),
+        "swarm strip must stay up when the overview carries no swarm rows"
+    );
 }
 
-/// The swarm dock widget renders the compact summary at the cell level:
+/// The overview dock widget renders the compact swarm rows at the cell level:
 /// place it through the real `calculate_placements` + `render_all` path into
-/// a TestBackend and assert the summary + progress bar landed inside the
-/// placement rect.
+/// a TestBackend and assert the summary + member rows landed inside the
+/// placement rect (the standalone SwarmStatus dock is merged into Overview).
 #[test]
 fn swarm_dock_widget_full_render_writes_agent_rows_in_margin() {
     let _lock = viewport_snapshot_test_lock();
@@ -443,13 +475,13 @@ fn swarm_dock_widget_full_render_writes_agent_rows_in_margin() {
                 crate::tui::info_widget::calculate_placements(messages_area, &margins, &data);
             dock_rect = placements
                 .iter()
-                .find(|p| p.kind == crate::tui::info_widget::WidgetKind::SwarmStatus)
+                .find(|p| p.kind == crate::tui::info_widget::WidgetKind::Overview)
                 .map(|p| p.rect);
             crate::tui::info_widget::render_all(frame, &placements, &data);
         })
         .expect("dock widget render should not panic");
 
-    let rect = dock_rect.expect("SwarmStatus dock should be placed with a wide free margin");
+    let rect = dock_rect.expect("Overview dock should be placed with a wide free margin");
     let rows = buffer_rows(&terminal);
     let dock_text: String = rows[rect.y as usize..(rect.y + rect.height) as usize]
         .iter()

@@ -1678,7 +1678,7 @@ impl crate::tui::TuiState for App {
             swarm_model_override: crate::config::config().agents.swarm_model.clone(),
             swarm_model_effort: crate::config::config().agents.swarm_effort.clone(),
             memory_model_override: crate::config::config().agents.memory_model.clone(),
-            memory_model_effort: None,
+            memory_model_effort: crate::config::config().agents.memory_effort.clone(),
             service_tier,
             native_compaction_mode,
             native_compaction_threshold_tokens,
