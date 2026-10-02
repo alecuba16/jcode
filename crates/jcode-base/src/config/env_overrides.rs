@@ -910,6 +910,24 @@ impl Config {
         {
             self.provider.retry_backoff_cap_secs = parsed;
         }
+        if let Ok(v) = std::env::var("JCODE_AUTO_RETRY_BASE_DELAY_SECS") {
+            if let Ok(parsed) = v.trim().parse::<u64>() {
+                self.provider.auto_retry_base_delay_secs =
+                    jcode_config_types::clamp_auto_retry_base_delay_secs(parsed);
+            }
+        }
+        if let Ok(v) = std::env::var("JCODE_AUTO_RETRY_ENABLED") {
+            if let Some(enabled) = parse_env_bool(&v) {
+                self.provider.auto_retry_enabled = enabled;
+            }
+        }
+        if let Ok(v) = std::env::var("JCODE_AUTO_RETRY_MAX_ATTEMPTS") {
+            if let Ok(parsed) = v.trim().parse::<u8>() {
+                if parsed > 0 {
+                    self.provider.auto_retry_max_attempts = parsed;
+                }
+            }
+        }
         if let Ok(v) = std::env::var("JCODE_RISK_GATE_ENABLED") {
             if let Some(enabled) = parse_env_bool(&v) {
                 self.provider.risk_gate_enabled = enabled;

@@ -978,15 +978,11 @@ async fn auto_provider_noninteractive_skips_untrusted_external_auth_instead_of_b
         "CURSOR_API_KEY",
         "JCODE_ACTIVE_PROVIDER",
         "JCODE_INITIAL_PROVIDER_EXPLICIT",
-<<<<<<< HEAD
     ]
     .iter()
     .chain(PROFILE_ENV_KEYS.iter())
     {
         crate::env::remove_var(*key);
-    }
-    for key in &profile_key_vars {
-        crate::env::remove_var(key);
     }
     for key in &profile_key_vars {
         crate::env::remove_var(key);
