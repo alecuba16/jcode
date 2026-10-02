@@ -124,6 +124,59 @@ pub(crate) fn calculate_placements_anchored(
     enabled: bool,
     prev_anchors: &[WidgetAnchor],
 ) -> PlacementOutcome {
+    let outcome =
+        calculate_placements_anchored_inner(messages_area, margins, data, enabled, prev_anchors);
+    // Overview reclaim: if the Overview is available but could not place
+    // while an anchored *mergeable* widget holds a slot, that widget was
+    // anchored before the Overview had data and its content now folds into
+    // the Overview. Re-run once without those anchors so the higher-priority
+    // Overview can take the pocket. The retry is only adopted when the
+    // Overview actually places, so a frame that cannot host the Overview
+    // anyway keeps the original outcome (and its anchors) unchanged.
+    if data.available_widgets().contains(&WidgetKind::Overview)
+        && !outcome
+            .visible
+            .iter()
+            .any(|p| p.kind == WidgetKind::Overview)
+    {
+        let mergeable_only: Vec<WidgetAnchor> = prev_anchors
+            .iter()
+            .filter(|a| {
+                a.placement.kind != WidgetKind::Overview && is_overview_mergeable(a.placement.kind)
+            })
+            .cloned()
+            .collect();
+        if !mergeable_only.is_empty() {
+            let non_mergeable: Vec<WidgetAnchor> = prev_anchors
+                .iter()
+                .filter(|a| {
+                    a.placement.kind == WidgetKind::Overview
+                        || !is_overview_mergeable(a.placement.kind)
+                })
+                .cloned()
+                .collect();
+            let retry = calculate_placements_anchored_inner(
+                messages_area,
+                margins,
+                data,
+                enabled,
+                &non_mergeable,
+            );
+            if retry.visible.iter().any(|p| p.kind == WidgetKind::Overview) {
+                return retry;
+            }
+        }
+    }
+    outcome
+}
+
+fn calculate_placements_anchored_inner(
+    messages_area: Rect,
+    margins: &Margins,
+    data: &InfoWidgetData,
+    enabled: bool,
+    prev_anchors: &[WidgetAnchor],
+) -> PlacementOutcome {
     if !enabled || messages_area.height == 0 || messages_area.width == 0 {
         return PlacementOutcome {
             visible: Vec::new(),
