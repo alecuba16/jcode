@@ -979,9 +979,16 @@ fn gate_ctx(working_dir: &str) -> ToolContext {
     }
 }
 
+/// Both HOME-mutating gate tests below race each other (and anything else
+/// reading HOME) under the default parallel test runner, so they serialize on
+/// this lock. Without it, one test's restore can land mid-flight in the other's
+/// gate check and the canary assertions flake.
+static HOME_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[tokio::test]
 async fn bash_refuses_to_delete_the_home_directory() {
     // The #604 incident, at the real tool boundary.
+    let _lock = HOME_ENV_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     let temp = tempfile::tempdir().expect("temp home");
     let home = temp.path().to_string_lossy().to_string();
     let previous = std::env::var("HOME").ok();
@@ -1091,6 +1098,7 @@ async fn indirect_dispatch_paths_cannot_bypass_the_gate() {
     // reimplementing it, so the gate lives at the only chokepoint. Assert that
     // directly: calling execute for a background job (the one path that returns
     // early) is still gated.
+    let _lock = HOME_ENV_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     let temp = tempfile::tempdir().expect("temp home");
     let home = temp.path().to_string_lossy().to_string();
     let previous = std::env::var("HOME").ok();

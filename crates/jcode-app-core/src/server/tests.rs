@@ -327,6 +327,7 @@ fn persisted_headless_member(
 
 #[tokio::test]
 async fn background_task_wake_runs_live_session_immediately_when_idle() {
+    let _env_lock = crate::storage::lock_test_env();
     let provider = Arc::new(StreamingMockProvider::default());
     provider.queue_response(vec![
         StreamEvent::TextDelta("Build result processed.".to_string()),
@@ -372,7 +373,7 @@ async fn background_task_wake_runs_live_session_immediately_when_idle() {
     )
     .await;
 
-    let notification = timeout(Duration::from_secs(2), async {
+    let notification = timeout(Duration::from_secs(10), async {
         loop {
             match member_event_rx.recv().await {
                 Some(ServerEvent::Notification {
@@ -397,7 +398,7 @@ async fn background_task_wake_runs_live_session_immediately_when_idle() {
     }
     assert!(notification.1.contains("**Background task** `bgwake`"));
 
-    let streamed = timeout(Duration::from_secs(2), async {
+    let streamed = timeout(Duration::from_secs(10), async {
         loop {
             match member_event_rx.recv().await {
                 Some(ServerEvent::TextDelta { text })

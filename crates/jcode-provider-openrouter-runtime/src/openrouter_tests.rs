@@ -4033,6 +4033,12 @@ fn named_profile_supports_reasoning_effort_config_override() {
 fn named_profile_construction_reads_openai_reasoning_effort_config() {
     let _lock = ENV_LOCK.lock();
     let _namespace = EnvVarGuard::remove("JCODE_OPENROUTER_CACHE_NAMESPACE");
+    // Isolate from the developer's real ~/.jcode/config.toml: an ambient
+    // openai_reasoning_effort there would make the "configured" branch the
+    // live one, and a stale cache flip would fail the honor assertion.
+    let home = tempfile::tempdir().expect("scratch JCODE_HOME");
+    let _jcode_home = EnvVarGuard::set("JCODE_HOME", home.path());
+    jcode_base::config::Config::invalidate_cache();
 
     let config = jcode_base::config::NamedProviderConfig {
         base_url: "https://compat.example.test/v1".to_string(),
@@ -4059,6 +4065,9 @@ fn named_profile_construction_reads_openai_reasoning_effort_config() {
     provider
         .set_reasoning_effort("max")
         .expect("explicitly-enabled profile accepts effort");
+
+    // Restore the real config cache for the tests that follow.
+    jcode_base::config::Config::invalidate_cache();
 }
 
 #[test]

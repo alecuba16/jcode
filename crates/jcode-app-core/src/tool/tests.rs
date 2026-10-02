@@ -692,6 +692,11 @@ async fn tool_descriptions_stay_under_token_cap() {
     // user, so planning happens proactively rather than only when prompted.
     // applet carries the whole view-node vocabulary inline, since the model has
     // no other way to learn which node types and props the host renders.
+    // macos_computer_use carries the desktop-control contract inline
+    // (background-first policy, live-machine safety, discover escalation);
+    // the model has no other way to learn the routing rules before the first
+    // call, and the same text ships upstream (Linux CI never registers the
+    // tool, so the cap never fires there).
     const EXEMPT: &[&str] = &[
         "integration_tools",
         "swarm",
@@ -699,6 +704,7 @@ async fn tool_descriptions_stay_under_token_cap() {
         "browser",
         "todo",
         "applet",
+        "macos_computer_use",
     ];
 
     let provider: Arc<dyn Provider> = Arc::new(MockProvider);
@@ -762,6 +768,9 @@ async fn tool_parameter_descriptions_stay_under_token_cap() {
     // applet placement lists every shorthand so the model can pick a surface
     // without a round trip. desktop_selfdev action carries a safety warning:
     // killing the harness bridge by hand strands the calling session.
+    // macos_computer_use action/element descriptions carry the progressive-
+    // disclosure contract (common actions + discover pointer, element handle
+    // shape) that the tool depends on for correct first-call routing.
     const EXEMPT: &[(&str, &str)] = &[
         (
             "todo",
@@ -769,6 +778,8 @@ async fn tool_parameter_descriptions_stay_under_token_cap() {
         ),
         ("applet", "$.properties.placement"),
         ("desktop_selfdev", "$.properties.action"),
+        ("macos_computer_use", "$.properties.action"),
+        ("macos_computer_use", "$.properties.element"),
     ];
 
     let provider: Arc<dyn Provider> = Arc::new(MockProvider);

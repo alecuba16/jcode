@@ -1,5 +1,5 @@
 use super::info_widget::{
-    InfoWidgetData, MemoryEventKind, UsageProvider, changes_section_height,
+    InfoWidgetData, MemoryEventKind, OVERVIEW_SWARM_MAX_ROWS, UsageProvider, changes_section_height,
     is_traceworthy_memory_event,
 };
 
@@ -250,17 +250,25 @@ fn compact_skills_height(data: &InfoWidgetData) -> u16 {
 
 fn compact_swarm_height(data: &InfoWidgetData) -> u16 {
     if let Some(info) = &data.swarm_info {
-        // Stats line + subagent status or member lines (approximate).
-        let extra = if !info.managed_members.is_empty() {
-            1 // dock compact lines
+        // Mirror render_swarm_compact: header + member rows + "+N more"
+        // overflow + plan meter (managed members), or the standalone
+        // widget's summary line otherwise.
+        if !info.managed_members.is_empty() {
+            let rows = info.managed_members.len().min(OVERVIEW_SWARM_MAX_ROWS);
+            let overflow = u16::from(info.managed_members.len() > rows);
+            let plan = u16::from(
+                info.plan_progress
+                    .map(|(_, _, total)| total > 0)
+                    .unwrap_or(false),
+            );
+            1 + rows as u16 + overflow + plan
         } else if !info.members.is_empty() {
-            info.members.len().min(3) as u16
+            info.members.len().min(3) as u16 + 1
         } else if info.subagent_status.is_some() {
-            1
+            2
         } else {
-            0
-        };
-        1 + extra
+            1
+        }
     } else {
         // "0 sessions" line when no swarm active.
         1

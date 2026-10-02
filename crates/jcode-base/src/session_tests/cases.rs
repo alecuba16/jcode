@@ -2440,6 +2440,21 @@ fn streaming_guard_creates_visible_macos_sleep_assertion() {
     let temp = tempfile::tempdir().expect("tempdir");
     let _home = EnvVarGuard::set("JCODE_HOME", temp.path());
 
+    // A long-lived jcode daemon (or any other streaming session) can hold
+    // an assertion with the same name, so a plain name check would see that
+    // ambient assertion and flake. `pmset -g assertions` lists each assertion
+    // with its owning pid, so scope both checks to lines owned by this test
+    // process.
+    let pid = std::process::id();
+    fn own_assertion_lines(stdout: &str, pid: u32) -> Vec<&str> {
+        stdout
+            .lines()
+            .filter(|line| {
+                line.trim_start().starts_with(&format!("pid {pid}("))
+            })
+            .collect()
+    }
+
     let reason = "Jcode streaming model response";
     {
         let _streaming = StreamingGuard::new("session_power");
@@ -2450,9 +2465,11 @@ fn streaming_guard_creates_visible_macos_sleep_assertion() {
             .expect("pmset -g assertions should run on macOS");
         assert!(output.status.success(), "pmset should succeed");
         let stdout = String::from_utf8_lossy(&output.stdout);
+        let own = own_assertion_lines(&stdout, pid);
         assert!(
-            stdout.contains(reason),
-            "pmset output should show the streaming assertion; output was:\n{stdout}"
+            own.iter().any(|line| line.contains(reason)),
+            "pmset output should show our streaming assertion; our lines were:\n{}\nfull output:\n{stdout}",
+            own.join("\n")
         );
     }
 
@@ -2461,9 +2478,11 @@ fn streaming_guard_creates_visible_macos_sleep_assertion() {
         .output()
         .expect("pmset -g assertions should run on macOS");
     let stdout = String::from_utf8_lossy(&output.stdout);
+    let own = own_assertion_lines(&stdout, pid);
     assert!(
-        !stdout.contains(reason),
-        "streaming assertion should be released after guard drop; output was:\n{stdout}"
+        !own.iter().any(|line| line.contains(reason)),
+        "streaming assertion should be released after guard drop; our lines were:\n{}\nfull output:\n{stdout}",
+        own.join("\n")
     );
 }
 

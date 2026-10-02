@@ -566,6 +566,13 @@ impl FlowInner {
         let deadline = Instant::now()
             + if is_cancel {
                 self.options.timeout.min(Duration::from_secs(5))
+            } else if operation == Operation::Begin {
+                // The Begin handshake only spawns the CLI and reads its pending
+                // status; interpreter/CLI startup alone can exceed a short
+                // configured timeout on slow machines, so give it a sane floor.
+                // Callers keep their timeout for every other operation
+                // (callback wait, device polling, cancel).
+                self.options.timeout.max(Duration::from_secs(5))
             } else {
                 self.options.timeout
             };

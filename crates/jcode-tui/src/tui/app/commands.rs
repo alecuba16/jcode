@@ -3803,10 +3803,6 @@ fn handle_tps_interval_command(app: &mut App, trimmed: &str) -> bool {
 }
 
 pub(super) fn handle_config_command(app: &mut App, trimmed: &str) -> bool {
-    if handle_settings_command(app, trimmed) {
-        return true;
-    }
-
     if handle_alignment_command(app, trimmed) {
         return true;
     }

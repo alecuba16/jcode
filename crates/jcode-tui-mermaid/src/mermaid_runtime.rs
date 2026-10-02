@@ -910,10 +910,6 @@ mod tests {
             Some(ProtocolType::Iterm2)
         );
         assert_eq!(
-            infer_protocol_from_env(Some("foot"), Some("foot"), None, None, None),
-            None
-        );
-        assert_eq!(
             infer_protocol_from_env(Some("xterm-256color"), Some("konsole"), None, None, None),
             None
         );

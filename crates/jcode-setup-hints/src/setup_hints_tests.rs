@@ -32,6 +32,9 @@ fn first_three_launches_can_include_hotkey_notice_too() {
     let state = SetupHintsState {
         launch_count: 2,
         hotkey_configured: true,
+        // The Default impl suppresses the spawn notice (opt-in noise), so the
+        // test has to opt in to exercise the notice text itself.
+        startup_spawn_hint_dismissed: false,
         ..SetupHintsState::default()
     };
 

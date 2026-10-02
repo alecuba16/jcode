@@ -1519,6 +1519,11 @@ mod tests {
         let _guard = lock_test_env();
         let temp = tempfile::tempdir().unwrap();
         let _xdg = EnvVarGuard::set("XDG_CONFIG_HOME", temp.path().as_os_str());
+        // Isolate from the developer's real jcode config dir: an ambient
+        // bedrock.env (saved bearer token + profile) would flip
+        // `has_credentials()` and break the credential-hint assertions.
+        std::fs::create_dir_all(temp.path().join("config").join("jcode")).unwrap();
+        let _home = EnvVarGuard::set("JCODE_HOME", temp.path().as_os_str());
         let _removed = [
             "JCODE_BEDROCK_ENABLE",
             API_KEY_ENV,
@@ -1552,6 +1557,10 @@ mod tests {
         let _guard = lock_test_env();
         let temp = tempfile::tempdir().unwrap();
         let _xdg = EnvVarGuard::set("XDG_CONFIG_HOME", temp.path().as_os_str());
+        // Same isolation: the test asserts an empty starting state, which the
+        // developer's real bedrock.env would violate.
+        std::fs::create_dir_all(temp.path().join("config").join("jcode")).unwrap();
+        let _home = EnvVarGuard::set("JCODE_HOME", temp.path().as_os_str());
         for key in [
             "JCODE_BEDROCK_ENABLE",
             API_KEY_ENV,

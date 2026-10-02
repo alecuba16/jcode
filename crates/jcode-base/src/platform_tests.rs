@@ -18,7 +18,11 @@ fn spawn_detached_creates_new_session() {
 
     let mut cmd = std::process::Command::new("sh");
     cmd.arg("-c")
-        .arg("ps -o sid= -p $$ > \"$JCODE_TEST_OUTPUT\"")
+        // `spawn_detached` calls setsid(2), so the child leads its own
+        // session AND process group: pgid == sid == pid. `ps -o pgid=` is
+        // portable (Linux and macOS `ps` both support the `pgid` keyword,
+        // unlike `sid`, which macOS lacks).
+        .arg("ps -o pgid= -p $$ > \"$JCODE_TEST_OUTPUT\" 2>&1")
         .env("JCODE_TEST_OUTPUT", &output_path)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());

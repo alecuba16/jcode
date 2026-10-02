@@ -85,6 +85,7 @@ use model::{
     render_model_widget, runtime_height,
 };
 use swarm_background::{render_background_compact, render_background_widget, render_swarm_widget};
+pub(crate) use swarm_background::OVERVIEW_SWARM_MAX_ROWS;
 use text::{truncate_chars, truncate_smart, truncate_with_ellipsis};
 pub(crate) use tips::occasional_status_tip;
 use tips::render_tips_widget;
@@ -928,6 +929,25 @@ impl InfoWidgetData {
                     sections += 1;
                 }
                 if !self.available_skills.is_empty() {
+                    sections += 1;
+                }
+                // Recent commits: the Overview folds the Commits widget in.
+                if self
+                    .git_info
+                    .as_ref()
+                    .map(commits_has_data)
+                    .unwrap_or(false)
+                {
+                    sections += 1;
+                }
+                // Swarm rows: the Overview folds the standalone SwarmStatus
+                // dock in, so managed agents keep the overview placed.
+                if self
+                    .swarm_info
+                    .as_ref()
+                    .map(|s| !s.managed_members.is_empty())
+                    .unwrap_or(false)
+                {
                     sections += 1;
                 }
                 // The Overview is the single merged widget: show it whenever
@@ -2631,8 +2651,18 @@ fn render_sections(
     }
 
     // Swarm status (subagents, managed members, plan progress)
-    // Always show: full widget when swarm active, "0 sessions" when inactive.
-    if data.swarm_info.is_some() {
+    // Always show: full rows when swarm active, "0 sessions" when inactive.
+    // Managed agents use the compact projection whose header/plan-meter are
+    // body lines, so they survive inside the Overview's own border (the
+    // standalone dock's Framed title/footer would be dropped here).
+    if let Some(swarm) = data.swarm_info.as_ref()
+        && !swarm.managed_members.is_empty()
+    {
+        lines.extend(swarm_background::render_swarm_compact(
+            swarm,
+            inner.width as usize,
+        ));
+    } else if data.swarm_info.is_some() {
         let framed = swarm_background::render_swarm_widget(data, inner);
         lines.extend(framed.lines);
     } else {
@@ -2660,7 +2690,9 @@ fn render_sections(
     // Memory info — just before todos, shows count and recalls.
     // Recovered memories are rendered inline below the count line,
     // using 2x panel width for the content area.
-    if let Some(info) = &data.memory_info {
+    if let Some(info) = &data.memory_info
+        && info.should_render()
+    {
         let label = if info.disabled {
             "Memory disabled".to_string()
         } else {

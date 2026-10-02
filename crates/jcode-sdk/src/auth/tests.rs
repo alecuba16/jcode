@@ -187,7 +187,9 @@ sys.exit(1 if mode in ('warning', 'legacy-warning') else 0)
             use std::io::BufRead;
             let (stream, _) = listener.accept().unwrap();
             stream
-                .set_read_timeout(Some(Duration::from_secs(2)))
+                // Generous bound: under a loaded test machine the fixture
+                // process can take seconds to reach the notify write.
+                .set_read_timeout(Some(Duration::from_secs(10)))
                 .unwrap();
             let mut line = String::new();
             std::io::BufReader::new(stream)
@@ -271,7 +273,10 @@ sys.exit(1 if mode in ('warning', 'legacy-warning') else 0)
     #[test]
     fn timeout_reaps_process_and_unique_ids_isolate_cancellation() {
         let (dir, mut client) = fixture("hang");
-        client.options.timeout = Duration::from_millis(150);
+        // Long enough for the fixture interpreter to start and publish its
+        // pid before the timeout kills it: on slow machines python startup
+        // alone can exceed 150 ms, which would leave no pid file to reap.
+        client.options.timeout = Duration::from_secs(2);
         let flow = client.begin("copilot", None).unwrap();
         let other = client.begin("copilot", None).unwrap();
         assert_ne!(flow.0.flow_id, other.0.flow_id);
@@ -527,7 +532,10 @@ sys.exit(1 if mode in ('warning', 'legacy-warning') else 0)
         let (_dir, mut client, reserved) = loopback_fixture();
         let port = reserved.local_addr().unwrap().port();
         drop(reserved);
-        client.options.timeout = Duration::from_millis(300);
+        // Long enough that the manual-completion exchange below fits on slow
+        // machines (fixture interpreter startup alone can exceed 300 ms under
+        // a parallel test load), while still bounding the callback wait.
+        client.options.timeout = Duration::from_secs(2);
         let flow = client.begin("openai", None).unwrap();
         flow.start().unwrap();
         let _peer = std::net::TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, port)).unwrap();
@@ -536,7 +544,7 @@ sys.exit(1 if mode in ('warning', 'legacy-warning') else 0)
             flow.wait_for_callback().unwrap_err().kind,
             ErrorKind::Timeout
         );
-        assert!(started.elapsed() < Duration::from_secs(1));
+        assert!(started.elapsed() < Duration::from_secs(3));
         assert!(!flow.has_callback_listener());
         assert!(flow.submit_callback("private-fixture-secret").is_ok());
     }

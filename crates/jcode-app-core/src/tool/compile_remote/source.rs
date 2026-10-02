@@ -501,7 +501,15 @@ mod tests {
         use std::os::unix::ffi::OsStrExt;
         let repo = repo().await;
         let name = std::ffi::OsStr::from_bytes(b"non-utf8-\xff");
-        std::fs::write(repo.path().join(name), b"contents").unwrap();
+        match std::fs::write(repo.path().join(name), b"contents") {
+            Ok(()) => {}
+            // macOS 26 (Darwin 25) APFS enforces valid UTF-8 filenames at the
+            // vnode level ("protect" dirflag), so an invalid-UTF-8 name can
+            // never exist there and the rejection path is untestable. The
+            // assertion below stays the contract for filesystems that allow it.
+            Err(error) if error.raw_os_error() == Some(92) => return,
+            Err(error) => panic!("failed to create non-UTF-8 fixture: {error}"),
+        }
         assert!(
             snapshot(repo.path())
                 .await

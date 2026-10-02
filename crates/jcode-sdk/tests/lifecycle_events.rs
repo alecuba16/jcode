@@ -117,6 +117,11 @@ impl UnixHarness {
                 match listener.accept() {
                     Ok((socket, _)) => {
                         server_clients.fetch_add(1, Ordering::AcqRel);
+                        // On BSD/macOS accepted sockets inherit O_NONBLOCK from
+                        // the listener; serve_connection needs blocking reads.
+                        socket
+                            .set_nonblocking(false)
+                            .expect("blocking accepted socket");
                         let sessions = Arc::clone(&server_sessions);
                         let clients = Arc::clone(&server_clients);
                         let include_archived = Arc::clone(&server_include_archived);
