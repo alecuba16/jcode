@@ -1079,6 +1079,11 @@ pub(in crate::tui::app) fn handle_server_event(
             app.stream_buffer.clear();
             app.streaming_tool_calls.clear();
             app.batch_progress = None;
+            // A cancel/abort ends the turn that asked the question: the
+            // server-side response channel is gone with it, so drop any
+            // blocking chooser instead of leaving a dead card that would
+            // send answers nobody consumes.
+            app.pending_decision = None;
             app.thought_line_inserted = false;
             app.thinking_prefix_emitted = false;
             app.thinking_buffer.clear();
@@ -1094,6 +1099,7 @@ pub(in crate::tui::app) fn handle_server_event(
             app.status = ProcessingStatus::Idle;
             app.stream_message_ended = false;
             app.processing_started = None;
+            app.reset_streaming_tps();
             app.current_message_id = None;
             remote.clear_pending();
             remote.reset_call_output_tokens_seen();
@@ -1201,9 +1207,14 @@ pub(in crate::tui::app) fn handle_server_event(
                     app.push_turn_footer(duration);
                 }
                 crate::tui::mermaid::clear_streaming_preview_diagram();
+                app.record_turn_tps();
+                app.reset_streaming_tps();
                 app.is_processing = false;
                 app.status = ProcessingStatus::Idle;
                 app.stream_message_ended = false;
+                // A finished turn cannot still be waiting on an ask_user
+                // chooser; drop a stale one so the input box frees up.
+                app.pending_decision = None;
                 // Turn completed successfully; drop the saved prompt so a later
                 // unrelated failure cannot restore stale text into the input box.
                 app.last_submitted_input = None;
@@ -1304,6 +1315,7 @@ pub(in crate::tui::app) fn handle_server_event(
                     app.status = ProcessingStatus::Idle;
                     app.stream_message_ended = false;
                     app.processing_started = None;
+                    app.reset_streaming_tps();
                     app.clear_visible_turn_started();
                     app.current_message_id = None;
                     remote.clear_pending();
@@ -1338,8 +1350,12 @@ pub(in crate::tui::app) fn handle_server_event(
             app.is_processing = false;
             app.status = ProcessingStatus::Idle;
             app.stream_message_ended = false;
+            // A fatal turn error ends the turn that asked the question;
+            // its server-side response channel is gone, so drop the chooser.
+            app.pending_decision = None;
             let recovered_local = recover_local_interleave_to_queue(app, "request error");
             crate::tui::mermaid::clear_streaming_preview_diagram();
+            app.reset_streaming_tps();
             app.thought_line_inserted = false;
             app.thinking_prefix_emitted = false;
             app.thinking_buffer.clear();
@@ -1709,6 +1725,7 @@ pub(in crate::tui::app) fn handle_server_event(
                 }
                 app.replay_processing_started_ms = None;
                 app.replay_elapsed_override = None;
+                app.record_turn_tps();
                 app.reset_streaming_tps();
                 app.stream_message_ended = false;
                 app.remote_resume_activity = None;
@@ -2290,6 +2307,10 @@ pub(in crate::tui::app) fn handle_server_event(
                     Some((name.to_string(), count))
                 })
                 .collect();
+            app.mcp_config = crate::mcp::McpConfig::load_for_dir(
+                app.session.working_dir.as_deref().map(std::path::Path::new),
+            );
+            app.command_suggestions_cache.replace(None);
             // Keep MCP readiness non-intrusive. The footer/tool indicator reads
             // `mcp_server_names` directly, so avoid a transient status notice here:
             // status notices render near the prompt and can cover text while the
@@ -2443,16 +2464,22 @@ pub(in crate::tui::app) fn handle_server_event(
                     err
                 )));
             } else {
+                let had_effort = app.remote_reasoning_effort.is_some();
                 app.remote_reasoning_effort = effort.clone();
-                let label = effort
-                    .as_deref()
-                    .map(app_mod::effort_display_label)
-                    .unwrap_or("default");
-                app.push_display_message(DisplayMessage::system(format!(
-                    "✓ Reasoning effort → {}",
-                    label
-                )));
-                app.set_status_notice(format!("Effort: {}", label));
+                if had_effort || effort.is_some() {
+                    // A visible transition: announce it. The None -> None and
+                    // absent -> absent cases stay silent so startup snapshots
+                    // and effort pushes that confirm no change add no noise.
+                    let label = effort
+                        .as_deref()
+                        .map(app_mod::effort_display_label)
+                        .unwrap_or("default");
+                    app.push_display_message(DisplayMessage::system(format!(
+                        "✓ Reasoning effort → {}",
+                        label
+                    )));
+                    app.set_status_notice(format!("Effort: {}", label));
+                }
             }
             false
         }
@@ -2967,6 +2994,31 @@ pub(in crate::tui::app) fn handle_server_event(
         ServerEvent::StdinRequest { .. } => {
             app.set_status_notice("⌨ Interactive terminal detected (command will timeout)");
             false
+        }
+        ServerEvent::DecisionRequest {
+            request_id,
+            question,
+            options,
+            tool_call_id: _,
+        } => {
+            let options: Vec<(String, Option<String>)> = options
+                .into_iter()
+                .map(|opt| (opt.label, opt.detail))
+                .collect();
+            if options.is_empty() {
+                crate::logging::warn("DecisionRequest with no options; ignoring");
+                return false;
+            }
+            app.push_display_message(DisplayMessage::system(format!("❓ {}", question)));
+            app.pending_decision = Some(crate::tui::app::PendingDecision {
+                request_id,
+                question,
+                options,
+                selected: 0,
+                answer_draft: String::new(),
+            });
+            app.set_status_notice("Decision needed: pick a number, or type your own answer");
+            true
         }
         _ => false,
     }

@@ -69,6 +69,7 @@ pub(in crate::tui::app) fn restore_prepared_remote_input(
     app.input = prepared.raw_input;
     app.cursor_pos = app.input.len();
     app.pending_images = prepared.images;
+    app.file_chips = prepared.file_chips;
 }
 
 pub(in crate::tui::app) fn history_matches_pending_startup_prompt(app: &App) -> bool {
@@ -107,6 +108,13 @@ pub(in crate::tui::app) async fn submit_prepared_remote_input(
     remote: &mut RemoteConnection,
     prepared: input::PreparedInput,
 ) -> Result<()> {
+    // While the ask_user chooser is visible it owns the keyboard: the main
+    // input box is disabled and free-form answers live in the chooser's own
+    // "Your answer" row, so a stray submit must never start a new turn.
+    if app.pending_decision.is_some() {
+        app.set_status_notice("Answer the decision above (Esc dismisses it)");
+        return Ok(());
+    }
     if app.remote_model_switch_in_flight || app.auth_catalog_refresh_pending {
         app.pending_prompt_after_model_switch = Some(prepared);
         app.set_status_notice(if app.auth_catalog_refresh_pending {
@@ -259,6 +267,7 @@ pub(in crate::tui::app) async fn submit_remote_slash_input(
             raw_input: prepared.raw_input,
             expanded: expanded_prompt,
             images: prepared.images,
+            file_chips: prepared.file_chips,
         },
     )
     .await
@@ -291,6 +300,7 @@ pub(in crate::tui::app) async fn route_prepared_input_to_new_remote_session(
                     raw_input: prepared.raw_input,
                     expanded: prompt.content,
                     images: prompt.images,
+                    file_chips: prepared.file_chips,
                 });
             app.pending_split_model_override = None;
             app.pending_split_provider_key_override = None;
@@ -313,6 +323,7 @@ pub(in crate::tui::app) async fn route_prepared_input_to_new_remote_session(
                 raw_input: prepared.raw_input,
                 expanded: prompt.content,
                 images: prompt.images,
+                file_chips: prepared.file_chips,
             });
         app.pending_split_model_override = None;
         app.pending_split_provider_key_override = None;
@@ -355,6 +366,7 @@ pub(in crate::tui::app) fn finish_remote_split_launch(app: &mut App) {
     app.processing_started = None;
     app.clear_visible_turn_started();
     app.last_stream_activity = None;
+    app.record_turn_tps();
     app.reset_streaming_tps();
     app.current_message_id = None;
 }
@@ -533,7 +545,7 @@ struct StashedDraft {
     cursor_pos: usize,
     pasted_contents: Vec<String>,
     pending_images: Vec<(String, String)>,
-    undo: Vec<(String, usize)>,
+    undo: Vec<app_mod::InputUndoEntry>,
 }
 
 fn stash_draft_for_voice(app: &mut App, transcript: &str) -> StashedDraft {

@@ -240,6 +240,31 @@ impl Config {
         Ok(())
     }
 
+    /// Update the persisted TPS interval mode preference.
+    ///
+    /// Uses [`Self::load_for_update`] (like every other setter here) so a
+    /// transient `JCODE_*` env override is not baked into the file as a
+    /// side effect of saving this one preference.
+    pub fn set_tps_interval(mode: TpsIntervalMode) -> anyhow::Result<()> {
+        let mut cfg = Self::load_for_update()?;
+        cfg.display.tps_interval = mode;
+        cfg.save()?;
+        crate::logging::info(&format!(
+            "Saved display.tps_interval to config: {}",
+            mode.as_str()
+        ));
+        Ok(())
+    }
+
+    /// Update the persisted show-tokens-per-second preference.
+    pub fn set_show_tps(show: bool) -> anyhow::Result<()> {
+        let mut cfg = Self::load_for_update()?;
+        cfg.display.show_tps = show;
+        cfg.save()?;
+        crate::logging::info(&format!("Saved display.show_tps to config: {}", show));
+        Ok(())
+    }
+
     /// Update the persisted pinned-todos preference.
     pub fn set_pin_todos(pin: bool) -> anyhow::Result<()> {
         let mut cfg = Self::load_for_update()?;
@@ -757,6 +782,27 @@ impl Config {
         }
         Ok(())
     }
+
+    /// Update the persisted theme preference and invalidate the config cache
+    /// so the new value is picked up immediately.
+    pub fn set_display_theme(theme: &str) -> anyhow::Result<()> {
+        let mut cfg = Self::load();
+        cfg.display.theme = theme.to_string();
+        cfg.save()?;
+        crate::logging::info(&format!("Saved display.theme to config: {}", theme));
+        // Invalidate the config cache so the new theme is read on next access.
+        crate::config::invalidate_config_cache();
+        Ok(())
+    }
+
+    /// Update the persisted memory sidecar model and invalidate the config cache.
+    pub fn set_memory_model(model: &str) -> anyhow::Result<()> {
+        let mut cfg = Self::load();
+        cfg.agents.memory_model = Some(model.to_string());
+        cfg.save()?;
+        crate::logging::info(&format!("Saved memory sidecar model: {}", model));
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -840,5 +886,173 @@ reasoning_effort = "max"
 
         assert!(error.to_string().contains("Failed to parse config file"));
         assert_eq!(std::fs::read_to_string(path).unwrap(), original);
+    }
+
+    #[test]
+    fn set_show_tps_persists_without_baking_env_overrides() {
+        let _lock = crate::storage::lock_test_env();
+        let home = tempfile::tempdir().unwrap();
+        let _home = EnvGuard::set("JCODE_HOME", home.path());
+        let path = home.path().join("config.toml");
+        std::fs::write(
+            &path,
+            "[display]\ntps_interval = \"total\"\ncompact_notifications = true\n",
+        )
+        .unwrap();
+
+        // A transient env override must not get baked into the file as a
+        // side effect of saving one preference.
+        let _env = EnvGuard::set("JCODE_COMPACT_NOTIFICATIONS", "off");
+        Config::set_show_tps(false).unwrap();
+
+        // Assert on the file itself: the env override is still active, so a
+        // load_strict()-style read would show `off` either way and could
+        // not distinguish a baked-in value from a transient override.
+        let saved = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            saved.contains("show_tps = false"),
+            "show_tps = false must persist, file: {saved}"
+        );
+        assert!(
+            saved.contains("compact_notifications = true"),
+            "the transient env override must not be baked into config.toml on save, file: {saved}"
+        );
+        assert!(
+            saved.contains("tps_interval = \"total\""),
+            "the pre-existing tps_interval preference must survive the save, file: {saved}"
+        );
+    }
+
+    #[test]
+    fn set_show_tps_accepts_lenient_bool_in_file_and_saves_plain_bool() {
+        let _lock = crate::storage::lock_test_env();
+        let home = tempfile::tempdir().unwrap();
+        let _home = EnvGuard::set("JCODE_HOME", home.path());
+        let path = home.path().join("config.toml");
+        // A lenient bool spelling must parse (lenient_bool_true), and the
+        // load-modify-save cycle must write a plain bool back while keeping
+        // unrelated preferences.
+        std::fs::write(
+            &path,
+            "[display]\nshow_tps = \"on\"\ntps_interval = \"total\"\ncompact_notifications = true\n",
+        )
+        .unwrap();
+
+        Config::set_show_tps(false).unwrap();
+
+        let saved = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            saved.contains("show_tps = false"),
+            "show_tps must be written as a plain bool, file: {saved}"
+        );
+        assert!(
+            !saved.contains("show_tps = \"on\""),
+            "the lenient spelling must be replaced by the saved value, file: {saved}"
+        );
+        assert!(
+            saved.contains("compact_notifications = true"),
+            "unrelated display preferences must survive the save, file: {saved}"
+        );
+        assert!(
+            saved.contains("tps_interval = \"total\""),
+            "the pre-existing tps_interval preference must survive the save, file: {saved}"
+        );
+    }
+
+    #[test]
+    fn set_tps_interval_does_not_bake_env_overrides_into_the_file() {
+        let _lock = crate::storage::lock_test_env();
+        let home = tempfile::tempdir().unwrap();
+        let _home = EnvGuard::set("JCODE_HOME", home.path());
+        let path = home.path().join("config.toml");
+        std::fs::write(
+            &path,
+            "[display]\nshow_tps = false\ncompact_notifications = true\n",
+        )
+        .unwrap();
+
+        // Transient env override: the file value must stay authoritative on disk.
+        let _env = EnvGuard::set("JCODE_COMPACT_NOTIFICATIONS", "off");
+        Config::set_tps_interval(crate::config::TpsIntervalMode::Total).unwrap();
+
+        // Assert on the file itself (see above for why not load_strict()).
+        let saved = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            saved.contains("tps_interval = \"total\""),
+            "the new tps_interval must persist, file: {saved}"
+        );
+        assert!(
+            saved.contains("show_tps = false"),
+            "the pre-existing show_tps preference must survive the save, file: {saved}"
+        );
+        assert!(
+            saved.contains("compact_notifications = true"),
+            "the transient env override must not be baked into the file by set_tps_interval, file: {saved}"
+        );
+    }
+
+    #[test]
+    fn provider_extra_body_effort_parses_from_user_toml() {
+        let _lock = crate::storage::lock_test_env();
+        let home = tempfile::tempdir().unwrap();
+        let _home = EnvGuard::set("JCODE_HOME", home.path());
+        let path = home.path().join("config.toml");
+        std::fs::write(
+            &path,
+            r#"
+[providers.llmg-coding]
+type = "openai-compatible"
+base_url = "https://llmg.example.com/v1"
+auth = "Bearer"
+api_key_env = "LLMG_API_KEY"
+supports_reasoning_effort = false
+
+[providers.llmg-coding.extra_body]
+reasoning_effort = "high"
+
+[[providers.llmg-coding.models]]
+id = "together_ai/revolut-ltd/glm-5-2-nvfp4"
+"#,
+        )
+        .unwrap();
+
+        let parsed = Config::load_strict().unwrap();
+        let profile = &parsed.providers["llmg-coding"];
+        assert_eq!(profile.supports_reasoning_effort, Some(false));
+        let extra = profile.extra_body.as_ref().expect("extra_body parsed");
+        assert_eq!(extra["reasoning_effort"], "high");
+    }
+
+    #[test]
+    fn provider_extra_body_nim_style_parses_from_user_toml() {
+        let _lock = crate::storage::lock_test_env();
+        let home = tempfile::tempdir().unwrap();
+        let _home = EnvGuard::set("JCODE_HOME", home.path());
+        let path = home.path().join("config.toml");
+        std::fs::write(
+            &path,
+            r#"
+[providers.nim-gw]
+type = "openai-compatible"
+base_url = "https://integrate.api.nvidia.com/v1"
+auth = "Bearer"
+api_key_env = "NIM_API_KEY"
+
+[providers.nim-gw.extra_body]
+[providers.nim-gw.extra_body.chat_template_kwargs]
+thinking = true
+reasoning_effort = "high"
+"#,
+        )
+        .unwrap();
+
+        let parsed = Config::load_strict().unwrap();
+        let extra = parsed.providers["nim-gw"]
+            .extra_body
+            .as_ref()
+            .expect("extra_body parsed");
+        let kwargs = &extra["chat_template_kwargs"];
+        assert_eq!(kwargs["thinking"], true);
+        assert_eq!(kwargs["reasoning_effort"], "high");
     }
 }

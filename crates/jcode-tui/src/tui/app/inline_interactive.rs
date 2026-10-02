@@ -39,6 +39,8 @@ const MODEL_PICKER_USAGE_FILE: &str = "model_picker_usage.json";
 const MODEL_PICKER_USAGE_VERSION: u8 = 1;
 const MODEL_PICKER_FAVORITES_FILE: &str = "model_picker_favorites.json";
 const MODEL_PICKER_FAVORITES_VERSION: u8 = 1;
+const MEMORY_MODEL_FILE: &str = "memory_model.json";
+const MEMORY_MODEL_VERSION: u8 = 1;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct RemoteModelCatalogCache {
@@ -78,6 +80,15 @@ struct ModelPickerFavoritesStore {
     favorites: HashSet<String>,
 }
 
+/// Persisted store for the globally marked memory model. Unlike favorites
+/// (a set), only one model is marked as the memory model at a time. New
+/// sessions inherit this as the initial `session.memory_model`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct MemoryModelStore {
+    version: u8,
+    model: Option<String>,
+}
+
 fn model_picker_usage_path() -> Option<std::path::PathBuf> {
     if crate::tui::is_ssh_remote() {
         return None;
@@ -94,6 +105,70 @@ fn model_picker_favorites_path() -> Option<std::path::PathBuf> {
     crate::storage::app_config_dir()
         .ok()
         .map(|dir| dir.join(MODEL_PICKER_FAVORITES_FILE))
+}
+
+fn memory_model_path() -> Option<std::path::PathBuf> {
+    crate::storage::app_config_dir()
+        .ok()
+        .map(|dir| dir.join(MEMORY_MODEL_FILE))
+}
+
+fn load_memory_model_store() -> MemoryModelStore {
+    let Some(path) = memory_model_path() else {
+        return MemoryModelStore::default();
+    };
+    match std::fs::read_to_string(&path) {
+        Ok(contents) => {
+            let mut store: MemoryModelStore = serde_json::from_str(&contents).unwrap_or_default();
+            store.version = MEMORY_MODEL_VERSION;
+            // Clean empty/null entries.
+            if store
+                .model
+                .as_deref()
+                .map(str::trim)
+                .map(str::is_empty)
+                .unwrap_or(true)
+            {
+                store.model = None;
+            }
+            store
+        }
+        Err(_) => MemoryModelStore::default(),
+    }
+}
+
+fn save_memory_model_store(store: &MemoryModelStore) {
+    let Some(path) = memory_model_path() else {
+        return;
+    };
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let mut store = store.clone();
+    store.version = MEMORY_MODEL_VERSION;
+    if let Ok(json) = serde_json::to_string_pretty(&store) {
+        let _ = std::fs::write(&path, json);
+    }
+}
+
+/// Check whether a model entry matches the persisted memory model.
+/// The memory model is stored as a base model name (no effort suffix).
+fn model_is_memory_model(store: &MemoryModelStore, name: &str, effort: Option<&str>) -> bool {
+    let Some(memory_model) = &store.model else {
+        return false;
+    };
+    // The memory model is stored as a base name (e.g. "gpt-5.6-luna").
+    // For entries with an effort suffix, the display name is "model (effort)".
+    // We match on the base name only, so all effort variants of the same base
+    // model show the memory marker.
+    let base_name = name.trim();
+    if let Some(eff) = effort {
+        let display_with_effort = format!("{} ({})", base_name, eff);
+        // The memory model is a base name without effort, so match the base.
+        memory_model == base_name || memory_model == &display_with_effort
+    } else {
+        memory_model == base_name
+    }
 }
 
 #[path = "inline_interactive_placeholder_routes.rs"]
@@ -618,6 +693,7 @@ impl App {
                 is_current: configured.is_none(),
                 is_default: false,
                 is_favorite: false,
+                is_memory_model: false,
                 recommended: false,
                 recommendation_rank: usize::MAX,
                 usage_score: 0,
@@ -792,6 +868,19 @@ impl App {
                 false,
                 false,
             );
+            return;
+        }
+        // Standalone runtimes like Cursor ACP advertise foundation models from
+        // multiple vendors (e.g. `claude-opus-5[...]`, `gpt-5.3-codex[...]`,
+        // `gemini-3.1-pro[]`) under their own provider label. The prefix-based
+        // reclassification below would mistake those for local Anthropic/OpenAI
+        // Gemini routes and synthesize duplicate credential rows. The server-sent
+        // routes are authoritative for these runtimes, so skip augmentation.
+        let provider_is_standalone_acp = remote_provider_name.is_some_and(|name| {
+            name.eq_ignore_ascii_case(crate::provider::external::CURSOR_ACP_RUNTIME)
+                || name.eq_ignore_ascii_case("Cursor ACP")
+        });
+        if provider_is_standalone_acp {
             return;
         }
         let poisoned_by_jcode_subscription = !routes.is_empty()
@@ -1208,11 +1297,16 @@ impl App {
         } else {
             self.provider.reasoning_effort()
         };
-        let available_efforts = if self.is_remote {
-            inferred_reasoning_efforts(
+        let available_efforts_storage;
+        let available_efforts: Vec<&str> = if self.is_remote {
+            available_efforts_storage = remote_reasoning_efforts(
                 self.remote_provider_name.as_deref(),
                 self.remote_provider_model.as_deref(),
-            )
+            );
+            available_efforts_storage
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<&str>>()
         } else {
             self.provider.available_efforts()
         };
@@ -1343,7 +1437,7 @@ impl App {
             entries: vec![PickerEntry {
                 name: model_label,
                 options: vec![PickerOption {
-                    provider: self.provider.name().to_string(),
+                    provider: self.provider.display_name(),
                     api_method: "current".to_string(),
                     available: true,
                     detail: "updating model list…".to_string(),
@@ -1354,6 +1448,7 @@ impl App {
                 is_current: true,
                 is_default: false,
                 is_favorite: false,
+                is_memory_model: false,
                 recommended: false,
                 recommendation_rank: usize::MAX,
                 usage_score: 0,
@@ -1455,11 +1550,16 @@ impl App {
         } else {
             self.provider.reasoning_effort()
         };
-        let available_efforts = if self.is_remote {
-            inferred_reasoning_efforts(
+        let available_efforts_storage;
+        let available_efforts: Vec<&str> = if self.is_remote {
+            available_efforts_storage = remote_reasoning_efforts(
                 self.remote_provider_name.as_deref(),
                 self.remote_provider_model.as_deref(),
-            )
+            );
+            available_efforts_storage
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<&str>>()
         } else {
             self.provider.available_efforts()
         };
@@ -1690,6 +1790,7 @@ impl App {
         let entries_started = std::time::Instant::now();
         let usage_store = load_model_picker_usage_store();
         let favorites_store = load_model_picker_favorites_store();
+        let memory_store = load_memory_model_store();
         let mut entries: Vec<PickerEntry> = Vec::new();
         for name in &model_order {
             let mut entry_routes = model_options.remove(name).unwrap_or_default();
@@ -1801,6 +1902,11 @@ impl App {
                                 route,
                                 Some(effort),
                             ),
+                            is_memory_model: model_is_memory_model(
+                                &memory_store,
+                                name,
+                                Some(effort),
+                            ),
                         });
                     }
                 }
@@ -1833,6 +1939,7 @@ impl App {
                         effort: None,
                         is_default,
                         is_favorite: model_picker_is_favorite(&favorites_store, name, &route, None),
+                        is_memory_model: model_is_memory_model(&memory_store, name, None),
                     });
                 }
             }
@@ -2102,11 +2209,16 @@ impl App {
         } else {
             self.provider.reasoning_effort()
         };
-        let available_efforts = if self.is_remote {
-            inferred_reasoning_efforts(
+        let available_efforts_storage;
+        let available_efforts: Vec<&str> = if self.is_remote {
+            available_efforts_storage = remote_reasoning_efforts(
                 self.remote_provider_name.as_deref(),
                 self.remote_provider_model.as_deref(),
-            )
+            );
+            available_efforts_storage
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<&str>>()
         } else {
             self.provider.available_efforts()
         };
@@ -2261,17 +2373,32 @@ impl App {
         if !active {
             return Ok(false);
         }
-        // Use Ctrl+O (set default) and Ctrl+N (toggle favorite) so the picker
-        // preview no longer steals Ctrl+B / Ctrl+F / Alt+F, which are the tmux
-        // prefix and readline word-navigation keys users rely on while editing
-        // the `/model` command line. Cycling favorites stays on Shift+Tab.
+        // Use Ctrl+O (set default), Ctrl+N (toggle favorite), Alt+M (mark memory
+        // model), and Alt+S (set sidecar) so the picker preview no longer steals
+        // Ctrl+B / Ctrl+F / Alt+F, which are the tmux prefix and readline
+        // word-navigation keys users rely on while editing the `/model` command
+        // line. Cycling favorites stays on Shift+Tab. Memory-model marking uses
+        // Alt+M: in legacy terminal encoding (without the kitty keyboard
+        // protocol) Ctrl+M sends the same byte as Enter (\r), so it can never be
+        // distinguished from a plain confirm press.
         let is_default =
             modifiers.contains(KeyModifiers::CONTROL) && key_char_eq_ignore_ascii_case(code, 'o');
         let is_favorite =
             modifiers.contains(KeyModifiers::CONTROL) && key_char_eq_ignore_ascii_case(code, 'n');
+        // macOS terminals with the default Option behavior insert Option+M as
+        // `µ` (no ALT modifier); map it back so the advertised Alt+M works the
+        // same way the global side-panel toggle does.
+        let is_memory = (modifiers.contains(KeyModifiers::ALT)
+            && key_char_eq_ignore_ascii_case(code, 'm'))
+            || crate::tui::keybind::shortcut_char_for_macos_option_key(code, modifiers)
+                == Some('m');
+        let is_sidecar =
+            modifiers.contains(KeyModifiers::ALT) && key_char_eq_ignore_ascii_case(code, 's');
+        // Ctrl+S is reserved for the swarm model sub-picker
+        // (fix/swarm-model-picker) so the chords never collide.
         let is_swarm =
             modifiers.contains(KeyModifiers::CONTROL) && key_char_eq_ignore_ascii_case(code, 's');
-        if is_default || is_favorite {
+        if is_default || is_favorite || is_sidecar || is_memory {
             self.handle_inline_interactive_key(code, modifiers)?;
             return Ok(true);
         }
@@ -3224,6 +3351,83 @@ impl App {
         self.set_status_notice(format!("{} {}", action, entry_name));
     }
 
+    fn toggle_selected_model_memory(&mut self) {
+        let Some((entry_name, is_memory_model, store)) = (|| {
+            let picker = self.inline_interactive_state.as_mut()?;
+            if !picker_is_runtime_model_picker(picker) || picker.filtered.is_empty() {
+                return None;
+            }
+            let idx = picker.filtered[picker.selected];
+            let entry = picker.entries.get_mut(idx)?;
+            if !matches!(entry.action, PickerAction::Model) {
+                return None;
+            }
+            let base_name = model_entry_base_name(entry);
+            let mut store = load_memory_model_store();
+            store.version = MEMORY_MODEL_VERSION;
+            // Toggle: if this model is already the memory model, unmark it.
+            // Otherwise, set it as the memory model (replacing any previous).
+            let is_memory_model = if store.model.as_deref() == Some(base_name.as_str()) {
+                store.model = None;
+                false
+            } else {
+                store.model = Some(base_name.clone());
+                true
+            };
+            entry.is_memory_model = is_memory_model;
+            Some((entry.name.clone(), is_memory_model, store))
+        })() else {
+            return;
+        };
+        save_memory_model_store(&store);
+        self.invalidate_model_picker_cache();
+        let action = if is_memory_model {
+            "Marked as memory model"
+        } else {
+            "Unmarked memory model"
+        };
+        self.set_status_notice(format!("{}: {}", action, entry_name));
+    }
+
+    /// Set the currently selected model as the memory sidecar model.
+    /// Persists to config so the sidecar uses it on next extraction.
+    pub(crate) fn set_selected_model_as_sidecar(&mut self) {
+        let Some(model_spec) = (|| {
+            let picker = self.inline_interactive_state.as_ref()?;
+            if !picker_is_runtime_model_picker(picker) || picker.filtered.is_empty() {
+                return None;
+            }
+            let idx = picker.filtered[picker.selected];
+            let entry = picker.entries.get(idx)?;
+            if !matches!(entry.action, PickerAction::Model) {
+                return None;
+            }
+            let bare_name = model_entry_base_name(entry);
+            let route = entry.options.get(entry.selected_option)?;
+            let selection = crate::provider::MultiProvider::default_model_selection_from_route(
+                &bare_name,
+                &route.api_method,
+                &route.provider,
+            );
+            Some(selection.model_spec)
+        })() else {
+            return;
+        };
+
+        match crate::config::Config::set_memory_model(&model_spec) {
+            Ok(()) => {
+                self.set_status_notice(format!("Sidecar → {}", model_spec));
+                self.push_display_message(DisplayMessage::system(format!(
+                    "Set memory sidecar model to {}. Memory extractions will use this model.",
+                    model_spec
+                )));
+            }
+            Err(e) => {
+                self.set_status_notice(format!("Failed to set sidecar: {}", e));
+            }
+        }
+    }
+
     fn cycle_selected_model_favorite(&mut self) {
         let selected_name = (|| {
             let picker = self.inline_interactive_state.as_mut()?;
@@ -3530,6 +3734,25 @@ impl App {
                 && key_char_eq_ignore_ascii_case(code, 'n') =>
             {
                 self.toggle_selected_model_favorite();
+            }
+            code if (modifiers.contains(KeyModifiers::ALT)
+                && key_char_eq_ignore_ascii_case(code, 's')) =>
+            {
+                self.set_selected_model_as_sidecar();
+            }
+            code if (modifiers.contains(KeyModifiers::ALT)
+                && key_char_eq_ignore_ascii_case(code, 'm'))
+                || crate::tui::keybind::shortcut_char_for_macos_option_key(code, modifiers)
+                    == Some('m') =>
+            {
+                // Alt+M marks the highlighted model as the memory model.
+                // Not Ctrl+M: without the kitty keyboard protocol, terminals
+                // deliver Ctrl+M as Enter (\r), indistinguishable from confirm.
+                // Alt+M elsewhere toggles the side panel, but the picker
+                // dispatches before that global handler, so contexts never mix.
+                // macOS default Option behavior inserts `µ` (no ALT modifier);
+                // the fallback maps it back, matching the global toggle.
+                self.toggle_selected_model_memory();
             }
             code if modifiers.contains(KeyModifiers::CONTROL)
                 && key_char_eq_ignore_ascii_case(code, 's') =>
@@ -4069,6 +4292,7 @@ mod tests {
             is_current: false,
             is_default: false,
             is_favorite: false,
+            is_memory_model: false,
             recommended: false,
             recommendation_rank: usize::MAX,
             usage_score,

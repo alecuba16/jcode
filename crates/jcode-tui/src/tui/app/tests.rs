@@ -27,6 +27,7 @@ include!("tests/remote_events_reload_03/part_01.rs");
 include!("tests/remote_events_reload_03/part_02.rs");
 include!("tests/remote_events_reload_04.rs");
 include!("tests/remote_events_reload_05.rs");
+include!("tests/tps_interval_lifecycle.rs");
 include!("tests/swarm_plan_no_inline_graph.rs");
 include!("tests/remote_model_picker_hotkeys.rs");
 include!("tests/scroll_copy_01/part_01.rs");
@@ -57,12 +58,15 @@ include!("tests/issue_998_model_status_overlay.rs");
 include!("tests/spinner_slash_commands.rs");
 include!("tests/command_suggestions_cache.rs");
 include!("tests/merge_command.rs");
+include!("tests/file_mention_popover.rs");
 include!("tests/skill_invocation_multi_word.rs");
 include!("tests/slash_command_boundaries.rs");
 include!("tests/prompt_history_cross_session.rs");
 include!("tests/ssh_remote.rs");
 include!("tests/model_persist_config.rs");
 include!("tests/skill_startup.rs");
+include!("tests/mcp_server_names.rs");
+include!("tests/auto_retry_config.rs");
 #[test]
 fn kv_cache_signature_prefix_match_allows_appended_messages() {
     let baseline_messages = vec![
@@ -1194,6 +1198,7 @@ fn stale_server_history_is_deferred_before_remote_state_is_applied() {
                 tool_data: None,
             }],
             images: vec![],
+            applets: Default::default(),
             provider_name: Some("stale-provider".to_string()),
             provider_model: Some("stale-model".to_string()),
             subagent_model: Some("stale-subagent".to_string()),
@@ -1223,7 +1228,6 @@ fn stale_server_history_is_deferred_before_remote_state_is_applied() {
             compaction_mode: crate::config::CompactionMode::Reactive,
             activity: None,
             side_panel: crate::side_panel::SidePanelSnapshot::default(),
-            applets: Default::default(),
         },
         &mut remote,
     );
@@ -1286,6 +1290,7 @@ fn deferred_stale_server_history_captures_session_id_for_reload_handoff() {
                 tool_data: None,
             }],
             images: vec![],
+            applets: Default::default(),
             provider_name: Some("stale-provider".to_string()),
             provider_model: Some("stale-model".to_string()),
             subagent_model: None,
@@ -1317,7 +1322,6 @@ fn deferred_stale_server_history_captures_session_id_for_reload_handoff() {
             compaction_mode: crate::config::CompactionMode::Reactive,
             activity: None,
             side_panel: crate::side_panel::SidePanelSnapshot::default(),
-            applets: Default::default(),
         },
         &mut remote,
     );
@@ -1370,6 +1374,7 @@ fn ancient_server_history_is_deferred_via_client_side_release_check() {
                 tool_data: None,
             }],
             images: vec![],
+            applets: Default::default(),
             provider_name: Some("ancient-provider".to_string()),
             provider_model: Some("ancient-model".to_string()),
             subagent_model: Some("ancient-subagent".to_string()),
@@ -1401,7 +1406,6 @@ fn ancient_server_history_is_deferred_via_client_side_release_check() {
             compaction_mode: crate::config::CompactionMode::Reactive,
             activity: None,
             side_panel: crate::side_panel::SidePanelSnapshot::default(),
-            applets: Default::default(),
         },
         &mut remote,
     );
@@ -1453,6 +1457,7 @@ fn older_server_reporting_no_update_is_still_deferred_via_client_check() {
             session_id: "session_from_old_server".to_string(),
             messages: vec![],
             images: vec![],
+            applets: Default::default(),
             provider_name: Some("p".to_string()),
             provider_model: Some("m".to_string()),
             subagent_model: None,
@@ -1484,7 +1489,6 @@ fn older_server_reporting_no_update_is_still_deferred_via_client_check() {
             compaction_mode: crate::config::CompactionMode::Reactive,
             activity: None,
             side_panel: crate::side_panel::SidePanelSnapshot::default(),
-            applets: Default::default(),
         },
         &mut remote,
     );
@@ -1558,6 +1562,7 @@ fn older_server_history_repairs_stale_shared_server_channel_end_to_end() {
             session_id: "session_from_old_server".to_string(),
             messages: vec![],
             images: vec![],
+            applets: Default::default(),
             provider_name: Some("p".to_string()),
             provider_model: Some("m".to_string()),
             subagent_model: None,
@@ -1587,7 +1592,6 @@ fn older_server_history_repairs_stale_shared_server_channel_end_to_end() {
             compaction_mode: crate::config::CompactionMode::Reactive,
             activity: None,
             side_panel: crate::side_panel::SidePanelSnapshot::default(),
-            applets: Default::default(),
         },
         &mut remote,
     );
@@ -1635,6 +1639,7 @@ fn current_release_server_history_is_not_deferred_by_client_check() {
             session_id: "session_current".to_string(),
             messages: vec![],
             images: vec![],
+            applets: Default::default(),
             provider_name: Some("p".to_string()),
             provider_model: Some("m".to_string()),
             subagent_model: None,
@@ -1664,7 +1669,6 @@ fn current_release_server_history_is_not_deferred_by_client_check() {
             compaction_mode: crate::config::CompactionMode::Reactive,
             activity: None,
             side_panel: crate::side_panel::SidePanelSnapshot::default(),
-            applets: Default::default(),
         },
         &mut remote,
     );
@@ -2101,4 +2105,199 @@ fn cache_miss_requires_explicit_read_telemetry_even_with_writes() {
     app.streaming.streaming_cache_read_tokens = Some(0);
     assert!(app.record_completed_stream_cache_usage());
     assert_eq!(app.kv_cache.kv_cache_miss_samples.len(), 1);
+}
+include!("tests/remote_reasoning_efforts.rs");
+
+// extra_body effort display: a provider whose switchable /effort is off but
+// whose config injects a fixed effort must still show it in the info widget.
+// Mirrors the OpenRouter extra_body fallback via the trait hook.
+#[derive(Clone)]
+struct ExtraBodyEffortWidgetProvider;
+
+#[async_trait::async_trait]
+impl Provider for ExtraBodyEffortWidgetProvider {
+    async fn complete(
+        &self,
+        _messages: &[Message],
+        _tools: &[crate::message::ToolDefinition],
+        _system: &str,
+        _resume_session_id: Option<&str>,
+    ) -> Result<crate::provider::EventStream> {
+        unimplemented!("Mock provider")
+    }
+
+    fn name(&self) -> &str {
+        "mock-extra-body"
+    }
+
+    fn fork(&self) -> Arc<dyn Provider> {
+        Arc::new(self.clone())
+    }
+
+    fn model(&self) -> String {
+        "glm-5-2-nvfp4".to_string()
+    }
+
+    fn available_efforts(&self) -> Vec<&'static str> {
+        Vec::new()
+    }
+
+    fn reasoning_effort(&self) -> Option<String> {
+        None
+    }
+
+    fn effective_reasoning_effort(&self) -> Option<String> {
+        Some("high".to_string())
+    }
+}
+
+#[test]
+fn info_widget_surfaces_extra_body_effort_when_switching_off() {
+    with_temp_jcode_home(|| {
+        ensure_test_jcode_home_if_unset();
+        let provider: Arc<dyn Provider> = Arc::new(ExtraBodyEffortWidgetProvider);
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let registry = rt.block_on(crate::tool::Registry::new(provider.clone()));
+        let mut app = App::new_for_test_harness(provider, registry);
+        app.queue_mode = false;
+
+        use crate::tui::TuiState;
+        let data = app.info_widget_data();
+        assert_eq!(
+            data.reasoning_effort.as_deref(),
+            Some("high"),
+            "info widget must show the extra_body-injected effort"
+        );
+
+        // /context must report the same value for local sessions.
+        app.input = "/context".to_string();
+        app.submit_input();
+        let context_out = app
+            .display_messages()
+            .last()
+            .expect("/context must produce a report");
+        assert!(
+            context_out.content.contains("- reasoning effort: high"),
+            "/context must surface the extra_body effort, got: {}",
+            context_out.content
+        );
+        assert!(
+            !context_out.content.contains("- reasoning effort: default"),
+            "/context must not fall back to default while a fixed effort exists, got: {}",
+            context_out.content
+        );
+    });
+}
+
+#[test]
+fn effort_command_shows_fixed_effort_when_switching_unavailable() {
+    with_temp_jcode_home(|| {
+        ensure_test_jcode_home_if_unset();
+        let provider: Arc<dyn Provider> = Arc::new(ExtraBodyEffortWidgetProvider);
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let registry = rt.block_on(crate::tool::Registry::new(provider.clone()));
+        let mut app = App::new_for_test_harness(provider, registry);
+        app.queue_mode = false;
+
+        app.input = "/effort".to_string();
+        app.submit_input();
+
+        let msg = app.display_messages().last().expect("/effort must respond");
+        assert!(
+            msg.content.contains("not switchable"),
+            "/effort must explain switching is unavailable, got: {}",
+            msg.content
+        );
+        assert!(
+            msg.content.contains("Effort: High"),
+            "/effort must show the fixed extra_body effort, got: {}",
+            msg.content
+        );
+        assert!(
+            !msg.content.contains("not available"),
+            "must not claim effort is unknown when a fixed effort exists, got: {}",
+            msg.content
+        );
+    });
+}
+
+#[derive(Clone)]
+struct NoEffortWidgetProvider;
+
+#[async_trait::async_trait]
+impl Provider for NoEffortWidgetProvider {
+    async fn complete(
+        &self,
+        _messages: &[Message],
+        _tools: &[crate::message::ToolDefinition],
+        _system: &str,
+        _resume_session_id: Option<&str>,
+    ) -> Result<crate::provider::EventStream> {
+        unimplemented!("Mock provider")
+    }
+
+    fn name(&self) -> &str {
+        "mock-no-effort"
+    }
+
+    fn fork(&self) -> Arc<dyn Provider> {
+        Arc::new(self.clone())
+    }
+
+    fn model(&self) -> String {
+        "plain-model".to_string()
+    }
+
+    fn available_efforts(&self) -> Vec<&'static str> {
+        Vec::new()
+    }
+}
+
+#[test]
+fn effort_command_keeps_not_available_without_any_effort() {
+    with_temp_jcode_home(|| {
+        ensure_test_jcode_home_if_unset();
+        let provider: Arc<dyn Provider> = Arc::new(NoEffortWidgetProvider);
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let registry = rt.block_on(crate::tool::Registry::new(provider.clone()));
+        let mut app = App::new_for_test_harness(provider, registry);
+        app.queue_mode = false;
+
+        app.input = "/effort".to_string();
+        app.submit_input();
+
+        let msg = app.display_messages().last().expect("/effort must respond");
+        assert!(
+            msg.content.contains("Reasoning effort not available"),
+            "without any effort the original message must stay, got: {}",
+            msg.content
+        );
+    });
+}
+
+#[test]
+fn effort_set_command_still_rejects_non_switchable_provider() {
+    with_temp_jcode_home(|| {
+        ensure_test_jcode_home_if_unset();
+        let provider: Arc<dyn Provider> = Arc::new(ExtraBodyEffortWidgetProvider);
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let registry = rt.block_on(crate::tool::Registry::new(provider.clone()));
+        let mut app = App::new_for_test_harness(provider, registry);
+        app.queue_mode = false;
+
+        // Attempting to set an effort must keep failing: extra_body display
+        // support must not accidentally enable switching.
+        app.input = "/effort low".to_string();
+        app.submit_input();
+
+        let msg = app
+            .display_messages()
+            .last()
+            .expect("/effort <value> must respond");
+        assert!(
+            msg.content.contains("Failed to set effort"),
+            "switching must stay rejected for extra_body-only providers, got: {}",
+            msg.content
+        );
+    });
 }

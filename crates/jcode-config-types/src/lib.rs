@@ -1,7 +1,71 @@
 use serde::{Deserialize, Serialize};
 
+pub const MIN_AUTO_RETRY_BASE_DELAY_SECS: u64 = 1;
+pub const MAX_AUTO_RETRY_BACKOFF_SECS: u64 = 300;
+
+pub fn clamp_auto_retry_base_delay_secs(value: u64) -> u64 {
+    value.max(MIN_AUTO_RETRY_BASE_DELAY_SECS)
+}
+
+fn default_auto_retry_base_delay_secs() -> u64 {
+    2
+}
+
+fn deserialize_auto_retry_base_delay_secs<'de, D>(deserializer: D) -> Result<u64, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = u64::deserialize(deserializer)?;
+    Ok(clamp_auto_retry_base_delay_secs(value))
+}
+
+fn deserialize_optional_auto_retry_base_delay_secs<'de, D>(
+    deserializer: D,
+) -> Result<Option<u64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<u64>::deserialize(deserializer)?;
+    Ok(value.map(clamp_auto_retry_base_delay_secs))
+}
+
 mod display;
 pub use display::DisplayConfig;
+
+/// Interval used for tokens-per-second measurements.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TpsIntervalMode {
+    /// Count only model generation time.
+    #[default]
+    Generation,
+    /// Count the full turn, including tools and network waits.
+    Total,
+}
+
+impl TpsIntervalMode {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Generation => "generation",
+            Self::Total => "total",
+        }
+    }
+
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Generation => "Generation",
+            Self::Total => "Total",
+        }
+    }
+
+    pub fn parse(input: &str) -> Option<Self> {
+        match input.trim().to_ascii_lowercase().as_str() {
+            "generation" | "gen" => Some(Self::Generation),
+            "total" | "wall" | "wall-clock" | "wallclock" => Some(Self::Total),
+            _ => None,
+        }
+    }
+}
 pub mod keybindings;
 mod serde_lenient;
 pub use keybindings::{
@@ -439,7 +503,154 @@ pub enum NamedProviderAuth {
     None,
 }
 
+/// Per-model cost configuration for custom OpenAI-compatible providers.
+/// Prices are in USD per million tokens, matching the opencode `cost` object.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(default)]
+pub struct ModelCostConfig {
+    /// USD per million input tokens.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input: Option<f64>,
+    /// USD per million output tokens.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output: Option<f64>,
+    /// USD per million cache-read tokens.
+    #[serde(default, alias = "cache-read", skip_serializing_if = "Option::is_none")]
+    pub cache_read: Option<f64>,
+    /// USD per million cache-write tokens.
+    #[serde(
+        default,
+        alias = "cache-write",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub cache_write: Option<f64>,
+}
+
+/// One rung of a per-model reasoning-effort map. A rung either forwards a
+/// concrete wire value (`reasoning_effort = "..."`) or is disabled so the
+/// effort picker hides it and `/effort` rejects it, mirroring opencode's
+/// per-effort `{ reasoningEffort }` / `{ disabled }` shapes.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(default, deny_unknown_fields)]
+pub struct ReasoningEffortRungConfig {
+    /// Wire value sent as the OpenAI-compatible `reasoning_effort` request
+    /// field when this rung is selected. When omitted, the rung's key is sent
+    /// as-is (identity mapping).
+    #[serde(
+        rename = "reasoningEffort",
+        alias = "reasoning_effort",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub reasoning_effort: Option<String>,
+    /// Hide this rung from the effort picker and reject selecting it via
+    /// `/effort`, opencode-style.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub disabled: bool,
+}
+
+/// User-facing effort rungs that a reasoning map may configure. The keys are
+/// the ladder shown in `/effort`; wire values can be any string the endpoint
+/// accepts.
+pub const REASONING_EFFORT_MAP_KEYS: &[&str] =
+    &["none", "minimal", "low", "medium", "high", "xhigh", "max"];
+
+/// Per-model reasoning-effort map for custom OpenAI-compatible providers.
+/// Mirrors opencode's per-model reasoning effort mapping: each user-facing
+/// effort rung (`none`, `low`, `high`, `xhigh`, ...) can be mapped to the
+/// concrete wire value the endpoint expects, or disabled entirely.
+///
+/// Example (`config.toml`):
+/// ```toml
+/// [[providers.gateway.models]]
+/// id = "my-model"
+/// reasoning = true
+/// [providers.gateway.models.reasoning_map]
+/// xhigh = { reasoningEffort = "xhigh" }
+/// high   = { reasoningEffort = "high" }
+/// none   = { reasoningEffort = "none" }
+/// medium = { disabled = true }
+/// low    = { disabled = true }
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(default, deny_unknown_fields)]
+pub struct ReasoningEffortMapConfig {
+    pub none: Option<ReasoningEffortRungConfig>,
+    pub minimal: Option<ReasoningEffortRungConfig>,
+    pub low: Option<ReasoningEffortRungConfig>,
+    pub medium: Option<ReasoningEffortRungConfig>,
+    pub high: Option<ReasoningEffortRungConfig>,
+    pub xhigh: Option<ReasoningEffortRungConfig>,
+    pub max: Option<ReasoningEffortRungConfig>,
+}
+
+impl ReasoningEffortMapConfig {
+    /// Configured rungs in ladder order.
+    pub fn rungs(&self) -> impl Iterator<Item = (&'static str, &ReasoningEffortRungConfig)> {
+        let candidates: [(&'static str, &Option<ReasoningEffortRungConfig>); 7] = [
+            ("none", &self.none),
+            ("minimal", &self.minimal),
+            ("low", &self.low),
+            ("medium", &self.medium),
+            ("high", &self.high),
+            ("xhigh", &self.xhigh),
+            ("max", &self.max),
+        ];
+        candidates
+            .into_iter()
+            .filter_map(|(key, rung)| rung.as_ref().map(|rung| (key, rung)))
+    }
+
+    /// The configured rung entry for a user-facing rung key, if listed.
+    pub fn rung(&self, rung: &str) -> Option<&ReasoningEffortRungConfig> {
+        match rung {
+            "none" => self.none.as_ref(),
+            "minimal" => self.minimal.as_ref(),
+            "low" => self.low.as_ref(),
+            "medium" => self.medium.as_ref(),
+            "high" => self.high.as_ref(),
+            "xhigh" => self.xhigh.as_ref(),
+            "max" => self.max.as_ref(),
+            _ => None,
+        }
+    }
+
+    /// True when the rung is explicitly configured as disabled.
+    pub fn is_disabled(&self, rung: &str) -> bool {
+        self.rung(rung).is_some_and(|config| config.disabled)
+    }
+
+    /// True when no rung is configured.
+    pub fn is_empty(&self) -> bool {
+        self.none.is_none()
+            && self.minimal.is_none()
+            && self.low.is_none()
+            && self.medium.is_none()
+            && self.high.is_none()
+            && self.xhigh.is_none()
+            && self.max.is_none()
+    }
+
+    /// Resolve a user-facing rung to its wire value, or `None` when the rung
+    /// is disabled or not listed in the map (callers decide the fallback for
+    /// unlisted rungs; the default is identity mapping).
+    pub fn resolve(&self, rung: &str) -> Option<String> {
+        let rung_config = self.rung(rung)?;
+        if rung_config.disabled {
+            return None;
+        }
+        Some(
+            rung_config
+                .reasoning_effort
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .unwrap_or(rung)
+                .to_string(),
+        )
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(default)]
 pub struct NamedProviderModelConfig {
     pub id: String,
@@ -455,6 +666,10 @@ pub struct NamedProviderModelConfig {
         skip_serializing_if = "Option::is_none"
     )]
     pub reasoning_effort: Option<String>,
+    /// Human-friendly display name shown in the `/model` picker instead of the
+    /// raw model id. Mirrors opencode's per-model `name` field.
+    #[serde(default, alias = "name", skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
     #[serde(
         default,
         alias = "context_limit",
@@ -464,8 +679,31 @@ pub struct NamedProviderModelConfig {
         skip_serializing_if = "Option::is_none"
     )]
     pub context_window: Option<usize>,
+    /// Maximum output tokens the model can generate. Mirrors opencode's
+    /// `limit.output`. When unset, jcode uses its default max-tokens behavior.
+    #[serde(
+        default,
+        alias = "output_limit",
+        alias = "max_output_tokens",
+        alias = "max-output-tokens",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub max_output_tokens: Option<usize>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub input: Vec<String>,
+    /// Per-model pricing in USD per million tokens. Overrides models.dev catalog
+    /// pricing for custom/gateway models. Mirrors opencode's per-model `cost`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost: Option<ModelCostConfig>,
+    /// Per-model reasoning-effort mapping (opencode parity). Keys are the
+    /// user-facing effort rungs; values map them to concrete wire values or
+    /// disable them.
+    #[serde(
+        default,
+        alias = "reasoning-map",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub reasoning_map: Option<ReasoningEffortMapConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -473,13 +711,23 @@ pub struct NamedProviderModelConfig {
 pub struct NamedProviderConfig {
     #[serde(rename = "type")]
     pub provider_type: NamedProviderType,
+    /// Human-friendly display name shown in the `/model` picker for this
+    /// provider profile. When unset, the profile key (the `[providers.<key>]`
+    /// section name) is used. Mirrors opencode's provider-level `name` field.
+    #[serde(default, alias = "name", skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
     pub base_url: String,
     pub api: Option<String>,
     pub auth: NamedProviderAuth,
     pub auth_header: Option<String>,
     /// Extra HTTP headers sent with every request to this provider.
+    /// Applied after jcode's own headers, overriding any same-named header.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub headers: std::collections::BTreeMap<String, String>,
+    /// Override the `User-Agent` header for requests to this provider.
+    /// Takes precedence over the global `[provider].user_agent` value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_agent: Option<String>,
     pub api_key_env: Option<String>,
     pub api_key: Option<String>,
     pub env_file: Option<String>,
@@ -516,17 +764,36 @@ pub struct NamedProviderConfig {
     /// provider/model capability settings continue to work.
     #[serde(default, alias = "disable-reasoning-heuristics")]
     pub disable_reasoning_heuristics: bool,
+    /// Per-provider override for `[provider] auto_retry_base_delay_secs`.
+    /// When unset, the global value is used. Lets you be gentler on a shared
+    /// gateway that returns 429 without retry-after.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_auto_retry_base_delay_secs",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub auto_retry_base_delay_secs: Option<u64>,
+    /// Per-provider override for `[provider] auto_retry_enabled`.
+    /// When unset, the global value is used.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_retry_enabled: Option<bool>,
+    /// Per-provider override for `[provider] auto_retry_max_attempts`.
+    /// When unset, the global value is used.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_retry_max_attempts: Option<u8>,
 }
 
 impl Default for NamedProviderConfig {
     fn default() -> Self {
         Self {
             provider_type: NamedProviderType::OpenAiCompatible,
+            display_name: None,
             base_url: String::new(),
             api: None,
             auth: NamedProviderAuth::Bearer,
             auth_header: None,
             headers: std::collections::BTreeMap::new(),
+            user_agent: None,
             api_key_env: None,
             api_key: None,
             env_file: None,
@@ -539,6 +806,9 @@ impl Default for NamedProviderConfig {
             extra_body: None,
             supports_reasoning_effort: None,
             disable_reasoning_heuristics: false,
+            auto_retry_base_delay_secs: None,
+            auto_retry_enabled: None,
+            auto_retry_max_attempts: None,
         }
     }
 }
@@ -596,7 +866,43 @@ pub struct AgentsConfig {
     #[serde(default = "default_memory_jev_threshold")]
     pub memory_jev_threshold: f32,
     /// Optional model override for memory extraction only, never recall.
+    ///
+    /// When `memory_sidecar_backend` is unset ("auto"), this is only used for
+    /// OpenAI or Claude models; any other value falls back to auto-select. When
+    /// `memory_sidecar_backend = "provider"`, this model is passed to the active
+    /// provider via `set_model` before `complete_simple`, so the sidecar uses the
+    /// model you specify instead of the provider's default.
     pub memory_model: Option<String>,
+    /// Explicit backend selection for the memory sidecar.
+    ///
+    /// - `"auto"` (default): auto-select OpenAI, then Claude, then the active
+    ///   provider, based on which credentials exist.
+    /// - `"openai"`: force the OpenAI Responses API backend (requires Codex
+    ///   credentials).
+    /// - `"claude"`: force the Claude Messages API backend (requires Claude
+    ///   credentials).
+    /// - `"provider"`: dispatch through the active agent provider via
+    ///   `complete_simple`. Works with any provider (Copilot, Gemini, Cursor,
+    ///   Bedrock, OpenRouter, custom OpenAI-compatible, etc.). Use this when
+    ///   you want the sidecar to use your main provider's model instead of
+    ///   OpenAI/Claude.
+    ///
+    /// Env override: `JCODE_MEMORY_SIDECAR_BACKEND`.
+    #[serde(default)]
+    pub memory_sidecar_backend: Option<String>,
+    /// Fallback behavior when no memory model is marked (neither at session
+    /// level nor in config).
+    ///
+    /// - `"openai_claude"` (default): try OpenAI, then Claude, then the active
+    ///   provider's current model. This preserves the legacy auto-select behavior.
+    /// - `"provider"`: use the active provider's current model directly, skipping
+    ///   the OpenAI/Claude credential checks.
+    /// - `"none"`: memory sidecar is disabled when no model is explicitly marked,
+    ///   preventing unintended use of a different model for memory.
+    ///
+    /// Env override: `JCODE_MEMORY_SIDECAR_FALLBACK`.
+    #[serde(default)]
+    pub memory_sidecar_fallback: String,
     /// Whether optional automatic memory extraction may use a text-generating
     /// sidecar. Recall always uses Jev and is independent of this setting.
     #[serde(default = "default_memory_sidecar_enabled")]
@@ -681,6 +987,8 @@ impl Default for AgentsConfig {
             memory_jev_provider: default_memory_jev_provider(),
             memory_jev_threshold: default_memory_jev_threshold(),
             memory_model: None,
+            memory_sidecar_backend: None,
+            memory_sidecar_fallback: String::new(),
             memory_sidecar_enabled: default_memory_sidecar_enabled(),
             memory_rerank_cadence: default_memory_rerank_cadence(),
             memory_rerank_votes: default_memory_rerank_votes(),
@@ -1179,6 +1487,14 @@ pub struct FeatureConfig {
     /// that something in the harness silently invalidated the prefix cache
     /// (default: true).
     pub kv_cache_miss_notices: bool,
+    /// Enable the ask_user decision chooser (default: true). When disabled,
+    /// ask_user never blocks: the tool tells the agent the chooser is off so
+    /// it asks in plain text instead.
+    pub decisions: bool,
+    /// How long ask_user waits for the user before auto-picking the first
+    /// option, in seconds. `0` (default) blocks forever until the user
+    /// answers, the client disconnects, or the turn is shut down.
+    pub decision_timeout_secs: u64,
     /// Update channel: "stable" (releases only) or "main" (latest commits)
     pub update_channel: UpdateChannel,
 }
@@ -1194,6 +1510,8 @@ impl Default for FeatureConfig {
             message_timestamps: true,
             persist_memory_injections: false,
             kv_cache_miss_notices: true,
+            decisions: true,
+            decision_timeout_secs: 0,
             update_channel: UpdateChannel::default(),
         }
     }
@@ -1385,10 +1703,30 @@ pub struct ProviderConfig {
     /// run without the gate. Overridable via `JCODE_RISK_GATE_ENABLED`.
     #[serde(default = "default_risk_gate_enabled")]
     pub risk_gate_enabled: bool,
-}
-
-fn default_risk_gate_enabled() -> bool {
-    true
+    /// Global `User-Agent` override for provider HTTP requests. Provider
+    /// profiles that set their own `user_agent` take precedence over this.
+    pub user_agent: Option<String>,
+    /// Global extra HTTP headers applied to provider requests. Provider
+    /// profiles' own `headers` take precedence per header name.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub headers: std::collections::BTreeMap<String, String>,
+    /// Base delay (seconds) between auto-retry attempts after a remote request
+    /// error. The actual backoff is linear: `base * attempt_number`. Default: 2.
+    /// Overridable via `JCODE_AUTO_RETRY_BASE_DELAY_SECS`. Raise this for shared
+    /// gateways that return 429 without a `retry-after` header, so retries are
+    /// gentler instead of hammering the endpoint at 2s/4s/6s.
+    #[serde(
+        default = "default_auto_retry_base_delay_secs",
+        deserialize_with = "deserialize_auto_retry_base_delay_secs"
+    )]
+    pub auto_retry_base_delay_secs: u64,
+    /// Whether jcode should automatically retry transient remote failures.
+    /// Default: true. Overridable via `JCODE_AUTO_RETRY_ENABLED`.
+    pub auto_retry_enabled: bool,
+    /// Maximum auto-retry attempts before giving up and surfacing the error.
+    /// Default: 3. Overridable via `JCODE_AUTO_RETRY_MAX_ATTEMPTS`. Raise this
+    /// for shared services that need more time to free up capacity.
+    pub auto_retry_max_attempts: u8,
 }
 
 impl Default for ProviderConfig {
@@ -1415,8 +1753,17 @@ impl Default for ProviderConfig {
             max_retries: 8,
             retry_backoff_cap_secs: 30,
             risk_gate_enabled: true,
+            user_agent: None,
+            headers: std::collections::BTreeMap::new(),
+            auto_retry_base_delay_secs: 2,
+            auto_retry_enabled: true,
+            auto_retry_max_attempts: 3,
         }
     }
+}
+
+fn default_risk_gate_enabled() -> bool {
+    true
 }
 
 /// Ambient mode configuration
@@ -1708,6 +2055,55 @@ pub struct LaunchHotkeysConfig {
     pub imported: bool,
 }
 
+/// Default base refresh TTL for the `@file` mention index, in seconds.
+pub const DEFAULT_FILE_MENTION_REFRESH_TTL_SECS: u64 = 30;
+/// Default maximum number of suggestions shown in the `@file` popover.
+pub const DEFAULT_FILE_MENTION_MAX_RESULTS: usize = 15;
+/// Default cap on indexed files per workspace.
+pub const DEFAULT_FILE_MENTION_MAX_FILES: usize = 5_000;
+
+fn default_file_mention_refresh_ttl_secs() -> u64 {
+    DEFAULT_FILE_MENTION_REFRESH_TTL_SECS
+}
+
+fn default_file_mention_max_results() -> usize {
+    DEFAULT_FILE_MENTION_MAX_RESULTS
+}
+
+fn default_file_mention_max_files() -> usize {
+    DEFAULT_FILE_MENTION_MAX_FILES
+}
+
+/// Configuration for the `@file` mention picker (at-file completions).
+///
+/// Controls index refresh cadence and result-set sizing. All values are
+/// optional tuning knobs; every field falls back to the built-in default when
+/// unset, and zero values are treated as "use the default" by the consumers.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct FileMentionConfig {
+    /// Base index refresh TTL in seconds. Large workspaces use a multiple of
+    /// this value so expensive rebuilds happen less often.
+    #[serde(default = "default_file_mention_refresh_ttl_secs")]
+    pub refresh_ttl_secs: u64,
+    /// Maximum suggestions returned per query (popover list size).
+    #[serde(default = "default_file_mention_max_results")]
+    pub max_results: usize,
+    /// Maximum files collected into the per-workspace index (safety cap).
+    #[serde(default = "default_file_mention_max_files")]
+    pub max_files: usize,
+}
+
+impl Default for FileMentionConfig {
+    fn default() -> Self {
+        Self {
+            refresh_ttl_secs: DEFAULT_FILE_MENTION_REFRESH_TTL_SECS,
+            max_results: DEFAULT_FILE_MENTION_MAX_RESULTS,
+            max_files: DEFAULT_FILE_MENTION_MAX_FILES,
+        }
+    }
+}
+
 #[cfg(test)]
 mod reasoning_display_defaults_tests {
     use super::*;
@@ -1736,5 +2132,83 @@ mod reasoning_display_defaults_tests {
         display.set_reasoning_display(ReasoningDisplayMode::Off);
         assert!(display.has_explicit_reasoning_display());
         assert!(!display.show_thinking);
+    }
+}
+
+#[cfg(test)]
+mod reasoning_map_tests {
+    use super::*;
+
+    fn parse(json: &str) -> ReasoningEffortMapConfig {
+        serde_json::from_str(json).expect("reasoning map should parse")
+    }
+
+    #[test]
+    fn reasoning_map_parses_opencode_style_levels() {
+        let map = parse(
+            r#"{
+            "xhigh": {"reasoningEffort": "xhigh"},
+            "high": {"reasoningEffort": "high"},
+            "none": {"reasoningEffort": "none"},
+            "medium": {"disabled": true},
+            "low": {"disabled": true}
+        }"#,
+        );
+
+        assert_eq!(map.resolve("xhigh").as_deref(), Some("xhigh"));
+        assert_eq!(map.resolve("high").as_deref(), Some("high"));
+        assert_eq!(map.resolve("none").as_deref(), Some("none"));
+        // Listed-but-disabled rungs are rejected by resolve.
+        assert_eq!(map.resolve("medium"), None);
+        assert_eq!(map.resolve("low"), None);
+        assert!(map.is_disabled("medium"));
+        assert!(map.is_disabled("low"));
+        assert!(!map.is_disabled("xhigh"));
+        // Unlisted rungs are neither disabled nor resolvable: callers fall
+        // back to their built-in ladder behavior for them.
+        assert!(!map.is_disabled("minimal"));
+        assert_eq!(map.resolve("minimal"), None);
+        assert!(!map.is_disabled("max"));
+        assert_eq!(map.resolve("max"), None);
+        assert!(!map.is_empty());
+        // rungs() lists all configured rungs in ladder order.
+        let rung_keys: Vec<&str> = map.rungs().map(|(key, _)| key).collect();
+        assert_eq!(rung_keys, vec!["none", "low", "medium", "high", "xhigh"]);
+    }
+
+    #[test]
+    fn reasoning_map_accepts_snake_case_alias_and_trims_wire_values() {
+        let map = parse(r#"{"max": {"reasoning_effort": "  turbo  "}}"#);
+        assert_eq!(map.resolve("max").as_deref(), Some("turbo"));
+    }
+
+    #[test]
+    fn reasoning_map_unknown_rung_key_is_rejected() {
+        let result = serde_json::from_str::<ReasoningEffortMapConfig>(
+            r#"{"turbo": {"reasoningEffort": "ultra"}}"#,
+        );
+        assert!(result.is_err(), "unknown rung key must fail parsing");
+    }
+
+    #[test]
+    fn reasoning_map_without_levels_is_empty() {
+        let map: ReasoningEffortMapConfig = ReasoningEffortMapConfig::default();
+        assert!(map.is_empty());
+        let map = parse("{}");
+        assert!(map.is_empty());
+    }
+
+    #[test]
+    fn reasoning_map_round_trips_through_serde() {
+        let map = parse(
+            r#"{
+            "xhigh": {"reasoningEffort": "xhigh"},
+            "medium": {"disabled": true}
+        }"#,
+        );
+        let serialized = serde_json::to_string(&map).expect("serialize");
+        let reparsed: ReasoningEffortMapConfig =
+            serde_json::from_str(&serialized).expect("reparse");
+        assert_eq!(reparsed, map);
     }
 }

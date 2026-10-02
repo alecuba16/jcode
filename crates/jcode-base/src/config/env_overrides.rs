@@ -165,6 +165,22 @@ impl Config {
                 self.acp.tool_profile = trimmed.to_string();
             }
         }
+        if let Ok(v) = std::env::var("JCODE_ACP_PERMISSION")
+            && let Ok(existing) = std::env::var("JCODE_CURSOR_ACP_PERMISSION")
+        {
+            // JCODE_CURSOR_ACP_PERMISSION wins as the more specific runtime knob.
+            let trimmed = existing.trim();
+            if !trimmed.is_empty() {
+                self.acp.permission_mode = trimmed.to_string();
+            } else {
+                let _ = v; // keep config value as-is
+            }
+        } else if let Ok(v) = std::env::var("JCODE_ACP_PERMISSION") {
+            let trimmed = v.trim();
+            if !trimmed.is_empty() {
+                self.acp.permission_mode = trimmed.to_string();
+            }
+        }
 
         // Display
         if let Ok(v) = std::env::var("JCODE_DIFF_MODE") {
@@ -312,6 +328,11 @@ impl Config {
                 self.display.show_bash_output = parsed;
             }
         }
+        if let Ok(v) = std::env::var("JCODE_SHOW_TPS") {
+            if let Some(parsed) = parse_env_bool(&v) {
+                self.display.show_tps = parsed;
+            }
+        }
         if let Ok(v) = std::env::var("JCODE_TOOL_CALL_DETAILS") {
             if let Some(parsed) = parse_env_bool(&v) {
                 self.display.tool_call_details = parsed;
@@ -373,6 +394,16 @@ impl Config {
             if let Some(parsed) = parse_env_bool(&v) {
                 self.features.kv_cache_miss_notices = parsed;
             }
+        }
+        if let Ok(v) = std::env::var("JCODE_DECISIONS") {
+            if let Some(parsed) = parse_env_bool(&v) {
+                self.features.decisions = parsed;
+            }
+        }
+        if let Ok(v) = std::env::var("JCODE_DECISION_TIMEOUT_SECS")
+            && let Ok(parsed) = v.trim().parse::<u64>()
+        {
+            self.features.decision_timeout_secs = parsed;
         }
         if let Ok(v) = std::env::var("JCODE_UPDATE_CHANNEL")
             && let Some(channel) = UpdateChannel::parse(&v)
@@ -441,6 +472,20 @@ impl Config {
         if let Ok(v) = std::env::var("JCODE_MEMORY_SIDECAR_ENABLED") {
             if let Some(parsed) = parse_env_bool(&v) {
                 self.agents.memory_sidecar_enabled = parsed;
+            }
+        }
+        if let Ok(v) = std::env::var("JCODE_MEMORY_SIDECAR_BACKEND") {
+            let trimmed = v.trim();
+            self.agents.memory_sidecar_backend = if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            };
+        }
+        if let Ok(v) = std::env::var("JCODE_MEMORY_SIDECAR_FALLBACK") {
+            let trimmed = v.trim();
+            if !trimmed.is_empty() {
+                self.agents.memory_sidecar_fallback = trimmed.to_string();
             }
         }
         if let Ok(v) = std::env::var("JCODE_MEMORY_EMBEDDING_BACKEND") {

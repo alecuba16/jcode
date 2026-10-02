@@ -8,7 +8,7 @@ use crate::bus::{Bus, BusEvent, LoginCompleted, ToolEvent, ToolStatus};
 use crate::compaction::CompactionEvent;
 use crate::config::config;
 use crate::id;
-use crate::mcp::McpManager;
+use crate::mcp::{McpConfig, McpManager};
 use crate::message::{
     ContentBlock, Message, Role, StreamEvent, TOOL_OUTPUT_MISSING_TEXT, ToolCall, ToolDefinition,
 };
@@ -29,9 +29,10 @@ use futures::StreamExt;
 pub(crate) use helpers::effort_display_label;
 use helpers::*;
 use jcode_tui_messages::DisplayMessage;
+use memory_info::gather_memory_info;
 use ratatui::DefaultTerminal;
 use std::cell::RefCell;
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -63,6 +64,7 @@ mod auth;
 mod auth_account_picker_saved_accounts;
 mod auth_remote;
 mod catchup;
+mod char_bag;
 mod commands;
 mod commands_cloud;
 mod commands_colors;
@@ -75,8 +77,10 @@ mod commands_review;
 mod conversation_state;
 mod copy_selection;
 mod debug;
+mod decision;
 mod dictation;
 mod event_wrappers;
+mod file_mention;
 mod handterm_native_scroll;
 pub(crate) mod helpers;
 mod hotkey_feedback;
@@ -86,6 +90,7 @@ mod inline_interactive;
 mod input;
 mod input_help;
 mod local;
+pub(crate) mod memory_info;
 mod misc_ui;
 mod model_context;
 mod navigation;
@@ -350,6 +355,39 @@ struct PreparedTransferSession {
 struct PendingProviderFailover {
     prompt: crate::provider::ProviderFailoverPrompt,
     deadline: Instant,
+}
+
+/// A blocking decision request from the agent's `ask_user` tool: shown as
+/// an inline chooser above the input, answered with number keys + Enter or
+/// arrow keys + Enter. The last row is an "Your answer" free-form entry,
+/// like the ask_user tool's own free-form option, so the main input box can
+/// stay disabled while the chooser is visible. Esc dismisses.
+#[derive(Debug, Clone)]
+pub struct PendingDecision {
+    /// Matches the server's DecisionRequest request_id
+    pub request_id: String,
+    /// What is being decided, phrased for the user
+    pub question: String,
+    /// Offered options (label + optional one-line detail)
+    pub options: Vec<(String, Option<String>)>,
+    /// Selected option index (0-based into options)
+    pub selected: usize,
+    /// Draft text for the "Your answer" free-form row.
+    pub answer_draft: String,
+}
+
+impl PendingDecision {
+    /// Index of the extra free-form "Your answer" row.
+    pub const ANSWER_ROW: usize = usize::MAX;
+
+    /// Total selectable rows: the numbered options plus the free-form row.
+    pub fn row_count(&self) -> usize {
+        self.options.len() + 1
+    }
+
+    pub fn selected_is_answer_row(&self) -> bool {
+        self.selected == Self::ANSWER_ROW
+    }
 }
 
 /// An interactive "switch to the next best model/method and resend" offer shown
@@ -868,6 +906,12 @@ struct StreamingProgress {
     streaming_tps_observed_output_tokens: u64,
     /// Streaming-only elapsed time corresponding to streaming_tps_observed_output_tokens.
     streaming_tps_observed_elapsed: Duration,
+    /// Last tokens/sec value shown in the info panel.
+    last_displayed_tps: Option<f32>,
+    /// Wall-clock turn start for the total TPS interval mode.
+    streaming_total_tps_start: Option<Instant>,
+    /// Rolling buffer of per-turn throughput values.
+    tps_history: VecDeque<f32>,
 }
 
 /// Accumulated session cost and cached per-model pricing.
@@ -923,6 +967,10 @@ pub struct App {
     /// `command_suggestions_cache` to a single frame.
     command_suggestions_epoch: std::cell::Cell<u64>,
     cursor_pos: usize,
+    /// @file search cache and index
+    file_mention_cache: RefCell<crate::tui::app::file_mention::FileMentionCache>,
+    /// Confirmed @file references (absolute paths); loaded on send
+    file_chips: Vec<PathBuf>,
     scroll_offset: usize,
     /// Pauses auto-scroll when user scrolls up during streaming
     auto_scroll_paused: bool,
@@ -1051,6 +1099,16 @@ pub struct App {
     /// so blindly poking loops forever (observed live: one refused API call
     /// every ~7s until manually interrupted).
     consecutive_guardrail_stops: u8,
+    /// Base delay (seconds) for linear backoff between auto-retry attempts.
+    /// Configured via `[provider] auto_retry_base_delay_secs` or
+    /// `JCODE_AUTO_RETRY_BASE_DELAY_SECS`. Stored at App construction so the
+    /// retry path reads a live value without re-parsing config every attempt.
+    auto_retry_base_delay_secs: u64,
+    /// Whether automatic retry scheduling is enabled.
+    auto_retry_enabled: bool,
+    /// Maximum auto-retry attempts before giving up. Configured via
+    /// `[provider] auto_retry_max_attempts` or `JCODE_AUTO_RETRY_MAX_ATTEMPTS`.
+    auto_retry_max_attempts: u8,
     // When armed by /overnight, automatically continue guarded follow-up turns until wake/wrap.
     overnight_auto_poke: Option<OvernightAutoPokeState>,
     // Pending cross-provider resend after a failover warning/countdown.
@@ -1058,6 +1116,9 @@ pub struct App {
     // Interactive "switch to next best model/method and resend" offer surfaced
     // after a provider turn error; accepted with a keypress.
     pending_fallback_offer: Option<PendingFallbackOffer>,
+    // Blocking decision request from the agent's ask_user tool, rendered as an
+    // inline chooser above the input until the user answers.
+    pub(crate) pending_decision: Option<PendingDecision>,
     // Remote sessions: the failed turn payload staged by an accepted fallback
     // offer, dispatched once the server confirms the route switch.
     pending_fallback_resend: Option<FallbackResendPayload>,
@@ -1089,6 +1150,10 @@ pub struct App {
     resize_redraw_pending: bool,
     // Cached MCP server names and tool counts (updated on connect/disconnect)
     mcp_server_names: Vec<(String, usize)>,
+    // Cached MCP config snapshot for slash-command autocomplete and local commands.
+    // Refresh on startup and after MCP config mutations; do not read/parse config
+    // on every keystroke.
+    mcp_config: McpConfig,
     // When the current connection phase (authenticating/connecting/waiting) began.
     // Reset on every phase change so the "suspiciously long" yellow status is
     // measured per-attempt instead of inheriting the whole-turn elapsed time
@@ -1573,8 +1638,9 @@ pub struct App {
     scroll_bookmark: Option<usize>,
     // Stashed input: saved via Ctrl+S for later retrieval
     stashed_input: Option<(String, usize)>,
-    // Undo history for in-progress input editing (Ctrl+Z)
-    input_undo_stack: Vec<(String, usize)>,
+    // Undo history for in-progress input editing (Ctrl+Z). File chips are
+    // snapshot alongside the text so undo restores attachments too.
+    input_undo_stack: Vec<InputUndoEntry>,
     // Draft replaced by an explicit jump into prompt history (Ctrl+Up),
     // restored when Down walks back past the newest entry
     history_draft: Option<(String, usize)>,
@@ -1756,6 +1822,14 @@ pub struct App {
     persisted_prompt_history: Option<Vec<String>>,
 }
 
+/// One Ctrl+Z snapshot of the composer state.
+#[derive(Clone, PartialEq, Debug)]
+pub(crate) struct InputUndoEntry {
+    pub(crate) input: String,
+    pub(crate) cursor_pos: usize,
+    pub(crate) file_chips: Vec<PathBuf>,
+}
+
 /// Inert provider used by runtime modes whose output is supplied by another source.
 ///
 /// Remote clients render server events. Replay renders recorded events. Neither mode may call a
@@ -1806,8 +1880,6 @@ impl Provider for InertRuntimeProvider {
 }
 
 impl App {
-    const AUTO_RETRY_BASE_DELAY_SECS: u64 = 2;
-    const AUTO_RETRY_MAX_ATTEMPTS: u8 = 3;
     /// Budget for completion-confidence gate nudges per auto-poke cycle.
     /// Observed live: a session that stopped updating its todos was re-nudged
     /// with the same hidden continuation every ~5 seconds indefinitely, one
@@ -1874,6 +1946,7 @@ impl App {
         self.pause_streaming_tps(false);
         self.kv_cache.current_api_usage_recorded = false;
         self.mark_stream_usage_call_boundary();
+        self.anchor_total_tps_start_if_unanchored();
 
         self.kv_cache.pending_kv_cache_request = Some(PendingKvCacheRequest {
             turn_number,
@@ -1926,6 +1999,7 @@ impl App {
         self.pause_streaming_tps(false);
         self.kv_cache.current_api_usage_recorded = false;
         self.mark_stream_usage_call_boundary();
+        self.anchor_total_tps_start_if_unanchored();
         self.kv_cache.pending_kv_cache_request = Some(PendingKvCacheRequest {
             turn_number,
             call_index: self.kv_cache.kv_cache_turn_call_index,

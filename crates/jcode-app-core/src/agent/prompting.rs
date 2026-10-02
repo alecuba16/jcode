@@ -134,8 +134,9 @@ impl Agent {
             .and_then(|name| skills.get(name).map(|skill| skill.get_prompt().to_string()));
 
         // Frozen per session so skill installs never rewrite the cached
-        // system prefix. Later installs are announced in the transcript.
-        let available_skills = &self.prompt_skills_snapshot;
+        // system prefix (see `prompt_skills_snapshot`). Later installs are
+        // announced in the transcript instead.
+        let available_skills = self.prompt_skills_snapshot.clone();
 
         let working_dir = self
             .session

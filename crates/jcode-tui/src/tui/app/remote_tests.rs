@@ -8,6 +8,7 @@ use crate::protocol::{
     ServerEvent,
 };
 use crate::provider::Provider;
+use crate::tui::TuiState;
 use crate::tui::info_widget::{MemoryState, StepStatus};
 use anyhow::Result;
 use std::sync::Arc;
@@ -433,6 +434,7 @@ fn submit_prepared_remote_input_defers_until_history_loads() {
         raw_input: "hi".to_string(),
         expanded: "hi".to_string(),
         images: vec![],
+        file_chips: Vec::new(),
     };
     rt.block_on(crate::tui::app::remote::submit_prepared_remote_input(
         &mut app,
@@ -502,6 +504,7 @@ fn remote_skill_invocation_with_prompt_sends_remote_turn() {
             raw_input: "/remote-skill explain the change".to_string(),
             expanded: "/remote-skill explain the change".to_string(),
             images: vec![],
+            file_chips: Vec::new(),
         },
     ))
     .expect("remote skill prompt should send");
@@ -640,6 +643,7 @@ fn startup_history(session_id: &str) -> ServerEvent {
         session_id: session_id.to_string(),
         messages: vec![],
         images: vec![],
+        applets: Default::default(),
         provider_name: None,
         provider_model: None,
         subagent_model: None,
@@ -669,7 +673,6 @@ fn startup_history(session_id: &str) -> ServerEvent {
         compaction_mode: crate::config::CompactionMode::Reactive,
         activity: None,
         side_panel: crate::side_panel::SidePanelSnapshot::default(),
-        applets: Default::default(),
     }
 }
 
@@ -1206,6 +1209,7 @@ fn remote_dropped_file_path_is_sent_as_a_prompt_not_a_slash_command() {
             raw_input: dropped.clone(),
             expanded: dropped.clone(),
             images: vec![],
+            file_chips: Vec::new(),
         },
     ))
     .expect("dropped path should send as a normal remote turn");
@@ -1243,6 +1247,7 @@ fn remote_embedded_known_slash_commands_are_sent_as_prompt_text() {
             raw_input: prompt.to_string(),
             expanded: prompt.to_string(),
             images: vec![],
+            file_chips: vec![],
         },
     ))
     .expect("embedded command-looking text should use the remote prompt path");
@@ -1279,6 +1284,7 @@ fn remote_multiple_known_slash_commands_use_the_local_command_boundary() {
             raw_input: "/help compact /test help".to_string(),
             expanded: "/help compact /test help".to_string(),
             images: vec![],
+            file_chips: vec![],
         },
     ))
     .expect("known built-in slash commands should stay local");
@@ -1313,4 +1319,261 @@ fn remote_submit_input_never_strands_a_local_pending_turn() {
         vec!["plain prompt".to_string()],
         "the prompt should be queued for the remote tick loop"
     );
+}
+
+/// Remote effort cycling on a provider without switchable effort must show
+/// the fixed (extra_body-injected) effort read-only instead of claiming the
+/// provider does not support effort at all.
+#[test]
+fn remote_effort_cycle_shows_fixed_effort_when_switching_unavailable() {
+    let mut app = create_test_app();
+    app.is_remote = true;
+    // Server reported provider/model identity: a profile with no inferable
+    // efforts, plus the server-reported (extra_body) effort.
+    app.remote_provider_name = Some("llmg-coding".to_string());
+    app.remote_provider_model = Some("together_ai/revolut-ltd/glm-5-2-nvfp4".to_string());
+    app.remote_reasoning_effort = Some("high".to_string());
+
+    let rt = tokio::runtime::Runtime::new().expect("runtime");
+    rt.block_on(async {
+        let mut remote = crate::tui::backend::RemoteConnection::dummy();
+        // The default effort-cycle chord is platform-specific: Cmd+Right on
+        // macOS, Alt+Right elsewhere (see `load_effort_switch_keys`).
+        let increase_modifier = if cfg!(target_os = "macos") {
+            crossterm::event::KeyModifiers::SUPER
+        } else {
+            crossterm::event::KeyModifiers::ALT
+        };
+        let event =
+            crossterm::event::KeyEvent::new(crossterm::event::KeyCode::Right, increase_modifier);
+        crate::tui::app::remote::key_handling::handle_remote_key_event(
+            &mut app,
+            event,
+            &mut remote,
+        )
+        .await
+        .expect("remote key event handled");
+    });
+
+    let notice = app.status_notice().expect("effort notice set");
+    assert!(
+        notice.contains("not switchable"),
+        "must explain switching is unavailable, got: {notice}"
+    );
+    assert!(
+        notice.contains("High"),
+        "must show the fixed effort from the server, got: {notice}"
+    );
+}
+
+/// Remote `/effort` listing on a provider without switchable effort must show
+/// the server-reported fixed effort read-only instead of "not available".
+#[test]
+fn remote_effort_command_lists_fixed_effort_when_switching_unavailable() {
+    let mut app = create_test_app();
+    app.is_remote = true;
+    app.remote_provider_name = Some("llmg-coding".to_string());
+    app.remote_provider_model = Some("together_ai/revolut-ltd/glm-5-2-nvfp4".to_string());
+    app.remote_reasoning_effort = Some("high".to_string());
+    app.input = "/effort".to_string();
+    app.cursor_pos = app.input.len();
+
+    let rt = tokio::runtime::Runtime::new().expect("runtime");
+    rt.block_on(async {
+        let mut remote = crate::tui::backend::RemoteConnection::dummy();
+        let event = crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Enter,
+            crossterm::event::KeyModifiers::empty(),
+        );
+        crate::tui::app::remote::key_handling::handle_remote_key_event(
+            &mut app,
+            event,
+            &mut remote,
+        )
+        .await
+        .expect("remote key event handled");
+    });
+
+    let last = app
+        .display_messages()
+        .last()
+        .expect("/effort must respond remotely");
+    assert!(
+        last.content.contains("not switchable"),
+        "remote /effort must explain switching is unavailable, got: {}",
+        last.content
+    );
+    assert!(
+        last.content.contains("Effort: High"),
+        "remote /effort must show the fixed effort, got: {}",
+        last.content
+    );
+    assert!(
+        !last.content.contains("not available"),
+        "must not claim the effort is unknown when the server reported one, got: {}",
+        last.content
+    );
+}
+
+/// Remote `/effort` with neither switchable nor server-reported effort keeps
+/// the original "not available" message: no false fixed-effort claims.
+#[test]
+fn remote_effort_command_still_reports_not_available_without_any_effort() {
+    let mut app = create_test_app();
+    app.is_remote = true;
+    // Identity yields no inferable efforts and the server reported none.
+    app.remote_provider_name = Some("plain-compat".to_string());
+    app.remote_provider_model = Some("some-plain-model".to_string());
+    app.input = "/effort".to_string();
+    app.cursor_pos = app.input.len();
+
+    let rt = tokio::runtime::Runtime::new().expect("runtime");
+    rt.block_on(async {
+        let mut remote = crate::tui::backend::RemoteConnection::dummy();
+        let event = crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Enter,
+            crossterm::event::KeyModifiers::empty(),
+        );
+        crate::tui::app::remote::key_handling::handle_remote_key_event(
+            &mut app,
+            event,
+            &mut remote,
+        )
+        .await
+        .expect("remote key event handled");
+    });
+
+    let last = app
+        .display_messages()
+        .last()
+        .expect("/effort must respond remotely");
+    assert!(
+        last.content.contains("Reasoning effort not available"),
+        "without any effort the original message must stay, got: {}",
+        last.content
+    );
+}
+
+#[test]
+fn queue_for_reconnect_expands_and_consumes_file_chips() {
+    // Regression (PR #1268 review): a prompt submitted while the remote
+    // connection is down must carry the accepted file chip's contents into
+    // the queued message, and the chip must be consumed so it cannot leak
+    // into a later prompt.
+    let mut app = create_test_app();
+    app.is_remote = true;
+    app.runtime_mode = crate::tui::app::AppRuntimeMode::RemoteClient;
+
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let file = dir.path().join("notes.md");
+    std::fs::write(&file, "queued file contents").expect("write file");
+
+    app.set_input_for_test("review @notes.md".to_string());
+    app.file_chips.push(file.clone());
+    super::queue_message_for_reconnect(&mut app);
+
+    assert_eq!(
+        app.queued_messages.len(),
+        1,
+        "prompt must be queued exactly once"
+    );
+    let queued = &app.queued_messages[0];
+    assert!(
+        queued.contains("queued file contents"),
+        "queued message must embed the file contents, got: {queued}"
+    );
+    assert!(
+        queued.contains("notes.md"),
+        "queued message must reference the attached file, got: {queued}"
+    );
+    assert!(
+        app.file_chips.is_empty(),
+        "chips must be consumed by the queue path, not left to affect a later prompt"
+    );
+    assert!(
+        app.input.is_empty(),
+        "composer input must be consumed by the queue path"
+    );
+}
+
+#[test]
+fn ask_user_tool_done_drops_the_matching_dead_chooser() {
+    let mut app = create_test_app();
+    let mut decision = crate::tui::app::PendingDecision {
+        request_id: "decision-call-42".to_string(),
+        question: "Deploy now?".to_string(),
+        options: vec![("Yes".to_string(), None), ("No".to_string(), None)],
+        selected: 0,
+        answer_draft: String::new(),
+    };
+    decision.selected = 0;
+    app.pending_decision = Some(decision);
+
+    // Server-side timeout auto-picked option 1 and the ask_user tool call
+    // completed without any client answer; ToolDone must retire the card.
+    let mut remote = crate::tui::backend::ReplayRemoteState::default();
+    super::server_event_handlers::handle_tool_done(
+        &mut app,
+        &mut remote,
+        "call-42".to_string(),
+        "ask_user".to_string(),
+        "Decision: ...\nNo answer within the configured timeout; auto-picked option 1.\n"
+            .to_string(),
+        None,
+    );
+
+    assert!(
+        app.pending_decision.is_none(),
+        "ToolDone for the ask_user call must drop its dead chooser"
+    );
+}
+
+#[test]
+fn unrelated_tool_done_keeps_the_pending_chooser() {
+    let mut app = create_test_app();
+    app.pending_decision = Some(crate::tui::app::PendingDecision {
+        request_id: "decision-call-7".to_string(),
+        question: "Deploy now?".to_string(),
+        options: vec![("Yes".to_string(), None), ("No".to_string(), None)],
+        selected: 0,
+        answer_draft: String::new(),
+    });
+
+    let mut remote = crate::tui::backend::ReplayRemoteState::default();
+    super::server_event_handlers::handle_tool_done(
+        &mut app,
+        &mut remote,
+        "other-call".to_string(),
+        "bash".to_string(),
+        "done".to_string(),
+        None,
+    );
+
+    assert!(app.pending_decision.is_some());
+}
+
+#[test]
+fn ask_user_tool_done_for_a_different_call_keeps_the_chooser() {
+    let mut app = create_test_app();
+    app.pending_decision = Some(crate::tui::app::PendingDecision {
+        request_id: "decision-call-7".to_string(),
+        question: "Deploy now?".to_string(),
+        options: vec![("Yes".to_string(), None), ("No".to_string(), None)],
+        selected: 0,
+        answer_draft: String::new(),
+    });
+
+    // Two ask_user calls in one turn (batch/subagent): the ToolDone for
+    // the first must not retire the second's chooser.
+    let mut remote = crate::tui::backend::ReplayRemoteState::default();
+    super::server_event_handlers::handle_tool_done(
+        &mut app,
+        &mut remote,
+        "call-99".to_string(),
+        "ask_user".to_string(),
+        "Decision: ...\nUser chose option 1: ok\n".to_string(),
+        None,
+    );
+
+    assert!(app.pending_decision.is_some());
 }

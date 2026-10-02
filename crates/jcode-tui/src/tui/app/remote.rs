@@ -225,6 +225,17 @@ pub(super) async fn handle_tick(app: &mut App, remote: &mut RemoteConnection) ->
         && Instant::now() >= reset_time
     {
         app.rate_limit_reset = None;
+        if !app.effective_auto_retry_enabled() {
+            app.rate_limit_pending_message = None;
+            if matches!(app.status, ProcessingStatus::WaitingForNetwork { .. }) {
+                app.status = ProcessingStatus::Idle;
+                app.status_detail = None;
+            }
+            app.push_display_message(DisplayMessage::system(
+                "Auto-retry disabled; not resending pending remote message.".to_string(),
+            ));
+            return true;
+        }
         if !app.is_processing
             && let Some(pending) = app.rate_limit_pending_message.clone()
         {
@@ -1045,6 +1056,7 @@ pub(super) fn handle_disconnect(
             app.pending_soft_interrupts.len()
         ));
     }
+    app.record_turn_tps();
     app.reset_streaming_tps();
     app.is_processing = false;
     app.status = ProcessingStatus::Idle;
@@ -2082,9 +2094,12 @@ fn handle_disconnected_key_internal(
         KeyCode::Backspace => {
             if app.cursor_pos > 0 {
                 let prev = super::super::core::prev_char_boundary(&app.input, app.cursor_pos);
+                let drain_start =
+                    input::file_chip_backspace_start(&app.input, app.cursor_pos, &app.file_chips)
+                        .unwrap_or(prev);
                 app.remember_input_undo_state();
-                app.input.drain(prev..app.cursor_pos);
-                app.cursor_pos = prev;
+                app.input.drain(drain_start..app.cursor_pos);
+                app.cursor_pos = drain_start;
                 app.reset_tab_completion();
                 app.sync_model_picker_preview_from_input();
             }
@@ -2092,8 +2107,11 @@ fn handle_disconnected_key_internal(
         KeyCode::Delete => {
             if app.cursor_pos < app.input.len() {
                 let next = super::super::core::next_char_boundary(&app.input, app.cursor_pos);
+                let drain_end =
+                    input::file_chip_delete_end(&app.input, app.cursor_pos, &app.file_chips)
+                        .unwrap_or(next);
                 app.remember_input_undo_state();
-                app.input.drain(app.cursor_pos..next);
+                app.input.drain(app.cursor_pos..drain_end);
                 app.reset_tab_completion();
                 app.sync_model_picker_preview_from_input();
             }

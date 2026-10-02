@@ -694,9 +694,13 @@ impl App {
         // and the picker consistent (both expose swarm / swarm-deep).
         let efforts = if self.is_remote {
             let (provider_name, provider_model) = self.remote_effort_identity();
-            inferred_reasoning_efforts(provider_name.as_deref(), provider_model.as_deref())
+            remote_reasoning_efforts(provider_name.as_deref(), provider_model.as_deref())
         } else {
-            self.provider.available_efforts()
+            self.provider
+                .available_efforts()
+                .into_iter()
+                .map(ToString::to_string)
+                .collect()
         };
         if efforts.is_empty() {
             self.set_status_notice("Reasoning effort not available for this provider");
@@ -710,7 +714,7 @@ impl App {
         };
         let current_index = current
             .as_ref()
-            .and_then(|c| efforts.iter().position(|e| *e == c.as_str()))
+            .and_then(|c| efforts.iter().position(|e| e == c))
             .unwrap_or(efforts.len() - 1); // default to last (highest)
 
         let len = efforts.len();
@@ -726,9 +730,9 @@ impl App {
             current_index - 1
         };
 
-        let next_effort = efforts[next_index];
-        if Some(next_effort.to_string()) == current {
-            let label = effort_display_label(next_effort);
+        let next_effort = efforts[next_index].clone();
+        if Some(next_effort.clone()) == current {
+            let label = effort_display_label(&next_effort);
             self.set_status_notice(format!(
                 "Effort: {} (already at {})",
                 label,
@@ -737,9 +741,9 @@ impl App {
             return;
         }
 
-        match self.provider.set_reasoning_effort(next_effort) {
+        match self.provider.set_reasoning_effort(&next_effort) {
             Ok(()) => {
-                let label = effort_display_label(next_effort);
+                let label = effort_display_label(&next_effort);
                 let bar = effort_bar(next_index, len);
                 self.set_status_notice(format!("Effort: {} {}", label, bar));
             }
@@ -1628,9 +1632,22 @@ pub(super) fn handle_model_command(app: &mut App, trimmed: &str) -> bool {
         let current = app.provider.reasoning_effort();
         let efforts = app.provider.available_efforts();
         if efforts.is_empty() {
-            app.push_display_message(DisplayMessage::system(
-                "Reasoning effort not available for this provider.".to_string(),
-            ));
+            // Switching is unavailable, but the provider may still send a
+            // fixed effort (e.g. injected via OpenAI-compatible `extra_body`).
+            // Show it read-only instead of hiding it.
+            match app.provider.effective_reasoning_effort() {
+                Some(effort) => {
+                    app.push_display_message(DisplayMessage::system(format!(
+                        "Reasoning effort not switchable for this provider.\nEffort: {} (fixed, from provider config)",
+                        effort_display_label(&effort)
+                    )));
+                }
+                None => {
+                    app.push_display_message(DisplayMessage::system(
+                        "Reasoning effort not available for this provider.".to_string(),
+                    ));
+                }
+            }
         } else {
             let current_label = current
                 .as_deref()
@@ -1927,6 +1944,10 @@ impl App {
                     "Model list refreshed: +{} models, +{} routes, ~{} changed",
                     summary.models_added, summary.routes_added, summary.routes_changed
                 ));
+                // Reopen the picker in place if it is open so the freshly
+                // refreshed catalog is shown immediately rather than leaving
+                // stale rows on screen until the user closes and reopens `/model`.
+                self.refresh_open_model_picker_after_catalog_update();
             }
             Err(error) => {
                 self.finish_background_task(

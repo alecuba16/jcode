@@ -566,6 +566,40 @@ fn test_env_override_memory_sidecar() {
 }
 
 #[test]
+fn set_memory_model_persists_to_config_toml() {
+    let _guard = crate::storage::lock_test_env();
+    let prev_home = std::env::var_os("JCODE_HOME");
+    let prev_model_env = std::env::var_os("JCODE_MEMORY_MODEL");
+    crate::env::remove_var("JCODE_MEMORY_MODEL");
+    let dir = tempfile::TempDir::new().expect("tempdir");
+    crate::env::set_var("JCODE_HOME", dir.path());
+
+    // Start from a clean slate: nothing persisted yet.
+    assert!(Config::load().agents.memory_model.is_none());
+
+    Config::set_memory_model("claude-haiku-4").expect("set_memory_model should succeed");
+
+    // The value must round-trip through config.toml on disk.
+    let reloaded = Config::load();
+    assert_eq!(
+        reloaded.agents.memory_model.as_deref(),
+        Some("claude-haiku-4"),
+        "set_memory_model should persist to config.toml and be readable on reload"
+    );
+
+    // And the serialized file on disk should contain the value verbatim.
+    let path = Config::path().expect("config path");
+    let content = std::fs::read_to_string(path).expect("read config file");
+    assert!(
+        content.contains("memory_model = \"claude-haiku-4\""),
+        "config.toml should contain the persisted memory_model: {content}"
+    );
+
+    restore_env_var("JCODE_HOME", prev_home);
+    restore_env_var("JCODE_MEMORY_MODEL", prev_model_env);
+}
+
+#[test]
 fn tool_config_defaults_to_full_toolset() {
     let config = ToolConfig::default();
     let selection = config.selection();
@@ -670,6 +704,7 @@ fn acp_config_defaults_to_standard_profile_and_acp_tools() {
     let cfg = Config::default();
     assert_eq!(cfg.acp.profile, "standard");
     assert_eq!(cfg.acp.tool_profile, "acp");
+    assert_eq!(cfg.acp.permission_mode, "jcode");
 }
 
 #[test]
@@ -1284,6 +1319,7 @@ fn populate_context_limits_from_config_ref_seeds_global_cache() {
                 reasoning_effort: None,
                 context_window: Some(1_000_000),
                 input: Vec::new(),
+                ..Default::default()
             }],
             ..Default::default()
         },
@@ -1320,6 +1356,7 @@ fn populate_context_limits_from_config_seeds_qualified_runtime_model_shapes() {
                     reasoning_effort: None,
                     context_window: Some(131_072),
                     input: Vec::new(),
+                    ..Default::default()
                 },
                 NamedProviderModelConfig {
                     id: "/opt/models/issue421-ornith-35b-q4.gguf".to_string(),
@@ -1327,6 +1364,7 @@ fn populate_context_limits_from_config_seeds_qualified_runtime_model_shapes() {
                     reasoning_effort: None,
                     context_window: Some(131_072),
                     input: Vec::new(),
+                    ..Default::default()
                 },
             ],
             ..Default::default()
@@ -1736,4 +1774,105 @@ fn removed_overscroll_status_key_still_loads_config() {
     .expect("legacy key must not break config");
     assert!(config.display.centered);
     assert_eq!(config.display.usage_display, "used");
+}
+
+#[test]
+fn named_provider_model_reasoning_map_parses_from_toml() {
+    let _guard = crate::storage::lock_test_env();
+    let prev_home = std::env::var_os("JCODE_HOME");
+    let dir = tempfile::TempDir::new().expect("tempdir");
+    crate::env::set_var("JCODE_HOME", dir.path());
+    Config::invalidate_cache();
+
+    let path = dir.path().join("config.toml");
+    std::fs::write(
+        &path,
+        r#"
+[providers.gateway]
+type = "openai-compatible"
+base_url = "https://llm.example.com/v1"
+
+[[providers.gateway.models]]
+id = "my-model"
+
+[providers.gateway.models.reasoning_map]
+xhigh = { reasoningEffort = "xhigh" }
+high = { reasoningEffort = "high" }
+none = { reasoningEffort = "none" }
+medium = { disabled = true }
+low = { disabled = true }
+"#,
+    )
+    .unwrap();
+
+    let config = Config::load();
+    let profile = config
+        .providers
+        .get("gateway")
+        .expect("gateway profile parsed");
+    let model = profile
+        .models
+        .iter()
+        .find(|model| model.id == "my-model")
+        .expect("model entry parsed");
+    let map = model.reasoning_map.as_ref().expect("reasoning_map parsed");
+
+    assert_eq!(map.resolve("xhigh").as_deref(), Some("xhigh"));
+    assert_eq!(map.resolve("high").as_deref(), Some("high"));
+    assert_eq!(map.resolve("none").as_deref(), Some("none"));
+    assert_eq!(map.resolve("medium"), None, "disabled rung is rejected");
+    assert_eq!(map.resolve("low"), None, "disabled rung is rejected");
+    assert!(map.is_disabled("medium"));
+    assert!(map.is_disabled("low"));
+
+    // The CLI read-modify-write round-trip must keep the reasoning map.
+    Config::set_default_model(Some("keep-me"), None).expect("save");
+    let config = Config::load();
+    let profile = config
+        .providers
+        .get("gateway")
+        .expect("gateway profile still present after save");
+    let map = profile.models[0]
+        .reasoning_map
+        .as_ref()
+        .expect("reasoning_map survives config save");
+    assert_eq!(map.resolve("xhigh").as_deref(), Some("xhigh"));
+
+    restore_env_var("JCODE_HOME", prev_home);
+    Config::invalidate_cache();
+}
+
+#[test]
+fn named_provider_model_reasoning_map_rejects_unknown_rung_keys() {
+    let _guard = crate::storage::lock_test_env();
+    let prev_home = std::env::var_os("JCODE_HOME");
+    let dir = tempfile::TempDir::new().expect("tempdir");
+    crate::env::set_var("JCODE_HOME", dir.path());
+    Config::invalidate_cache();
+
+    let path = dir.path().join("config.toml");
+    std::fs::write(
+        &path,
+        r#"
+[providers.gateway]
+type = "openai-compatible"
+base_url = "https://llm.example.com/v1"
+
+[[providers.gateway.models]]
+id = "my-model"
+
+[providers.gateway.models.reasoning_map]
+turbo = { reasoningEffort = "ultra" }
+"#,
+    )
+    .unwrap();
+
+    let result = Config::load_strict();
+    assert!(
+        result.is_err(),
+        "unknown reasoning_map rung key must fail config parsing so typos surface"
+    );
+
+    restore_env_var("JCODE_HOME", prev_home);
+    Config::invalidate_cache();
 }

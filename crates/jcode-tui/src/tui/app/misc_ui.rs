@@ -92,6 +92,25 @@ fn remote_provider_is_inherently_billed(provider_name: &str) -> bool {
 
 /// Update cost calculation based on token usage (for API-key providers)
 impl App {
+    /// Whether the TPS display uses the full wall-clock interval ("total"
+    /// mode) instead of only model output-generation time ("generation" mode).
+    pub(super) fn tps_interval_is_total(&self) -> bool {
+        use crate::config::TpsIntervalMode;
+        crate::config::config().display.tps_interval == TpsIntervalMode::Total
+    }
+
+    /// Anchor the "total" interval-mode wall clock at the start of the first
+    /// API call of a turn. Called from kv-cache request begin (both local and
+    /// remote paths fire before any output token exists), so the denominator
+    /// spans the entire turn instead of degenerating to the tail of the last
+    /// call (the lazy capture in `snapshot_streaming_tps` only fires at the
+    /// first `TokenUsage`, which arrives at/after call completion).
+    pub(super) fn anchor_total_tps_start_if_unanchored(&mut self) {
+        if self.tps_interval_is_total() && self.streaming.streaming_total_tps_start.is_none() {
+            self.streaming.streaming_total_tps_start = Some(Instant::now());
+        }
+    }
+
     pub(super) fn current_streaming_tps_elapsed(&self) -> Duration {
         let mut elapsed = self.streaming.streaming_tps_elapsed;
         if let Some(start) = self.streaming.streaming_tps_start {
@@ -101,9 +120,23 @@ impl App {
     }
 
     pub(super) fn snapshot_streaming_tps(&mut self) {
+        // In "total" interval mode, capture the wall-clock turn start once
+        // (on the first observed output tokens) so it spans the entire turn.
+        if self.tps_interval_is_total()
+            && self.streaming.streaming_total_tps_start.is_none()
+            && self.streaming.streaming_total_output_tokens > 0
+        {
+            self.streaming.streaming_total_tps_start = Some(Instant::now());
+        }
         self.streaming.streaming_tps_observed_output_tokens =
             self.streaming.streaming_total_output_tokens;
         self.streaming.streaming_tps_observed_elapsed = self.current_streaming_tps_elapsed();
+        // Cache the computed t/s so the info panel can hold the last real
+        // value during brief gaps (elapsed < 0.1s, no new tokens) instead of
+        // flickering the line on and off.
+        if let Some(tps) = self.compute_streaming_tps() {
+            self.streaming.last_displayed_tps = Some(tps);
+        }
     }
 
     pub(super) fn resume_streaming_tps(&mut self) {
@@ -127,6 +160,58 @@ impl App {
         self.streaming.streaming_total_output_tokens = 0;
         self.streaming.streaming_tps_observed_output_tokens = 0;
         self.streaming.streaming_tps_observed_elapsed = Duration::ZERO;
+        self.streaming.last_displayed_tps = None;
+        self.streaming.streaming_total_tps_start = None;
+    }
+
+    /// Record the final t/s for a completed turn into the rolling history.
+    /// Called when the turn ends (status transitions away from Streaming).
+    /// Keeps the last 5 entries; older values are evicted.
+    pub(super) fn record_turn_tps(&mut self) {
+        // Try the snapshot-based t/s first (set during streaming by
+        // snapshot_streaming_tps when output tokens arrived).
+        let computed = self.compute_streaming_tps();
+        let fallback = self.streaming.last_displayed_tps;
+        let raw = {
+            let elapsed = if self.tps_interval_is_total() {
+                match self.streaming.streaming_total_tps_start {
+                    // No start timestamp yet: zero elapsed, so the t/s gate
+                    // below skips the sample.
+                    Some(start) => start.elapsed(),
+                    None => Duration::from_secs(0),
+                }
+            } else {
+                self.current_streaming_tps_elapsed()
+            };
+            let tokens = self.streaming.streaming_total_output_tokens;
+            if elapsed.as_secs_f32() > 0.1 && tokens > 0 {
+                Some(tokens as f32 / elapsed.as_secs_f32())
+            } else {
+                None
+            }
+        };
+        let tps = computed.or(fallback).or(raw);
+        if let Some(tps) = tps
+            && tps.is_finite()
+            && tps > 0.1
+        {
+            const MAX_HISTORY: usize = 5;
+            if self.streaming.tps_history.len() >= MAX_HISTORY {
+                self.streaming.tps_history.pop_front();
+            }
+            self.streaming.tps_history.push_back(tps);
+        }
+    }
+
+    /// Average t/s over the rolling history (last up to 5 turns).
+    /// Returns `None` when no completed turns have been recorded yet.
+    pub(super) fn avg_tps(&self) -> Option<f32> {
+        if self.streaming.tps_history.is_empty() {
+            return None;
+        }
+        let sum: f32 = self.streaming.tps_history.iter().sum();
+        let avg = sum / self.streaming.tps_history.len() as f32;
+        (avg.is_finite() && avg > 0.1).then_some(avg)
     }
 
     pub(super) fn open_usage_inline_loading(&mut self) {
@@ -457,9 +542,25 @@ impl App {
     }
 
     pub(super) fn compute_streaming_tps(&self) -> Option<f32> {
-        let elapsed_secs = self.streaming.streaming_tps_observed_elapsed.as_secs_f32();
         let total_tokens = self.streaming.streaming_tps_observed_output_tokens;
-        if elapsed_secs > 0.1 && total_tokens > 0 {
+        if total_tokens == 0 {
+            return None;
+        }
+
+        // In "total" interval mode, use the wall-clock turn time (from the
+        // first observed output token to now) as the denominator so tool
+        // execution, rate-limit waits, and network overhead are all
+        // reflected in the effective t/s.
+        let elapsed_secs = if self.tps_interval_is_total() {
+            self.streaming
+                .streaming_total_tps_start
+                .map(|start| start.elapsed().as_secs_f32())
+                .unwrap_or(0.0)
+        } else {
+            self.streaming.streaming_tps_observed_elapsed.as_secs_f32()
+        };
+
+        if elapsed_secs > 0.1 {
             Some(total_tokens as f32 / elapsed_secs)
         } else {
             None

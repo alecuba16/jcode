@@ -62,6 +62,7 @@ impl Config {
 - Redraw FPS: {}
 - Copy badge Alt label: {}
 - Show agentgrep output: {}
+- Show TPS: {}
 - Tool call details: {}
 - Theme: {}
 - Custom colors: {}
@@ -105,7 +106,7 @@ impl Config {
 - Review: {}
 - Judge: {}
 - Memory recall: Jev ({})
-- Memory extraction sidecar: {}
+- Memory extraction sidecar: {} (backend: {}, fallback: {})
 - Ambient: {}
 
 **Gateway:**
@@ -131,6 +132,11 @@ impl Config {
 - Telegram replies: {}
 - Discord: {}
 - Discord replies: {}
+
+**File mention (`@file` picker):**
+- Refresh TTL: {}s
+- Max suggestions: {}
+- Max indexed files: {}
 
 *Edit the config file or set environment variables to customize.*
 *Environment variables (e.g., `JCODE_SCROLL_UP_KEY`, `JCODE_GATEWAY_ENABLED`) override file settings.*"#,
@@ -205,6 +211,7 @@ impl Config {
                 self.display.copy_badge_alt_label.trim()
             },
             self.display.show_agentgrep_output,
+            self.display.show_tps,
             self.display.tool_call_details,
             if self.display.theme.trim().is_empty() {
                 "auto"
@@ -308,6 +315,15 @@ impl Config {
             } else {
                 "disabled"
             },
+            self.agents
+                .memory_sidecar_backend
+                .as_deref()
+                .unwrap_or("auto"),
+            if self.agents.memory_sidecar_fallback.trim().is_empty() {
+                "openai_claude"
+            } else {
+                self.agents.memory_sidecar_fallback.trim()
+            },
             self.ambient
                 .model
                 .as_deref()
@@ -379,6 +395,9 @@ impl Config {
             } else {
                 "disabled"
             },
+            self.file_mention.refresh_ttl_secs,
+            self.file_mention.max_results,
+            self.file_mention.max_files,
         )
     }
 }
