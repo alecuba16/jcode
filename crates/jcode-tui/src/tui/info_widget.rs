@@ -54,7 +54,8 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use unicode_width::UnicodeWidthStr;
 
-use commits::{commits_has_data, render_commits_widget};
+pub(crate) use commits::{OVERVIEW_COMMITS_MAX_ROWS, commits_has_data};
+use commits::{render_commits_compact, render_commits_widget};
 use frame::Framed;
 use git::{
     changes_has_data, changes_height, changes_legend, render_changes_framed, render_git_widget,
@@ -64,6 +65,8 @@ pub use graph::{GraphEdge, GraphNode, build_graph_topology, graph_node_score};
 pub(crate) use memory_utils::is_traceworthy_memory_event;
 use memory_utils::{memory_active_summary, memory_last_trace_summary, memory_state_detail};
 use model::{render_model_info, render_model_widget, runtime_has_data, runtime_height};
+pub(crate) use swarm_background::OVERVIEW_SWARM_MAX_ROWS;
+use swarm_background::render_swarm_compact;
 use swarm_background::{render_background_compact, render_background_widget, render_swarm_widget};
 use text::{truncate_smart, truncate_with_ellipsis};
 pub(crate) use tips::occasional_status_tip;
@@ -241,6 +244,9 @@ impl Side {
 }
 
 pub(crate) fn is_overview_mergeable(kind: WidgetKind) -> bool {
+    // MemoryActivity is deliberately NOT here: the overview strips
+    // `memory_info` (the dedicated MemoryActivity widget owns that content),
+    // so marking it mergeable would suppress the only renderer of it.
     matches!(
         kind,
         WidgetKind::Todos
@@ -251,6 +257,7 @@ pub(crate) fn is_overview_mergeable(kind: WidgetKind) -> bool {
             | WidgetKind::UsageLimits
             | WidgetKind::KvCache
             | WidgetKind::GitStatus
+            | WidgetKind::Commits
     )
 }
 
@@ -667,6 +674,13 @@ pub struct InfoWidgetData {
     pub context_limit: Option<usize>,
     pub model: Option<String>,
     pub reasoning_effort: Option<String>,
+    /// Agent-specific model overrides from config: `agents.swarm_model` and
+    /// `agents.memory_model` (plus their efforts). `None` means "inherit the
+    /// coordinator/default model", which is not shown.
+    pub swarm_model_override: Option<String>,
+    pub swarm_model_effort: Option<String>,
+    pub memory_model_override: Option<String>,
+    pub memory_model_effort: Option<String>,
     pub service_tier: Option<String>,
     pub native_compaction_mode: Option<String>,
     pub native_compaction_threshold_tokens: Option<usize>,
@@ -765,6 +779,14 @@ impl InfoWidgetData {
                     sections += 1;
                 }
                 if self
+                    .memory_info
+                    .as_ref()
+                    .map(MemoryInfo::should_render)
+                    .unwrap_or(false)
+                {
+                    sections += 1;
+                }
+                if self
                     .background_info
                     .as_ref()
                     .map(|b| b.running_count > 0)
@@ -797,8 +819,25 @@ impl InfoWidgetData {
                 {
                     sections += 1;
                 }
-                // Only useful as a "join" mode when there are multiple sections.
-                sections >= 2
+                if self
+                    .git_info
+                    .as_ref()
+                    .map(commits_has_data)
+                    .unwrap_or(false)
+                {
+                    sections += 1;
+                }
+                if self
+                    .swarm_info
+                    .as_ref()
+                    .map(|s| !s.managed_members.is_empty())
+                    .unwrap_or(false)
+                {
+                    sections += 1;
+                }
+                // The overview is a single always-visible panel: any section
+                // is enough, no multi-section join threshold.
+                sections >= 1
             }
             WidgetKind::Todos => !self.todos.is_empty(),
             WidgetKind::MemoryActivity => self
@@ -942,6 +981,10 @@ struct WidgetsState {
     /// of popping back for a few frames (which resizes the bottom chrome and
     /// bounces the transcript).
     swarm_dock_last_engaged: Option<Instant>,
+    /// Whether the last placement pass placed an Overview dock whose swarm
+    /// section has data (the Overview folds the swarm rows in, so the inline
+    /// strip stands down while it shows).
+    overview_carries_swarm: bool,
 }
 
 impl Default for WidgetsState {
@@ -954,6 +997,7 @@ impl Default for WidgetsState {
             settlement: super::info_widget_settle::SettlementTracker::default(),
             anchors_area_width: 0,
             swarm_dock_last_engaged: None,
+            overview_carries_swarm: false,
         }
     }
 }
@@ -1046,6 +1090,15 @@ pub fn calculate_placements(
     if swarm_dock_engaged(state) {
         state.swarm_dock_last_engaged = Some(Instant::now());
     }
+    state.overview_carries_swarm = state
+        .placements
+        .iter()
+        .any(|p| p.kind == WidgetKind::Overview)
+        && data
+            .swarm_info
+            .as_ref()
+            .map(|s| !s.managed_members.is_empty())
+            .unwrap_or(false);
     outcome.visible
 }
 
@@ -1059,9 +1112,12 @@ pub fn calculate_placements(
 /// strip's return by this much, once.
 const SWARM_STRIP_STAND_DOWN_LINGER: Duration = Duration::from_millis(2000);
 
-/// Whether the SwarmStatus dock widget is engaged: either actually placed, or
-/// hidden-in-place behind a live anchor (a wide transcript line is momentarily
-/// covering its slot and it will pop back into the same spot).
+/// Whether the swarm dock is engaged: either the SwarmStatus dock widget is
+/// actually placed, or hidden-in-place behind a live anchor (a wide transcript
+/// line is momentarily covering its slot and it will pop back into the same
+/// spot). Also engaged when the Overview dock is placed and its swarm section
+/// has data: the Overview folds the swarm rows in, so the inline strip would
+/// only duplicate it.
 fn swarm_dock_engaged(state: &WidgetsState) -> bool {
     state.enabled
         && (state
@@ -1071,7 +1127,8 @@ fn swarm_dock_engaged(state: &WidgetsState) -> bool {
             || state
                 .anchors
                 .iter()
-                .any(|a| a.placement.kind == WidgetKind::SwarmStatus))
+                .any(|a| a.placement.kind == WidgetKind::SwarmStatus)
+            || state.overview_carries_swarm)
 }
 
 /// Whether the inline swarm strip (above the status line) should stand down
@@ -1109,6 +1166,7 @@ pub(crate) fn note_widget_pass_skipped() {
         state.placements.clear();
         state.anchors.clear();
         state.swarm_dock_last_engaged = None;
+        state.overview_carries_swarm = false;
     }
 }
 
@@ -1123,6 +1181,7 @@ pub(crate) fn clear_widget_placements_for_tests() {
         state.placements.clear();
         state.anchors.clear();
         state.swarm_dock_last_engaged = None;
+        state.overview_carries_swarm = false;
     }
 }
 
@@ -1975,6 +2034,10 @@ fn render_sections(
 ) -> Vec<Line<'static>> {
     let mut lines: Vec<Line<'static>> = Vec::new();
 
+    // Section order matches master's Overview so both stay visually aligned:
+    // Runtime → Todos → Memory → Background → Usage → KV cache → Compaction
+    // → Changes → Commits → Swarm.
+
     // Detail layer only: model identity, context %, and branch/counts live on
     // the overscroll status line and are never repeated here.
     lines.extend(render_model_info(data, inner));
@@ -1989,7 +2052,7 @@ fn render_sections(
 
     // Memory info
     if let Some(info) = &data.memory_info
-        && (info.total_count > 0 || info.activity.is_some())
+        && info.should_render()
     {
         if matches!(focus, Some(InfoPageKind::MemoryExpanded)) {
             lines.extend(render_memory_expanded(info, inner));
@@ -2020,9 +2083,52 @@ fn render_sections(
         lines.push(render_kv_cache_summary_line(cache));
     }
 
+    // Compaction: one line, same detail the standalone widget carries on its
+    // body (the mode rides the standalone border, so it goes inline here).
+    if let Some(info) = data.compaction_info.as_ref() {
+        let summary_tokens = (info.summary_chars / crate::compaction::CHARS_PER_TOKEN)
+            .max(usize::from(info.summary_chars > 0));
+        let detail = format!(
+            "Compaction {} · {} old · {} active · ~{} summary tok · {}",
+            if info.is_compacting {
+                "compacting"
+            } else {
+                "compacted"
+            },
+            info.compacted_messages,
+            info.active_messages,
+            summary_tokens,
+            info.mode
+        );
+        let color = if info.is_compacting {
+            rgb(255, 220, 140)
+        } else {
+            rgb(110, 210, 140)
+        };
+        lines.push(Line::from(vec![
+            Span::styled("🗜  ", Style::default().fg(color)),
+            Span::styled(
+                truncate_smart(&detail, inner.width.saturating_sub(2) as usize),
+                Style::default().fg(rgb(180, 180, 190)),
+            ),
+        ]));
+    }
+
     // Changed files (the detail behind the line's git counts).
     if data.git_info.as_ref().is_some_and(changes_has_data) {
         lines.extend(render_git_widget(data, inner));
+    }
+
+    // Recent commits on the current branch.
+    if let Some(git) = data.git_info.as_ref() {
+        lines.extend(render_commits_compact(git, inner.width as usize));
+    }
+
+    // Managed swarm agents.
+    if let Some(swarm) = data.swarm_info.as_ref()
+        && !swarm.managed_members.is_empty()
+    {
+        lines.extend(render_swarm_compact(swarm, inner.width as usize));
     }
 
     lines

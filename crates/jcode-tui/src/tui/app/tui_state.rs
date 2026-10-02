@@ -1647,6 +1647,12 @@ impl crate::tui::TuiState for App {
             context_limit: Some(self.context_limit as usize),
             model,
             reasoning_effort,
+            // Agent model overrides (agents.swarm_model / agents.memory_model).
+            // None means inherit, which renders no row.
+            swarm_model_override: crate::config::config().agents.swarm_model.clone(),
+            swarm_model_effort: crate::config::config().agents.swarm_effort.clone(),
+            memory_model_override: crate::config::config().agents.memory_model.clone(),
+            memory_model_effort: crate::config::config().agents.memory_effort.clone(),
             service_tier,
             native_compaction_mode,
             native_compaction_threshold_tokens,
