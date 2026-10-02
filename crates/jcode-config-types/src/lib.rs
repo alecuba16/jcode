@@ -1705,7 +1705,6 @@ pub struct ProviderConfig {
     /// Maximum exponential-backoff delay between transient-error retries.
     /// Default: 30 seconds. Overridable via `JCODE_RETRY_BACKOFF_CAP_SECS`.
     pub retry_backoff_cap_secs: u64,
-<<<<<<< HEAD
     /// Whether the destructive-command risk gate is enabled.
     /// When enabled (default), the bash tool refuses catastrophic commands
     /// and requires justification for risky ones. When disabled, all commands
@@ -1736,16 +1735,6 @@ pub struct ProviderConfig {
     /// Default: 3. Overridable via `JCODE_AUTO_RETRY_MAX_ATTEMPTS`. Raise this
     /// for shared services that need more time to free up capacity.
     pub auto_retry_max_attempts: u8,
-||||||| 2df1f77e9
-=======
-    /// Global `User-Agent` override for provider HTTP requests. Provider
-    /// profiles that set their own `user_agent` take precedence over this.
-    pub user_agent: Option<String>,
-    /// Global extra HTTP headers applied to provider requests. Provider
-    /// profiles' own `headers` take precedence per header name.
-    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
-    pub headers: std::collections::BTreeMap<String, String>,
->>>>>>> feat/provider-ua-headers
 }
 
 impl Default for ProviderConfig {
@@ -1771,18 +1760,12 @@ impl Default for ProviderConfig {
             stream_idle_timeout_secs: 180,
             max_retries: 8,
             retry_backoff_cap_secs: 30,
-<<<<<<< HEAD
             risk_gate_enabled: true,
             user_agent: None,
             headers: std::collections::BTreeMap::new(),
             auto_retry_base_delay_secs: 2,
             auto_retry_enabled: true,
             auto_retry_max_attempts: 3,
-||||||| 2df1f77e9
-=======
-            user_agent: None,
-            headers: std::collections::BTreeMap::new(),
->>>>>>> feat/provider-ua-headers
         }
     }
 }

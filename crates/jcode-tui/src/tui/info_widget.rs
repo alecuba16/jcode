@@ -2479,6 +2479,11 @@ fn render_sections(
     // git counts all live there, so the widget skips this line entirely.
     if !data.status_line_active {
         let dir_label = data
+            .working_dir
+            .as_deref()
+            .filter(|d| !d.trim().is_empty())
+            .and_then(crate::tui::session_facts::dir_label_short)
+            .map(|label| truncate_smart(&label, w.saturating_sub(2)));
 
         let git_info = data.git_info.as_ref().filter(|g| !g.branch.is_empty());
 

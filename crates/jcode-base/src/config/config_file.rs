@@ -286,6 +286,30 @@ impl Config {
         Ok(())
     }
 
+    /// Update the persisted ask_user decision chooser toggle.
+    pub fn set_decisions_enabled(enabled: bool) -> anyhow::Result<()> {
+        let mut cfg = Self::load_for_update()?;
+        cfg.features.decisions = enabled;
+        cfg.save()?;
+        crate::logging::info(&format!(
+            "Saved features.decisions to config: {}",
+            enabled
+        ));
+        Ok(())
+    }
+
+    /// Update the persisted ask_user chooser timeout, in seconds (0 = wait forever).
+    pub fn set_decision_timeout_secs(secs: u64) -> anyhow::Result<()> {
+        let mut cfg = Self::load_for_update()?;
+        cfg.features.decision_timeout_secs = secs;
+        cfg.save()?;
+        crate::logging::info(&format!(
+            "Saved features.decision_timeout_secs to config: {}",
+            secs
+        ));
+        Ok(())
+    }
+
     /// Update the persisted show-agentgrep-output preference.
     pub fn set_show_agentgrep_output(show: bool) -> anyhow::Result<()> {
         let mut cfg = Self::load_for_update()?;

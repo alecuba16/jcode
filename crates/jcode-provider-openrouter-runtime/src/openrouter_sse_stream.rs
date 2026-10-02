@@ -118,7 +118,6 @@ pub(super) async fn run_stream_with_retries(
                 jcode_provider_core::fresh_transport_client()
             };
 
-<<<<<<< HEAD
             match stream_response(
                 attempt_client,
                 api_base.clone(),
@@ -173,64 +172,6 @@ pub(super) async fn run_stream_with_retries(
                             &model,
                             &error_str,
                         );
-||||||| 2df1f77e9
-        match stream_response(
-            attempt_client,
-            api_base.clone(),
-            auth.clone(),
-            send_openrouter_headers,
-            &conversation_id,
-            request.clone(),
-            attempt_tx,
-            Arc::clone(&provider_pin),
-            model.clone(),
-        )
-        .await
-        {
-            Ok(()) => {
-                let _ = attempt_guard.finish().await;
-                return;
-            }
-            Err(e) => {
-                let saw_output = attempt_guard.finish().await;
-                // Full anyhow chain ({:#}) so a `.context(...)`-wrapped transport
-                // cause (e.g. TLS BadRecordMac) is visible to the classifier.
-                let error_str = format!("{e:#}").to_lowercase();
-                if is_retryable_error(&error_str) && attempt + 1 < max_retries {
-                    if saw_output {
-                        // Partial output already reached the consumer; tell it
-                        // to discard the partial attempt so the retried
-                        // response replays cleanly instead of duplicating.
-=======
-        match stream_response(
-            attempt_client,
-            api_base.clone(),
-            auth.clone(),
-            send_openrouter_headers,
-            http_header_overrides.clone(),
-            &conversation_id,
-            request.clone(),
-            attempt_tx,
-            Arc::clone(&provider_pin),
-            model.clone(),
-        )
-        .await
-        {
-            Ok(()) => {
-                let _ = attempt_guard.finish().await;
-                return;
-            }
-            Err(e) => {
-                let saw_output = attempt_guard.finish().await;
-                // Full anyhow chain ({:#}) so a `.context(...)`-wrapped transport
-                // cause (e.g. TLS BadRecordMac) is visible to the classifier.
-                let error_str = format!("{e:#}").to_lowercase();
-                if is_retryable_error(&error_str) && attempt + 1 < max_retries {
-                    if saw_output {
-                        // Partial output already reached the consumer; tell it
-                        // to discard the partial attempt so the retried
-                        // response replays cleanly instead of duplicating.
->>>>>>> feat/provider-ua-headers
                         jcode_base::logging::warn(&format!(
                             "Endpoint rejected image input for model {model}; \
                              retrying once with images replaced by text markers"

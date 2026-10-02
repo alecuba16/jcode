@@ -2345,6 +2345,7 @@ mod tests {
         let sidecar = Sidecar::with_configured_model(
             Some("my-pinned-model".to_string()),
             Some("provider".to_string()),
+            None,
         );
         assert_eq!(sidecar.backend, SidecarBackend::Provider);
         assert_eq!(

@@ -3522,7 +3522,8 @@ fn handle_settings_command(app: &mut App, trimmed: &str) -> bool {
     let rest = trimmed.strip_prefix("/settings").unwrap_or_default().trim();
 
     if rest.is_empty() || matches!(rest, "show" | "status") {
-        let saved = crate::config::Config::load().provider.risk_gate_enabled;
+        let saved_config = crate::config::Config::load();
+        let saved = saved_config.provider.risk_gate_enabled;
         let env_override = std::env::var("JCODE_RISK_GATE_ENABLED").ok();
         let effective = match &env_override {
             Some(raw) => !matches!(
@@ -3545,51 +3546,6 @@ fn handle_settings_command(app: &mut App, trimmed: &str) -> bool {
                 env
             ));
         }
-        msg.push_str("\nUse /settings risk-gate on or /settings risk-gate off to toggle.");
-        app.push_display_message(DisplayMessage::system(msg));
-        return true;
-    }
-
-    if let Some(value) = rest.strip_prefix("risk-gate ") {
-        let enabled = match value.trim().to_lowercase().as_str() {
-            "on" | "true" | "enable" | "enabled" | "1" => true,
-            "off" | "false" | "disable" | "disabled" | "0" => false,
-            _ => {
-                app.push_display_message(DisplayMessage::error(
-                    "Usage: /settings risk-gate on|off".to_string(),
-                ));
-                return true;
-            }
-        };
-        match crate::config::Config::set_risk_gate_enabled(enabled) {
-            Ok(()) => {
-                app.push_display_message(DisplayMessage::system(format!(
-                    "✓ Risk Gate ..... {}\nSaved to config.toml. New sessions will inherit this setting.",
-                    if enabled { "enabled" } else { "disabled" }
-                )));
-                app.set_status_notice(format!("Risk Gate: {}", if enabled { "on" } else { "off" }));
-            }
-            Err(error) => {
-                app.push_display_message(DisplayMessage::error(format!(
-                    "Failed to save risk gate setting: {error}"
-                )));
-            }
-        }
-        return true;
-    }
-
-    if rest == "risk-gate" {
-        app.push_display_message(DisplayMessage::error(
-            "Usage: /settings risk-gate on|off".to_string(),
-        ));
-        return true;
-    }
-
-    app.push_display_message(DisplayMessage::error(
-        "Usage: /settings (show), /settings risk-gate on, /settings risk-gate off".to_string(),
-    ));
-
-        let saved_config = crate::config::Config::load();
         let decisions_saved = saved_config.features.decisions;
         let decision_timeout_saved = saved_config.features.decision_timeout_secs;
         let decisions_env = std::env::var("JCODE_DECISIONS").ok();

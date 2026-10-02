@@ -1818,7 +1818,6 @@ fn removed_overscroll_status_key_still_loads_config() {
 }
 
 #[test]
-<<<<<<< HEAD
 fn named_provider_model_reasoning_map_parses_from_toml() {
     let _guard = crate::storage::lock_test_env();
     let prev_home = std::env::var_os("JCODE_HOME");
@@ -1917,8 +1916,9 @@ turbo = { reasoningEffort = "ultra" }
 
     restore_env_var("JCODE_HOME", prev_home);
     Config::invalidate_cache();
-||||||| 2df1f77e9
-=======
+}
+
+#[test]
 fn provider_header_overrides_parse_from_toml() {
     let config: Config = toml::from_str(
         r#"
@@ -1970,5 +1970,4 @@ fn named_provider_user_agent_and_headers_parse_from_toml() {
         profile.headers.get("x-route").map(String::as_str),
         Some("profile")
     );
->>>>>>> feat/provider-ua-headers
 }

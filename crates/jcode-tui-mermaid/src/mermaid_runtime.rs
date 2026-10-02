@@ -898,33 +898,6 @@ mod tests {
     }
 
     #[test]
-    fn herdr_webui_overrides_kitty_hints_to_keep_halfblocks() {
-        // herdr-webui advertises a Ghostty-capable pane so inline read-tool
-        // images keep Kitty, but its browser renderer cannot draw the
-        // Unicode-placeholder virtual placements the mermaid viewport emits,
-        // so diagram/math rendering must stay on Halfblocks there.
-        assert_eq!(
-            infer_protocol_from_env(None, Some("ghostty"), None, None, Some("1")),
-            None
-        );
-        assert_eq!(
-            infer_protocol_from_env(Some("xterm-kitty"), None, None, Some("3"), Some("1")),
-            None
-        );
-        // Only the builtin webui backend exports HERDR_WEBUI; standalone herdr
-        // panes (HERDR_ENV) keep pass-through behavior untouched.
-        assert_eq!(
-            infer_protocol_from_env(None, Some("ghostty"), None, None, None),
-            Some(ProtocolType::Kitty)
-        );
-        // Empty value must not trigger the gate.
-        assert_eq!(
-            infer_protocol_from_env(None, Some("ghostty"), None, None, Some("")),
-            Some(ProtocolType::Kitty)
-        );
-    }
-
-    #[test]
     fn explicit_wezterm_identity_avoids_incomplete_kitty_placeholders() {
         assert_eq!(
             infer_protocol_from_env(

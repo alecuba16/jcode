@@ -77,6 +77,7 @@ fn test_provider_choice_arg_values() {
         "openai-compatible"
     );
     assert_eq!(ProviderChoice::Cursor.as_arg_value(), "cursor");
+    assert_eq!(ProviderChoice::CursorAcp.as_arg_value(), "cursor-acp");
     assert_eq!(ProviderChoice::Copilot.as_arg_value(), "copilot");
     assert_eq!(ProviderChoice::Gemini.as_arg_value(), "gemini");
     assert_eq!(ProviderChoice::Antigravity.as_arg_value(), "antigravity");
@@ -985,9 +986,6 @@ async fn auto_provider_noninteractive_skips_untrusted_external_auth_instead_of_b
     .chain(PROFILE_ENV_KEYS.iter())
     {
         crate::env::remove_var(*key);
-    }
-    for key in &profile_key_vars {
-        crate::env::remove_var(key);
     }
     for key in &profile_key_vars {
         crate::env::remove_var(key);
