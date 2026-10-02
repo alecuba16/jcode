@@ -2526,6 +2526,10 @@ fn render_sections(
         lines.extend(render_model_info(data, inner));
     }
 
+    if !data.mcp_servers.is_empty() {
+        lines.extend(render_mcp_servers_line(&data.mcp_servers, inner.width));
+    }
+
     // Usage info (subscription bars with reset times only).
     // Placed right after model info, above the context bar.
     // CostBased/Copilot cost+tokens are in the cost line below.
