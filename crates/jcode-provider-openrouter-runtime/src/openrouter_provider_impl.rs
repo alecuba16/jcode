@@ -281,9 +281,14 @@ impl Provider for OpenRouterProvider {
         // same stripped form the lookups use.
         let model_for_stream = self.strip_session_profile_prefix(&model).to_string();
         let provider_pin = Arc::clone(&self.provider_pin);
+<<<<<<< HEAD
         // Same capability scope `supports_image_input` looks up under: the
         // stream records rejections under the identical key the lookup uses.
         let capability_scope_key = self.capability_scope_key();
+||||||| 2df1f77e9
+=======
+        let http_header_overrides = self.http_header_overrides.clone();
+>>>>>>> feat/provider-ua-headers
 
         tokio::spawn(async move {
             if tx
