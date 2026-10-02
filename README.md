@@ -410,7 +410,6 @@ max_files = 5000
 Zero or missing values fall back to the built-in defaults shown above.
 
 Outside-workspace files are reachable too. Type `@~` to browse your home directory (`@~/Doc…` expands `$HOME`) or `@/` for an absolute path from the filesystem root. These queries skip the frecency index entirely: they read the parent directory live, so they never pollute your ranking history. Selected files attach as chips exactly like workspace files, with the `~` expanded to the real path when the prompt is sent.
->>>>>>> f3dbb34 (feat(tui): @file mention picker with frecency ranking, closes #570)
 
 Jcode can render at over a thousand fps. Your monitor will not have the refresh rate to show you, but this means you will not have silly flicker problems. 
 
