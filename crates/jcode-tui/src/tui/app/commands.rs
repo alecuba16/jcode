@@ -28,6 +28,7 @@ use crate::id;
 use crate::message::{ContentBlock, Message, Role};
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::Arc;
 use std::time::Instant;
 
 pub(super) const REVIEW_PREFERRED_MODEL: &str = "gpt-5.5";
@@ -76,6 +77,21 @@ pub(super) fn parse_poke_command(trimmed: &str) -> Option<Result<PokeCommand, St
 
 pub(super) fn is_poke_message(message: &str) -> bool {
     crate::todo::is_auto_poke_message(message)
+}
+
+/// Extract the search query from `/sessions <query>` (and the `/session` /
+/// `/resume` aliases). Returns `None` for the bare commands and for
+/// whitespace-only queries, so those keep the exact pre-existing behavior.
+pub(super) fn parse_session_picker_query(trimmed: &str) -> Option<&str> {
+    ["/sessions", "/session", "/resume"]
+        .iter()
+        .find_map(|command| trimmed.strip_prefix(*command))
+        // Require at least one whitespace char after the command so bare
+        // commands fall through to the exact-match handler above, and
+        // `/resumeall`/`/resume-all` never match.
+        .filter(|rest| rest.starts_with(char::is_whitespace))
+        .map(str::trim)
+        .filter(|query| !query.is_empty())
 }
 
 pub(super) fn is_todo_confidence_summary_message(message: &str) -> bool {
@@ -323,6 +339,8 @@ pub(super) fn activate_auto_poke_local(app: &mut App) {
             app.streaming.streaming_total_output_tokens = 0;
             app.streaming.streaming_tps_observed_output_tokens = 0;
             app.streaming.streaming_tps_observed_elapsed = std::time::Duration::ZERO;
+            app.streaming.last_displayed_tps = None;
+            app.streaming.streaming_total_tps_start = None;
             app.processing_started = Some(Instant::now());
             app.visible_turn_started = Some(Instant::now());
             app.pending_turn = true;
@@ -704,6 +722,7 @@ fn launch_manual_subagent(app: &mut App, spec: ManualSubagentSpec) {
             tool_call_id: tool_call_for_task.id.clone(),
             working_dir: working_dir.as_deref().map(PathBuf::from),
             stdin_request_tx: None,
+            decision_request_tx: None,
             graceful_shutdown_signal: None,
             execution_mode: crate::tool::ToolExecutionMode::Direct,
         };
@@ -1741,6 +1760,15 @@ pub(super) fn handle_session_command(app: &mut App, trimmed: &str) -> bool {
 
     if trimmed == "/resume" || trimmed == "/sessions" || trimmed == "/session" {
         app.open_session_picker();
+        app.record_keybinding_slow(super::shortcut_hints::LearnableAction::Resume);
+        return true;
+    }
+
+    // `/sessions <query>` / `/session <query>` open the picker pre-filtered,
+    // with the search bar active. `/resume <query>` is kept working the same
+    // way for consistency across the three aliases.
+    if let Some(query) = parse_session_picker_query(trimmed) {
+        app.open_session_picker_with_query(Some(query));
         app.record_keybinding_slow(super::shortcut_hints::LearnableAction::Resume);
         return true;
     }
@@ -3356,6 +3384,81 @@ fn handle_alignment_command(app: &mut App, trimmed: &str) -> bool {
     true
 }
 
+fn handle_theme_command(app: &mut App, trimmed: &str) -> bool {
+    if !trimmed.starts_with("/theme") {
+        return false;
+    }
+
+    let rest = trimmed.strip_prefix("/theme").unwrap_or_default().trim();
+
+    if rest.is_empty() || matches!(rest, "show" | "status") {
+        let saved = crate::config::Config::load().display.theme;
+        let current = match jcode_tui_style::theme_mode() {
+            jcode_tui_style::ThemeMode::Dark => "dark",
+            jcode_tui_style::ThemeMode::Light => "light",
+        };
+        let configured = if saved.trim().is_empty() || saved == "auto" {
+            "auto (system detection)".to_string()
+        } else {
+            saved.clone()
+        };
+        app.push_display_message(DisplayMessage::system(format!(
+            "Theme is currently {current}.\nSaved config: {configured}.\n\nModes:\n  - light: force light theme\n  - dark: force dark theme\n  - system / auto: detect from terminal background\n  - <name>: load ~/.jcode/themes/<name>.toml\n\nUse /theme <light|dark|system|name> to change it. Changes apply immediately."
+        )));
+        return true;
+    }
+
+    let theme_value = match rest.to_ascii_lowercase().as_str() {
+        "light" => "light".to_string(),
+        "dark" => "dark".to_string(),
+        "system" | "auto" => "auto".to_string(),
+        _ => {
+            let theme_dir = crate::storage::app_config_dir()
+                .ok()
+                .map(|dir| dir.join("themes"));
+            match jcode_tui_style::theme::load_theme(rest, theme_dir.as_deref()) {
+                Ok(_) => rest.to_string(),
+                Err(error) => {
+                    app.push_display_message(DisplayMessage::error(format!(
+                        "Unknown theme '{rest}'. Use /theme light, /theme dark, /theme system, or a custom theme from ~/.jcode/themes/<name>.toml.\n{error}"
+                    )));
+                    return true;
+                }
+            }
+        }
+    };
+
+    // Save to config
+    match crate::config::Config::set_display_theme(&theme_value) {
+        Ok(()) => {
+            // Apply theme immediately at runtime
+            let mode = if theme_value == "light" {
+                jcode_tui_style::ThemeMode::Light
+            } else if theme_value == "dark" {
+                jcode_tui_style::ThemeMode::Dark
+            } else {
+                // system/auto: detect from terminal
+                crate::tui::theme_detect::init_theme_mode()
+            };
+            jcode_tui_style::set_theme_mode(mode);
+            // Re-apply palette in case a custom theme file is configured
+            crate::tui::theme_detect::apply_configured_palette();
+
+            app.push_display_message(DisplayMessage::system(format!(
+                "Theme set to {theme_value}. Applied immediately."
+            )));
+            app.set_status_notice(format!("Theme: {theme_value}"));
+        }
+        Err(error) => {
+            app.push_display_message(DisplayMessage::error(format!(
+                "Failed to save theme: {error}"
+            )));
+        }
+    }
+
+    true
+}
+
 fn handle_reasoning_display_command(app: &mut App, trimmed: &str) -> bool {
     if trimmed != "/reasoning"
         && !trimmed.starts_with("/reasoning ")
@@ -3411,12 +3514,316 @@ fn handle_reasoning_display_command(app: &mut App, trimmed: &str) -> bool {
     true
 }
 
+fn handle_settings_command(app: &mut App, trimmed: &str) -> bool {
+    if trimmed != "/settings" && !trimmed.starts_with("/settings ") {
+        return false;
+    }
+
+    let rest = trimmed.strip_prefix("/settings").unwrap_or_default().trim();
+
+    if rest.is_empty() || matches!(rest, "show" | "status") {
+        let saved = crate::config::Config::load().provider.risk_gate_enabled;
+        let env_override = std::env::var("JCODE_RISK_GATE_ENABLED").ok();
+        let effective = match &env_override {
+            Some(raw) => !matches!(
+                raw.trim().to_lowercase().as_str(),
+                "0" | "false" | "no" | "off"
+            ),
+            None => saved,
+        };
+        let mut msg = format!(
+            "Settings:\n\nRisk Gate ..... {}\n",
+            if effective { "enabled" } else { "disabled" }
+        );
+        msg.push_str(&format!(
+            "Saved default: {}\n",
+            if saved { "enabled" } else { "disabled" }
+        ));
+        if let Some(env) = &env_override {
+            msg.push_str(&format!(
+                "Env override (JCODE_RISK_GATE_ENABLED={}): active\n",
+                env
+            ));
+        }
+
+        let saved_config = crate::config::Config::load();
+        let decisions_saved = saved_config.features.decisions;
+        let decision_timeout_saved = saved_config.features.decision_timeout_secs;
+        let decisions_env = std::env::var("JCODE_DECISIONS").ok();
+        let timeout_env = std::env::var("JCODE_DECISION_TIMEOUT_SECS").ok();
+        let decisions_effective = match &decisions_env {
+            Some(raw) => !matches!(
+                raw.trim().to_lowercase().as_str(),
+                "0" | "false" | "no" | "off"
+            ),
+            None => decisions_saved,
+        };
+        let timeout_effective = match &timeout_env {
+            Some(raw) => raw.trim().parse::<u64>().unwrap_or(decision_timeout_saved),
+            None => decision_timeout_saved,
+        };
+        msg.push_str(&format!(
+            "\nDecision Chooser ..... {}\n",
+            if decisions_effective {
+                "enabled"
+            } else {
+                "disabled"
+            }
+        ));
+        msg.push_str(&format!(
+            "Saved default: {}\n",
+            if decisions_saved {
+                "enabled"
+            } else {
+                "disabled"
+            }
+        ));
+        if let Some(env) = &decisions_env {
+            msg.push_str(&format!("Env override (JCODE_DECISIONS={}): active\n", env));
+        }
+        msg.push_str(&format!(
+            "Decision Timeout ..... {}\n",
+            if timeout_effective == 0 {
+                "wait forever".to_string()
+            } else {
+                format!("{}s", timeout_effective)
+            }
+        ));
+        msg.push_str(&format!("Saved default: {}s\n", decision_timeout_saved));
+        if let Some(env) = &timeout_env {
+            msg.push_str(&format!(
+                "Env override (JCODE_DECISION_TIMEOUT_SECS={}): active\n",
+                env
+            ));
+        }
+
+        msg.push_str(
+            "\nUse /settings risk-gate on or /settings risk-gate off to toggle.\
+             \nUse /settings decisions on|off and /settings decision-timeout <secs|0> for the chooser.",
+        );
+        app.push_display_message(DisplayMessage::system(msg));
+        return true;
+    }
+
+    if let Some(value) = rest.strip_prefix("risk-gate ") {
+        let enabled = match value.trim().to_lowercase().as_str() {
+            "on" | "true" | "enable" | "enabled" | "1" => true,
+            "off" | "false" | "disable" | "disabled" | "0" => false,
+            _ => {
+                app.push_display_message(DisplayMessage::error(
+                    "Usage: /settings risk-gate on|off".to_string(),
+                ));
+                return true;
+            }
+        };
+        match crate::config::Config::set_risk_gate_enabled(enabled) {
+            Ok(()) => {
+                app.push_display_message(DisplayMessage::system(format!(
+                    "✓ Risk Gate ..... {}\nSaved to config.toml. New sessions will inherit this setting.",
+                    if enabled { "enabled" } else { "disabled" }
+                )));
+                app.set_status_notice(format!("Risk Gate: {}", if enabled { "on" } else { "off" }));
+            }
+            Err(error) => {
+                app.push_display_message(DisplayMessage::error(format!(
+                    "Failed to save risk gate setting: {error}"
+                )));
+            }
+        }
+        return true;
+    }
+
+    if rest == "risk-gate" {
+        app.push_display_message(DisplayMessage::error(
+            "Usage: /settings risk-gate on|off".to_string(),
+        ));
+        return true;
+    }
+
+    if let Some(value) = rest.strip_prefix("decisions ") {
+        let enabled = match value.trim().to_lowercase().as_str() {
+            "on" | "true" | "enable" | "enabled" | "1" => true,
+            "off" | "false" | "disable" | "disabled" | "0" => false,
+            _ => {
+                app.push_display_message(DisplayMessage::error(
+                    "Usage: /settings decisions on|off".to_string(),
+                ));
+                return true;
+            }
+        };
+        match crate::config::Config::set_decisions_enabled(enabled) {
+            Ok(()) => {
+                app.push_display_message(DisplayMessage::system(format!(
+                    "✓ Decision Chooser ..... {}\nSaved to config.toml. New sessions will inherit this setting.",
+                    if enabled { "enabled" } else { "disabled" }
+                )));
+                app.set_status_notice(format!(
+                    "Decision Chooser: {}",
+                    if enabled { "on" } else { "off" }
+                ));
+            }
+            Err(error) => {
+                app.push_display_message(DisplayMessage::error(format!(
+                    "Failed to save decisions setting: {error}"
+                )));
+            }
+        }
+        return true;
+    }
+
+    if rest == "decisions" {
+        app.push_display_message(DisplayMessage::error(
+            "Usage: /settings decisions on|off".to_string(),
+        ));
+        return true;
+    }
+
+    if let Some(value) = rest.strip_prefix("decision-timeout ") {
+        let Some(secs) = value.trim().parse::<u64>().ok() else {
+            app.push_display_message(DisplayMessage::error(
+                "Usage: /settings decision-timeout <secs> (0 = wait forever)".to_string(),
+            ));
+            return true;
+        };
+        match crate::config::Config::set_decision_timeout_secs(secs) {
+            Ok(()) => {
+                let label = if secs == 0 {
+                    "wait forever".to_string()
+                } else {
+                    format!("{}s", secs)
+                };
+                app.push_display_message(DisplayMessage::system(format!(
+                    "✓ Decision Timeout ..... {}\nSaved to config.toml. New sessions will inherit this setting.",
+                    label
+                )));
+                app.set_status_notice(format!("Decision Timeout: {}", label));
+            }
+            Err(error) => {
+                app.push_display_message(DisplayMessage::error(format!(
+                    "Failed to save decision timeout setting: {error}"
+                )));
+            }
+        }
+        return true;
+    }
+
+    if rest == "decision-timeout" {
+        app.push_display_message(DisplayMessage::error(
+            "Usage: /settings decision-timeout <secs> (0 = wait forever)".to_string(),
+        ));
+        return true;
+    }
+
+    app.push_display_message(DisplayMessage::error(
+        "Usage: /settings (show), /settings risk-gate on|off, /settings decisions on|off, \
+         /settings decision-timeout <secs|0>"
+            .to_string(),
+    ));
+    true
+}
+
+/// Handle `/settings tps` to view or change the TPS display settings.
+///
+/// Interval modes:
+/// - `generation` (default): only counts model output-generation time,
+///   excluding tool execution and rate-limit waits.
+/// - `total`: counts the full wall-clock time between responses, including
+///   tool execution, rate limits, and network overhead so the effective
+///   throughput reflects what the user actually experiences.
+///
+/// Visibility:
+/// - `on`/`off`: show or hide every t/s readout (`display.show_tps`).
+fn handle_tps_interval_command(app: &mut App, trimmed: &str) -> bool {
+    let rest = match trimmed
+        .strip_prefix("/settings tps")
+        .or_else(|| trimmed.strip_prefix("/setting tps"))
+    {
+        Some(r) => r.trim(),
+        None => return false,
+    };
+
+    // Visibility switch: /settings tps on|off, accepting the same
+    // boolean-like spellings as the other display toggles.
+    if let Some(enabled) = parse_on_off_value(rest) {
+        app.set_status_notice(format!(
+            "TPS display: {}",
+            if enabled { "on" } else { "off" }
+        ));
+        match crate::config::Config::set_show_tps(enabled) {
+            Ok(()) => app.push_display_message(DisplayMessage::system(format!(
+                "Saved TPS display: {}. Applied to this session immediately.",
+                if enabled { "on" } else { "off" }
+            ))),
+            Err(error) => app.push_display_message(DisplayMessage::error(format!(
+                "Applied TPS display {} for this session, but failed to save it as the default: {}",
+                if enabled { "on" } else { "off" },
+                error
+            ))),
+        }
+        return true;
+    }
+
+    if rest.is_empty() || matches!(rest, "show" | "status") {
+        let display_cfg = &crate::config::config().display;
+        let current = display_cfg.tps_interval;
+        let visibility = if display_cfg.show_tps { "on" } else { "off" };
+        app.push_display_message(DisplayMessage::system(format!(
+            "TPS interval mode: {}.\n\
+             TPS display is currently {}.\n\n\
+             Modes:\n\
+             \x20\x20• generation - only count model output-generation time (excludes tool execution and rate-limit waits)\n\
+             \x20\x20• total - count the full wall-clock time between responses (includes tool execution, rate limits, and network overhead)\n\n\
+             Use /settings tps <generation|total> to change the interval, or /settings tps <on|off> to show/hide every t/s readout.",
+            current.label(),
+            visibility
+        )));
+        return true;
+    }
+
+    let Some(mode) = crate::config::TpsIntervalMode::parse(rest) else {
+        app.push_display_message(DisplayMessage::error(
+            "Usage: /settings tps (show), /settings tps <generation|total>, or /settings tps <on|off>".to_string(),
+        ));
+        return true;
+    };
+
+    app.set_status_notice(format!("TPS interval: {}", mode.label()));
+    match crate::config::Config::set_tps_interval(mode) {
+        Ok(()) => app.push_display_message(DisplayMessage::system(format!(
+            "Saved TPS interval: {}. Applied to this session immediately.",
+            mode.label()
+        ))),
+        Err(error) => app.push_display_message(DisplayMessage::error(format!(
+            "Applied TPS interval {} for this session, but failed to save it as the default: {}",
+            mode.label(),
+            error
+        ))),
+    }
+
+    true
+}
+
 pub(super) fn handle_config_command(app: &mut App, trimmed: &str) -> bool {
     if handle_alignment_command(app, trimmed) {
         return true;
     }
 
+    if handle_theme_command(app, trimmed) {
+        return true;
+    }
+
     if handle_reasoning_display_command(app, trimmed) {
+        return true;
+    }
+
+    // `/settings tps ...` must be dispatched before the generic
+    // `/settings` handler, which otherwise claims any `/settings` input it
+    // does not understand and answers with its own usage error.
+    if handle_tps_interval_command(app, trimmed) {
+        return true;
+    }
+
+    if handle_settings_command(app, trimmed) {
         return true;
     }
 
@@ -3687,6 +4094,190 @@ pub(super) fn handle_config_command(app: &mut App, trimmed: &str) -> bool {
     }
 
     false
+}
+
+pub(super) fn handle_mcp_command(app: &mut App, trimmed: &str) -> bool {
+    let Some(rest) = trimmed.strip_prefix("/mcp") else {
+        return false;
+    };
+
+    if !rest.is_empty()
+        && !rest
+            .chars()
+            .next()
+            .map(|c| c.is_whitespace())
+            .unwrap_or(false)
+    {
+        return false;
+    }
+
+    let args = rest.trim();
+    if args.is_empty() || args == "status" {
+        app.push_display_message(DisplayMessage::system(format_mcp_status(app)));
+        return true;
+    }
+
+    let mut parts = args.split_whitespace();
+    let Some(action) = parts.next() else {
+        app.push_display_message(DisplayMessage::error(
+            "Usage: /mcp status, /mcp enable <server>, /mcp disable <server>".to_string(),
+        ));
+        return true;
+    };
+    let server_name = parts.collect::<Vec<_>>().join(" ");
+
+    let server_name = server_name.trim();
+    if server_name.is_empty() {
+        app.push_display_message(DisplayMessage::error(
+            "Usage: /mcp enable <server> or /mcp disable <server>".to_string(),
+        ));
+        return true;
+    }
+
+    match action {
+        "enable" => toggle_mcp_server_from_tui(app, server_name, true),
+        "disable" => toggle_mcp_server_from_tui(app, server_name, false),
+        _ => app.push_display_message(DisplayMessage::error(
+            "Usage: /mcp status, /mcp enable <server>, /mcp disable <server>".to_string(),
+        )),
+    }
+    true
+}
+
+fn format_mcp_status(app: &App) -> String {
+    if app.mcp_config.servers.is_empty() {
+        return "MCP servers: none configured. Add servers to ~/.jcode/mcp.json.".to_string();
+    }
+
+    let mut connected: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+    for (name, count) in &app.mcp_server_names {
+        connected.insert(name.as_str(), *count);
+    }
+
+    let mut servers: Vec<_> = app.mcp_config.servers.iter().collect();
+    servers.sort_by(|a, b| a.0.cmp(b.0));
+
+    let mut lines = Vec::with_capacity(servers.len() + 2);
+    lines.push("MCP servers:".to_string());
+    for (name, config) in servers {
+        let enabled = if config.is_enabled() {
+            "enabled"
+        } else {
+            "disabled"
+        };
+        let connected_label = match connected.get(name.as_str()) {
+            Some(count) => format!("connected, {count} tool(s)"),
+            None => "not connected".to_string(),
+        };
+        lines.push(format!("• {name}: {enabled}, {connected_label}"));
+    }
+    lines.push("Use /mcp enable <server> or /mcp disable <server>.".to_string());
+    lines.join("\n")
+}
+
+fn toggle_mcp_server_from_tui(app: &mut App, server_name: &str, enable: bool) {
+    let Some(mut server_config) = app.mcp_config.servers.get(server_name).cloned() else {
+        app.push_display_message(DisplayMessage::error(format!(
+            "MCP server '{server_name}' not found. Add it to ~/.jcode/mcp.json first."
+        )));
+        return;
+    };
+
+    server_config.disabled = Some(!enable);
+    server_config.enabled = Some(enable);
+
+    let mut saved_config = app.mcp_config.clone();
+    saved_config
+        .servers
+        .insert(server_name.to_string(), server_config);
+
+    let path = match crate::storage::jcode_dir() {
+        Ok(dir) => dir.join("mcp.json"),
+        Err(error) => {
+            app.push_display_message(DisplayMessage::error(format!(
+                "Failed to resolve ~/.jcode for MCP config: {error}"
+            )));
+            return;
+        }
+    };
+
+    if let Err(error) = saved_config.save_to_file(&path) {
+        app.push_display_message(DisplayMessage::error(format!(
+            "Failed to save MCP config to {}: {error}",
+            path.display()
+        )));
+        return;
+    }
+
+    app.mcp_config = crate::mcp::McpConfig::load_for_dir(
+        app.session.working_dir.as_deref().map(std::path::Path::new),
+    );
+    app.command_suggestions_cache.replace(None);
+
+    if let Ok(mut manager) = app.mcp_manager.try_write() {
+        manager.reload_config();
+    }
+
+    // Spawn async background work so the sync handler returns immediately.
+    // Disable: disconnect the server and unregister its tool proxies so they
+    // vanish from the prompt. Enable: connect and register tools.
+    let manager = Arc::clone(&app.mcp_manager);
+    let registry = app.registry.clone();
+    let server_name_owned = server_name.to_string();
+    tokio::spawn(async move {
+        let prefix = crate::mcp::dispatch_name(&server_name_owned, "");
+        if enable {
+            // Connect the server and register its tools.
+            let cfg = manager.read().await;
+            let server_config = cfg.config().servers.get(&server_name_owned).cloned();
+            drop(cfg);
+            if let Some(config) = server_config {
+                let connect_result = manager
+                    .read()
+                    .await
+                    .connect(&server_name_owned, &config)
+                    .await;
+                if connect_result.is_ok() {
+                    let tools = crate::mcp::create_mcp_tools_for_server(
+                        Arc::clone(&manager),
+                        &server_name_owned,
+                    )
+                    .await;
+                    for (name, tool) in tools {
+                        if name.starts_with(&prefix) {
+                            registry.register(name, tool).await;
+                        }
+                    }
+                }
+            }
+        } else {
+            // Disconnect the server and unregister its tool proxies.
+            let mgr = manager.read().await;
+            let connected = mgr.connected_servers().await;
+            if connected.contains(&server_name_owned)
+                && let Err(error) = mgr.disconnect(&server_name_owned).await
+            {
+                // The toggle already reported success; keep the failure
+                // visible in the event log for diagnosis.
+                crate::logging::event_error(
+                    "mcp_toggle_disconnect_failed",
+                    vec![
+                        ("server", server_name_owned.clone()),
+                        ("error", error.to_string()),
+                    ],
+                );
+            }
+            drop(mgr);
+            registry.unregister_prefix(&prefix).await;
+        }
+    });
+
+    let state = if enable { "enabled" } else { "disabled" };
+    app.set_status_notice(format!("MCP {server_name}: {state}"));
+    app.push_display_message(DisplayMessage::system(format!(
+        "MCP server '{server_name}' {state}. Saved to {}.",
+        path.display()
+    )));
 }
 
 pub(super) fn handle_usage_command(app: &mut App, trimmed: &str) -> bool {

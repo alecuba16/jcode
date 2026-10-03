@@ -20,7 +20,7 @@ pub(super) fn truncate_smart(s: &str, max_len: usize) -> String {
     format!("{}...", prefix)
 }
 
-pub(super) fn truncate_chars(s: &str, max_chars: usize) -> &str {
+pub(crate) fn truncate_chars(s: &str, max_chars: usize) -> &str {
     match s.char_indices().nth(max_chars) {
         Some((idx, _)) => &s[..idx],
         None => s,

@@ -329,6 +329,33 @@ Memories are automatically consolidated every so often via the ambient mode. Thi
 
 <!-- Memory demo media is hosted in the readme-assets release. -->
 
+### Memory sidecar backend
+
+The memory sidecar uses an LLM to judge relevance and extract memories. By default it auto-selects the best backend: OpenAI (GPT-5.6 Luna) if Codex credentials exist, then Claude, then the active agent provider.
+
+If you use a custom OpenAI-compatible provider (e.g. a company gateway) and want the sidecar to use your model instead of OpenAI/Claude, set `memory_sidecar_backend = "provider"` in `[agents]`:
+
+```toml
+[agents]
+memory_sidecar_backend = "provider"
+# Optional: pin a specific model (applied to the provider via set_model;
+# defaults to your active provider's model if unset)
+# memory_model = "my-model-id"
+```
+
+This dispatches through the active provider via `complete_simple`, so it works with any provider jcode supports (Copilot, Gemini, Cursor, Bedrock, OpenRouter, custom OpenAI-compatible, etc.).
+
+Other backend options:
+
+| Value | Description |
+|-------|-------------|
+| `"auto"` (default) | Auto-select: OpenAI > Claude > active provider |
+| `"openai"` | Force OpenAI Responses API (requires Codex credentials) |
+| `"claude"` | Force Claude Messages API (requires Claude credentials) |
+| `"provider"` | Dispatch through the active agent provider |
+
+Env override: `JCODE_MEMORY_SIDECAR_BACKEND`
+
 ---
 
 ## UI: Side panels, Diagrams, Info Widgets, rendering, scrolling, alignment
@@ -340,7 +367,50 @@ The side panel is a place for auxiliary information. Tell your jcode agent to lo
 
 To make this possible, I created a new mermaid rendering library to render diagrams 1800x faster. It has no browser or Typescript dependency. See https://github.com/1jehuang/mermaid-rs-renderer
 
-To show you important information without taking space away from the screen that could be used for responses, I developed info widgets. Info widgets will only ever take up the negative space on the screen to show you information, and will get out of the way if there isn't any. 
+To show you important information without taking space away from the screen that could be used for responses, I developed info widgets. Info widgets will only ever take up the negative space on the screen to show you information, and will get out of the way if there isn't any.
+
+### Overview panel
+
+The **Overview** is a compact info widget that merges several status signals into a single panel that adapts to available space:
+
+| Section | What it shows |
+|---------|---------------|
+| Model & auth | Active model, auth method (API key / OAuth), upstream provider, connection type |
+| Memory | Memory count and recovered/injected memories rendered inline |
+| Swarm | Active swarm session count and subagent/member status |
+| Usage | Cost and token throughput |
+
+When space is tight the Overview collapses to its most important lines and expands back as room frees up, with hysteresis so the layout does not jitter. The memory section shows `0 memories` when empty (but enabled) and `Memory disabled` when the sidecar is off; when memories were injected during the turn, their content is wrapped inline below the count. Swarm shows a `0 sessions` line when no swarm is active. The auth indicator appends the upstream provider (`via <name>`) and connection type in brackets when available.
+
+### File mentions (`@file` completion)
+
+Type `@` in the input box to trigger file-path completion. A popup lists workspace files ranked by **frecency** (frequency + recency decay): files you have selected before rank higher, and the score is `frequency / (1 + days_since_last_open)`. Frecency history persists to `~/.jcode/file_frecency.jsonl` (capped at 1000 entries) so ranking carries across sessions.
+
+The index uses a two-layer strategy:
+
+| Layer | Source | When built |
+|-------|--------|-----------|
+| Base | `git ls-files --cached --others --exclude-standard` | Background task with adaptive TTL (30 s–2 min) |
+| Lazy | `fs::read_dir` on demand | When a query points inside a gitignored directory |
+
+Matching is case-insensitive and substring-based (a `CharBag` pre-filter narrows candidates before a regex pass). Selected files appear as inline chips in the input box; backspace on a chip deletes the whole path token rather than one character at a time. Binary files are filtered out of results.
+
+The picker is tunable via the `[file_mention]` section in `~/.jcode/config.toml`:
+
+```toml
+[file_mention]
+# Base index refresh TTL in seconds (large workspaces use 4x this).
+refresh_ttl_secs = 30
+# Maximum suggestions shown in the @file popover per query.
+max_results = 15
+# Maximum files indexed per workspace (safety cap).
+max_files = 5000
+```
+
+Zero or missing values fall back to the built-in defaults shown above.
+
+Outside-workspace files are reachable too. Type `@~` to browse your home directory (`@~/Doc…` expands `$HOME`) or `@/` for an absolute path from the filesystem root. These queries skip the frecency index entirely: they read the parent directory live, so they never pollute your ranking history. Selected files attach as chips exactly like workspace files, with the `~` expanded to the real path when the prompt is sent.
+>>>>>>> f3dbb34 (feat(tui): @file mention picker with frecency ranking, closes #570)
 
 Jcode can render at over a thousand fps. Your monitor will not have the refresh rate to show you, but this means you will not have silly flicker problems. 
 
@@ -443,7 +513,27 @@ Useful environment overrides for these endpoints:
 
 - `JCODE_STREAM_IDLE_TIMEOUT_SECS` — raise the base streaming idle timeout (default 180s) for slow reasoning models that think silently before emitting tokens. High reasoning efforts scale this automatically (high 2x, xhigh 3x, max 4x). Also settable as `[provider] stream_idle_timeout_secs` in `config.toml`.
 - Per-model `context_window` (alias `context_limit`) in a `[[providers.<name>.models]]` entry — set the context window when the endpoint has no usable `/v1/models` response, so jcode does not fall back to the generic 200k default.
+- Per-model `display_name` (alias `name`) in `[[providers.<name>.models]]` — human-friendly name shown in the `/model` picker instead of the raw model id.
+- Per-model `max_output_tokens` (alias `output_limit`) — override the max output tokens sent in the request body for that model.
+- Per-model `reasoning` (bool) — enable or force-disable the reasoning effort ladder (`/effort` picker) for a model. `true` enables it on gateways that are not auto-detected as reasoning-capable; `false` force-disables it even on models that would otherwise auto-qualify (DeepSeek-family or GPT-family reasoning models).
+- Per-model `reasoning_map` (alias `reasoning-map`) — opencode-style per-effort-level mapping. Each rung (`none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`) maps to a wire value for the `reasoning_effort` field or is disabled outright. See [Per-effort-level reasoning map](#per-effort-level-reasoning-map-reasoning_map) below.
+- Per-model `cost` — input/output/cache_read/cache_write USD per million tokens, surfaced in the picker cost overlay.
+- Provider-level `display_name` — overrides the raw profile key as the provider label in the `/model` picker.
 - `extra_body` — inject non-standard top-level fields into every chat/completions request body for backends that require them. See [Extra request-body fields](#extra-request-body-fields-extra_body) below.
+
+**Per-model and provider-level settings summary:**
+
+| Setting | Scope | Description |
+|---------|-------|-------------|
+| `display_name` (alias `name`) | per-model / provider | Human-friendly label shown in the `/model` picker |
+| `context_window` (alias `context_limit`) | per-model | Override the context window when no `/v1/models` response is available |
+| `max_output_tokens` (alias `output_limit`) | per-model | Override max output tokens in the request body |
+| `reasoning` | per-model | `true` enables the `/effort` ladder; `false` force-disables it |
+| `reasoning_map` | per-model | Per-rung `reasoning_effort` wire value or `disabled = true`; defines the `/effort` ladder for that model |
+| `cost` | per-model | `{ input, output, cache_read, cache_write }` USD per 1M tokens, shown in the picker |
+| `display_name` | provider | Override the raw profile key as the provider label in the picker |
+
+> **Note on Mistral:** `reasoning: true` sends the `reasoning_effort` field in the request body. Mistral only accepts this field for `mistral-small-*` models. Other Mistral models (e.g. `mistral-large-latest`, `mistral-medium-latest`) will reject it with a 422 error. Magistral models reason natively and do not need the parameter.
 
 For details on self-hosting, local runtimes, and the exact config file shape, see below.
 
@@ -514,9 +604,8 @@ base_url = "https://llm.example.com/v1"
 api_key_env = "JCODE_PROVIDER_MY_API_API_KEY"
 env_file = "provider-my-api.env"
 default_model = "my-model-id"
-# Optional: prevent model names such as `gpt-5-*` from automatically enabling
-# `reasoning_effort` on gateways that reject it.
 disable_reasoning_heuristics = true
+display_name = "My Custom API"
 
 [[providers.my-api.models]]
 id = "my-model-id"
@@ -525,6 +614,9 @@ context_window = 128000
 # `reasoning = false` on an individual model to disable it instead.
 reasoning = true
 reasoning_effort = "high"
+display_name = "My Model"
+max_output_tokens = 8192
+cost = { input = 0.15, output = 0.60, cache_read = 0.015 }
 ```
 
 Anthropic Messages-compatible gateways use the same named-profile surface with
@@ -555,6 +647,41 @@ For direct environment-based configuration, `ANTHROPIC_BASE_URL` overrides the
 non-OAuth Messages endpoint and `ANTHROPIC_AUTH_TOKEN` is sent as a bearer token.
 Claude OAuth traffic always continues to use Anthropic's official endpoints.
 
+##### HTTP header overrides (`user_agent`, `headers`)
+
+Gateways sometimes filter or authenticate by `User-Agent` or expect extra
+headers on every request (corporate proxies, usage attribution, routing hints).
+Both levels of config accept overrides, and a named profile's value wins per
+header name over the global one. Overrides are applied after jcode's own
+headers, so they replace built-ins (the default User-Agent, `anthropic-beta`,
+the kimi coding-agent UA) instead of appending duplicates:
+
+```toml
+[provider]
+# Global defaults for every provider request.
+user_agent = "corp-agent/9.9"
+
+[provider.headers]
+x-tenant-id = "tenant-42"
+
+[providers.corp-claude]
+type = "anthropic-compatible"
+base_url = "https://gateway.example.com/anthropic/v1"
+# This profile's own values beat the global ones per header name.
+user_agent = "claude-agent/2.0"
+
+[providers.corp-claude.headers]
+x-route = "claude"
+```
+
+The same `user_agent` and `headers` keys work on `openai-compatible` profiles
+and apply to chat completions, model catalog, endpoint and Ollama native
+requests alike. Header names match case-insensitively (HTTP semantics), so
+`user-agent` and `User-Agent` are the same header at every level. Invalid
+header names or values fail provider startup with an error naming the
+offending profile. Claude OAuth traffic is exempt: it keeps Claude CLI identity
+headers.
+
 ##### Extra request-body fields (`extra_body`)
 
 Some OpenAI-compatible backends require non-standard top-level request fields. For example, NVIDIA NIM DeepSeek-V4 reasoning models (`deepseek-ai/deepseek-v4-flash`, `deepseek-ai/deepseek-v4-pro`) only enable thinking when the request includes `chat_template_kwargs`; without it they reply without reasoning (or, for some deployments, hang). jcode lets you inject arbitrary top-level fields two ways.
@@ -580,6 +707,41 @@ Some OpenAI-compatible backends require non-standard top-level request fields. F
    ```
 
 Keys from `extra_body` are merged last and override any jcode-generated body field with the same name (`JCODE_OPENAI_EXTRA_BODY` wins over the config `extra_body` on key collisions). Invalid values are logged and ignored rather than failing the request.
+
+#### Per-effort-level reasoning map (`reasoning_map`)
+
+Some OpenAI-compatible gateways accept the standard `reasoning_effort` field but only for a subset of the levels jcode can pick, or expect a different wire value per level. `reasoning_map` (alias `reasoning-map`) on a `[[providers.<name>.models]]` entry pins down, per effort rung, exactly what is sent in the request body — or that the rung is not offered at all:
+
+```toml
+[providers.my-gateway]
+type = "openai-compatible"
+base_url = "https://my-gateway.example/v1"
+api_key_env = "MY_GATEWAY_API_KEY"
+default_model = "my-reasoning-model"
+
+[[providers.my-gateway.models]]
+id = "my-reasoning-model"
+
+[providers.my-gateway.models.reasoning_map]
+xhigh = { reasoningEffort = "xhigh" }
+high  = { reasoningEffort = "high" }
+medium = { disabled = true }
+low = { disabled = true }
+```
+
+Each rung key (`none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`) is optional. Inside a rung, `reasoningEffort` (alias `reasoning_effort`) sets the wire value sent as `reasoning_effort` in the request body; `disabled = true` removes that rung from the `/effort` picker and rejects it if a saved session or swarm asks for it.
+
+Semantics:
+
+- The `/effort` picker for that model lists only the enabled rungs of the map, plus the `swarm`/`swarm-deep` sentinels for swarm routing.
+- With `reasoningEffort` omitted, the rung name itself is sent (e.g. `high = {}` sends `"high"`).
+- Wire values are sent verbatim, so a rung can target a non-standard value the gateway expects (`xhigh = { reasoningEffort = "very_high" }`).
+- Rungs absent from the map fall back to the built-in ladder behavior for the model (family detection plus the `reasoning` flag).
+- `reasoning = false` on the same model still force-disables everything, map included.
+- The configured provider/model `default_effort` must be an enabled rung of the map.
+- Switching effort mid-session (`/effort`, keybinding, or swarm routing) is honored per request: the next completion uses the newly selected rung's wire value.
+
+This mirrors opencode's per-level reasoning mapping so configs port over with only key-casing changes (`reasoningEffort` is accepted as-is).
 
 The custom OpenAI-compatible provider reads overrides from environment variables or from an env file in jcode's app config directory. On Linux this is usually `~/.config/jcode/`, so the default file is usually:
 
@@ -649,6 +811,18 @@ Example MCP config:
 
 Each request to an MCP server (`tools/call`, `tools/list`, `initialize`) times out after 30 seconds by default. Set `timeout_secs` on a server whose tools legitimately run longer.
 
+#### Toggling MCP servers (`/mcp` command)
+
+You can enable or disable individual MCP servers at runtime without editing JSON by hand. Use the `/mcp` slash command in the TUI:
+
+| Command | Action |
+|---------|--------|
+| `/mcp status` | Show connected servers and their tool counts |
+| `/mcp enable <name>` | Connect a server and inject its tools into the prompt |
+| `/mcp disable <name>` | Disconnect a server and remove its tools |
+
+Disabled servers stay in config (they are skipped during auto-connect) and can be re-enabled later. The toggle persists to `~/.jcode/mcp.json` via the `"disabled"` flag (Claude Code style), so it survives restarts. The same actions are available to the agent via the MCP management tool (`action: "enable"` / `"disable"`).
+
 For headless or SSH sessions, OAuth-style providers support `jcode login --provider <provider> --no-browser` (alias: `--headless`) so jcode prints the auth URL/QR and falls back to manual code or callback paste instead of trying to launch a local browser.
 
 For more scriptable remote flows, `claude`, `openai`, `gemini`, and `antigravity` also support a two-step pattern:
@@ -688,7 +862,113 @@ The above image is the first page of provider logins
 - **Aggregator / compatibility providers:** `openrouter`, `orcarouter`, `yolo-auto`, `openai-compatible`
 - **Additional provider integrations:** `opencode`, `opencode-go`, `zai` / `kimi`, `302ai`, `baseten`, `cortecs`, `deepseek`, `firmware`, `huggingface`, `moonshotai`, `nebius`, `scaleway`, `stackit`, `groq`, `mistral`, `perplexity`, `togetherai`, `deepinfra`, `fireworks`, `novita`, `minimax`, `xai`, `lmstudio`, `ollama`, `chutes`, `cerebras`, `cursor`, `antigravity`, `google`
 
+- **Aggregator / compatibility providers:** `openrouter`, `orcarouter`, `openai-compatible`
+- **Additional provider integrations:** `opencode`, `opencode-go`, `zai` / `kimi`, `302ai`, `baseten`, `cortecs`, `deepseek`, `firmware`, `huggingface`, `moonshotai`, `nebius`, `scaleway`, `stackit`, `groq`, `mistral`, `perplexity`, `togetherai`, `deepinfra`, `fireworks`, `minimax`, `xai`, `lmstudio`, `ollama`, `chutes`, `cerebras`, `cursor`, `cursor-acp`, `antigravity`, `google`
+
+#### Cursor ACP provider
+
+`--provider cursor-acp` launches Cursor's `agent --force --trust acp` as a
+subprocess and communicates over JSON-RPC stdin/stdout. Cursor CLI owns
+authentication, tools, permissions, and model availability.
+
+**Settings:**
+
+| Setting | Env var | Default | Description |
+|---|---|---|---|
+| Executable path | `JCODE_CURSOR_ACP_PATH` | `agent` | Path to the Cursor CLI executable |
+| Model | `JCODE_CURSOR_ACP_MODEL` | *(from session/new)* | Validated against the ACP-advertised catalog |
+| Permission mode | `JCODE_CURSOR_ACP_PERMISSION` | `jcode` | `jcode` (safe: read/search auto-approved, execute/edit cancelled), `yolo` (auto-approve all), or a specific option ID (`allow-always`, `allow-once`, `reject-once`) |
+| Extra agent flags | `JCODE_CURSOR_ACP_EXTRA_ARGS` | `--force --trust` | Top-level flags before the `acp` subcommand |
+| Full arg list override | `JCODE_CURSOR_ACP_ARGS` | *(none)* | Replaces the entire argument list including `acp` |
+
+Config-file equivalent:
+
+```toml
+[acp]
+permission_mode = "jcode"  # or "yolo", "allow-always", etc.
+```
+
+**Functionality:**
+
+- **Model discovery:** Models are read from `session/new` and subsequent ACP
+  config updates — no static list. Resolution is deterministic: exact ID wins,
+  bare ID accepted only when one advertised variant matches, ambiguous/unsupported
+  IDs error.
+- **Context window:** Parsed from the model's `[context=N]` bracket setting
+  (e.g. `gpt-5.6-sol[context=272k]`); falls back to 200k when absent.
+- **Reasoning effort:** Read from `[reasoning=level]` bracket; settable via
+  `/effort` with levels `none`, `low`, `medium`, `high`, `max`.
+- **Token usage:** Reported via `usage_update` stream events
+  (`inputTokens`, `outputTokens`).
+- **Tool surfacing:** Tool calls and results are surfaced as
+  `ToolUseStart` → `ToolUseEnd` → `ToolResult` stream events, including
+  `exitCode`, `stdout`, `stderr` from `rawOutput`.
+- **Tool result persistence:** Provider-executed tool results are persisted to
+  the session before the native-tool retain filter, preventing orphaned
+  `ToolUse` blocks.
+- **Image support:** Detected from the `initialize` handshake capabilities.
+- **Permission modes:** `jcode` (safety classification: auto-allow read/search,
+  cancel execute/edit/fetch/other), `yolo` (auto-approve most permissive), or a
+  specific option ID.
+
+The ACP route is separate from `--provider cursor`, which remains the direct
+Cursor HTTPS provider.
+
 Jcode also supports easy multi-account switching. Ran out of tokens on your first ChatGPT Pro subscription? /account and quickly switch to your second. 
+
+### Auto-retry backoff (`auto_retry_base_delay_secs`, `auto_retry_max_attempts`)
+
+When a request fails with a transient error (e.g. `429 Too Many Requests`), jcode retries automatically with a linear backoff: `base_delay * attempt_number`. By default the base delay is 2s and the maximum number of attempts is 3, so retries happen at 2s, 4s, 6s before giving up.
+
+These defaults are too aggressive for shared gateways that return 429 without a `retry-after` header. You can change them globally, per provider, or with environment variables. This applies to all providers, not just OpenAI-compatible ones.
+
+**Global defaults** — set in `[provider]` in `config.toml`:
+
+```toml
+[provider]
+auto_retry_base_delay_secs = 5   # gentler backoff (default: 2)
+auto_retry_max_attempts = 8        # keep trying longer (default: 3)
+```
+
+**Per-provider override** — set in `[providers.<name>]`. When the provider is active, its value takes precedence over the global default:
+
+```toml
+[providers.my-shared-gateway]
+auto_retry_base_delay_secs = 10
+auto_retry_max_attempts = 10
+```
+
+**Environment variables** — take highest precedence over both config sources:
+
+```bash
+export JCODE_AUTO_RETRY_BASE_DELAY_SECS=10
+export JCODE_AUTO_RETRY_MAX_ATTEMPTS=10
+```
+
+**Precedence** (highest to lowest):
+
+1. `JCODE_AUTO_RETRY_BASE_DELAY_SECS` / `JCODE_AUTO_RETRY_MAX_ATTEMPTS` environment variables
+2. `[providers.<name>]` per-provider override (when that provider is active)
+3. `[provider]` global default
+
+The backoff is linear: the Nth retry waits `base_delay * N` seconds. If the gateway provides a `retry-after` time in the error message, jcode uses that instead of the linear backoff.
+
+### Inverted sidecar fallback & set-as-sidecar shortcut
+
+The memory sidecar's auto-select order is now **Claude first** (haiku, dedicated fast/cheap OAuth path), then OpenAI (GPT-5.6 Luna at reasoning=none), then the active agent provider via `complete_simple`. Previously OpenAI was preferred. If you have both Claude and Codex credentials, the sidecar now uses Claude.
+
+In the `/model` picker, **Alt+S** sets the highlighted model as the memory sidecar model (persisted to `config.toml` via `memory_model` under `[agents]`). The existing shortcuts remain: **Ctrl+O** sets the default model, **Ctrl+N** toggles favorite, **Shift+Tab** cycles favorites.
+
+| Shortcut | Action |
+|----------|--------|
+| `Ctrl+O` | Set selected model as default |
+| `Alt+S` | Set selected model as memory sidecar model |
+| `Ctrl+N` | Toggle favorite on selected model |
+| `Shift+Tab` | Cycle favorite models |
+||||||| parent of 3bb686c08 (fix(tui): persist user model switch to config.toml so it survives relaunch)
+### Model selection persistence
+
+When you switch models via `/model <name>`, the `/model` picker, or the cycle shortcut, jcode now persists that choice to `[provider].default_model` (and the provider key) in `config.toml`, so it survives a relaunch and carries over to new sessions. Previously the switch was only saved to the *session* file, so resuming a session restored it but starting a new session or relaunching reverted to the configured default. Failover- and auth-driven switches are **not** persisted, so they never silently override your chosen default.
 
 ---
 

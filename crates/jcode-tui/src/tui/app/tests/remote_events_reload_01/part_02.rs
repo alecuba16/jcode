@@ -362,6 +362,7 @@ fn test_remote_rewind_completion_shows_undo_hint_after_history_refresh() {
                 tool_data: None,
             }],
             images: vec![],
+            applets: Default::default(),
             provider_name: Some("mock".to_string()),
             provider_model: Some("mock-model".to_string()),
             subagent_model: None,
@@ -391,7 +392,6 @@ fn test_remote_rewind_completion_shows_undo_hint_after_history_refresh() {
             compaction_mode: crate::config::CompactionMode::Reactive,
             activity: None,
             side_panel: crate::side_panel::SidePanelSnapshot::default(),
-            applets: Default::default(),
         },
         &mut remote,
     );

@@ -1483,6 +1483,7 @@ impl RawClient {
         self.send_request(Request::Subscribe {
             system_prompt: None,
             supports_pdf_panels: false,
+            supports_decisions: false,
             id,
             working_dir: Some(working_dir.display().to_string()),
             selfdev: None,
@@ -1644,6 +1645,7 @@ fn test_ctx(session_id: &str, working_dir: &Path) -> ToolContext {
         tool_call_id: "call-1".to_string(),
         working_dir: Some(working_dir.to_path_buf()),
         stdin_request_tx: None,
+        decision_request_tx: None,
         graceful_shutdown_signal: None,
         execution_mode: ToolExecutionMode::Direct,
     }

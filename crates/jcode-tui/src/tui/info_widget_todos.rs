@@ -653,7 +653,7 @@ pub(super) fn render_todos_expanded(data: &InfoWidgetData, inner: Rect) -> Vec<L
         return lines;
     }
 
-    // Flat list: the whole list is one implicit goal, so its feedback-loop score
+    // Flat list: the whole list is one implicit goal, so its loop score
     // (if recorded) lives on the header line.
     if let Some(goal) = goal_for_group(&data.todo_goals, None) {
         push_goal_loop_suffix(&mut header, goal);
@@ -694,6 +694,7 @@ pub(super) fn render_todos_expanded(data: &InfoWidgetData, inner: Rect) -> Vec<L
     lines
 }
 
+#[cfg(test)]
 pub(super) fn render_todos_compact(data: &InfoWidgetData, _inner: Rect) -> Vec<Line<'static>> {
     if data.todos.is_empty() {
         return Vec::new();
@@ -718,6 +719,11 @@ pub(super) fn render_todos_compact(data: &InfoWidgetData, _inner: Rect) -> Vec<L
         Span::styled(
             format!("{} active", in_progress),
             Style::default().fg(rgb(255, 200, 100)),
+        ),
+        Span::styled(" · ", Style::default().fg(rgb(100, 100, 110))),
+        Span::styled(
+            format!("{} done", completed),
+            Style::default().fg(rgb(100, 180, 100)),
         ),
         Span::styled(" · ", Style::default().fg(rgb(100, 100, 110))),
         Span::styled(

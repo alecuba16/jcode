@@ -1064,6 +1064,7 @@ impl Agent {
                             tool_call_id: request_id.clone(),
                             working_dir: self.working_dir().map(PathBuf::from),
                             stdin_request_tx: self.stdin_request_tx.clone(),
+                            decision_request_tx: self.decision_request_tx.clone(),
                             graceful_shutdown_signal: Some(self.graceful_shutdown.clone()),
                             execution_mode: ToolExecutionMode::AgentTurn,
                         };
@@ -1527,6 +1528,30 @@ impl Agent {
             ));
 
             if self.provider.handles_tools_internally() {
+                // Persist tool results that the provider already executed. The
+                // retain below filters tool_calls to native-only, but the
+                // provider's results (from StreamEvent::ToolResult) must still
+                // be saved so the conversation has matching tool_use ->
+                // tool_result pairs. Without this, the session stores
+                // ContentBlock::ToolUse (added above at line ~1064) with no
+                // corresponding ContentBlock::ToolResult, leaving an invalid
+                // history that breaks provider replays.
+                if !sdk_tool_results.is_empty() {
+                    for tc in &tool_calls {
+                        if let Some((content, is_error)) = sdk_tool_results.remove(&tc.id) {
+                            let content = cap_sdk_tool_content_for_history(&tc.name, content);
+                            self.add_message(
+                                Role::User,
+                                vec![ContentBlock::ToolResult {
+                                    tool_use_id: tc.id.clone(),
+                                    content,
+                                    is_error: if is_error { Some(true) } else { None },
+                                }],
+                            );
+                        }
+                    }
+                    self.session.save()?;
+                }
                 tool_calls.retain(|tc| JCODE_NATIVE_TOOLS.contains(&tc.name.as_str()));
                 if tool_calls.is_empty() {
                     // === INJECTION POINT D: After provider-handled tools, before next API call ===
@@ -1640,6 +1665,7 @@ impl Agent {
                     tool_call_id: tc.id.clone(),
                     working_dir: self.working_dir().map(PathBuf::from),
                     stdin_request_tx: self.stdin_request_tx.clone(),
+                    decision_request_tx: self.decision_request_tx.clone(),
                     graceful_shutdown_signal: Some(self.graceful_shutdown.clone()),
                     execution_mode: ToolExecutionMode::AgentTurn,
                 };
@@ -1755,7 +1781,11 @@ impl Agent {
                                 });
                             }
 
-                            let blocks = tool_output_to_content_blocks(tc.id.clone(), output);
+                            let blocks = tool_output_to_content_blocks_with_image_support(
+                                tc.id.clone(),
+                                output,
+                                self.provider.supports_image_input(),
+                            );
                             self.add_message_with_duration(
                                 Role::User,
                                 blocks,

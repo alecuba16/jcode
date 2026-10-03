@@ -481,6 +481,15 @@ impl SessionPicker {
         self.current_dir = dir.map(|d| normalize_dir(&d));
     }
 
+    /// Enter search mode with an initial query, e.g. from `/sessions <query>`.
+    /// Applies the filter immediately so the picker opens pre-filtered, with
+    /// the search bar active so typing continues refining the same query.
+    pub fn start_search(&mut self, query: impl Into<String>) {
+        self.search_query = query.into();
+        self.search_active = true;
+        self.rebuild_items();
+    }
+
     /// Whether the given session's working directory matches the directory the
     /// picker was opened from.
     pub(super) fn session_in_current_dir(&self, session: &SessionInfo) -> bool {
@@ -775,6 +784,18 @@ impl SessionPicker {
             .iter()
             .filter_map(|session_ref| self.session_by_ref(*session_ref))
             .count()
+    }
+
+    /// Current search query (empty string when no search is active).
+    #[cfg(test)]
+    pub fn search_query(&self) -> &str {
+        &self.search_query
+    }
+
+    /// Whether the search bar is active (the picker is in search input mode).
+    #[cfg(test)]
+    pub fn search_is_active(&self) -> bool {
+        self.search_active
     }
 
     /// Resume target for the most recently active visible session, used by the
@@ -2374,9 +2395,26 @@ impl SessionPicker {
             self.maybe_refresh_live_presence();
             terminal.draw(|frame| {
                 self.render(frame);
+                // Apply explicit background for themes that define one.
+                let bg = jcode_tui_style::theme::background_color();
+                if bg != ratatui::style::Color::Reset {
+                    let buf = frame.buffer_mut();
+                    for cell in buf.content.iter_mut() {
+                        if cell.bg == ratatui::style::Color::Reset {
+                            cell.bg = bg;
+                        }
+                    }
+                }
                 // Standalone picker loop bypasses `ui::draw`; adapt for light
-                // terminal themes here (no-op on dark).
-                jcode_tui_style::adapt_buffer_for_display(frame.buffer_mut());
+                // terminal themes here (no-op on dark). Custom themes that
+                // declare their own palette opt out of the adapter so their
+                // colors are not luminance-flipped, but [display.colors]
+                // overrides still apply through the palette pass.
+                if jcode_tui_style::theme::active_theme_uses_terminal_adaptation() {
+                    jcode_tui_style::adapt_buffer_for_display(frame.buffer_mut());
+                } else {
+                    jcode_tui_style::palette::adapt_buffer_for_palette(frame.buffer_mut());
+                }
                 crate::tui::ui::adapt_buffer_for_emoji_preference(frame.buffer_mut());
             })?;
             if event::poll(Duration::from_millis(100))? {

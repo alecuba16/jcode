@@ -398,7 +398,9 @@ impl App {
         route: WidgetRouteInfo,
         auth_method: crate::tui::info_widget::AuthMethod,
     ) -> Option<crate::tui::info_widget::UsageInfo> {
-        let output_tps = if matches!(self.status, ProcessingStatus::Streaming) {
+        let output_tps = if matches!(self.status, ProcessingStatus::Streaming)
+            && crate::config::config().display.show_tps
+        {
             self.compute_streaming_tps()
         } else {
             None
@@ -756,6 +758,9 @@ impl crate::tui::TuiState for App {
     }
 
     fn output_tps(&self) -> Option<f32> {
+        if !crate::config::config().display.show_tps {
+            return None;
+        }
         if !self.is_processing || !matches!(self.status, ProcessingStatus::Streaming) {
             return None;
         }
@@ -810,6 +815,10 @@ impl crate::tui::TuiState for App {
 
     fn advance_command_suggestions_epoch(&self) {
         App::advance_command_suggestions_epoch(self)
+    }
+
+    fn file_chips(&self) -> &[std::path::PathBuf] {
+        &self.file_chips
     }
 
     fn command_suggestion_selected(&self) -> usize {
@@ -1371,7 +1380,7 @@ impl crate::tui::TuiState for App {
         } else {
             (
                 Some(self.provider.model()),
-                self.provider.reasoning_effort(),
+                self.provider.effective_reasoning_effort(),
                 self.provider.service_tier(),
                 self.provider.native_compaction_mode(),
                 self.provider.native_compaction_threshold_tokens(),
@@ -1390,6 +1399,8 @@ impl crate::tui::TuiState for App {
                 name
             }
         });
+
+        let memory_info = gather_memory_info(self.memory_enabled, self.session.working_dir.clone());
 
         // Gather swarm info
         let swarm_info = if self.swarm_enabled {
@@ -1550,8 +1561,15 @@ impl crate::tui::TuiState for App {
         let auth_method = self.widget_auth_method(route);
         let usage_info = self.widget_usage_info(route, auth_method);
 
-        let tokens_per_second = if matches!(self.status, ProcessingStatus::Streaming) {
-            self.compute_streaming_tps()
+        let tokens_per_second = if matches!(self.status, ProcessingStatus::Streaming)
+            && crate::config::config().display.show_tps
+        {
+            // `compute_streaming_tps` returns None during brief gaps (no new
+            // token sample, or elapsed < 0.1s). `last_displayed_tps` is updated
+            // in `snapshot_streaming_tps` whenever a real sample arrives, so
+            // fall back to it to keep the t/s line stable instead of flickering.
+            let computed = self.compute_streaming_tps();
+            computed.or(self.streaming.last_displayed_tps)
         } else {
             None
         };
@@ -1637,6 +1655,14 @@ impl crate::tui::TuiState for App {
             None
         };
 
+        let mut mcp_servers: Vec<(String, usize)> = self
+            .mcp_server_names
+            .iter()
+            .filter(|(_, tool_count)| *tool_count > 0)
+            .map(|(name, tool_count)| (name.clone(), *tool_count))
+            .collect();
+        mcp_servers.sort_by(|left, right| left.0.cmp(&right.0));
+
         crate::tui::info_widget::InfoWidgetData {
             todos,
             todo_goals,
@@ -1647,6 +1673,12 @@ impl crate::tui::TuiState for App {
             context_limit: Some(self.context_limit as usize),
             model,
             reasoning_effort,
+            // Agent model overrides (agents.swarm_model / agents.memory_model).
+            // None means inherit, which renders no row.
+            swarm_model_override: crate::config::config().agents.swarm_model.clone(),
+            swarm_model_effort: crate::config::config().agents.swarm_effort.clone(),
+            memory_model_override: crate::config::config().agents.memory_model.clone(),
+            memory_model_effort: None,
             service_tier,
             native_compaction_mode,
             native_compaction_threshold_tokens,
@@ -1654,14 +1686,19 @@ impl crate::tui::TuiState for App {
             session_name,
             working_dir: self.session.working_dir.clone(),
             client_count,
-            // Memory remains available through commands and tools, but no longer
-            // occupies a dedicated info widget.
-            memory_info: None,
+            memory_info,
             swarm_info,
             background_info,
+            mcp_servers,
             usage_info,
             usage_display_used: crate::config::config().display.usage_display_used(),
             tokens_per_second,
+            avg_tokens_per_second: if crate::config::config().display.show_tps {
+                self.avg_tps()
+            } else {
+                None
+            },
+            hide_tps: !crate::config::config().display.show_tps,
             provider_name: if uses_remote_widget_metadata {
                 self.remote_provider_name
                     .clone()
@@ -1689,6 +1726,12 @@ impl crate::tui::TuiState for App {
                 false
             },
             git_info: gather_git_info(),
+            // Current master renders the status line persistently. Keep these
+            // compatibility flags aligned so the merged info widgets do not
+            // repeat the identity facts already shown there.
+            status_line_active: true,
+            status_line_pinned: true,
+            available_skills: self.available_skills(),
             agent_edited: self.agent_edited_paths(),
         }
     }
@@ -1943,6 +1986,10 @@ impl crate::tui::TuiState for App {
 
     fn inline_view_state(&self) -> Option<&crate::tui::InlineViewState> {
         self.inline_view_state.as_ref()
+    }
+
+    fn pending_decision(&self) -> Option<&crate::tui::app::PendingDecision> {
+        self.pending_decision.as_ref()
     }
 
     fn changelog_scroll(&self) -> Option<usize> {

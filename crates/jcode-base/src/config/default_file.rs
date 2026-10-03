@@ -145,6 +145,10 @@ diff_mode = "inline"
 # Center all content by default (default: false)
 centered = false
 
+# TUI color theme: "auto"/"system" (detect terminal background), "light", "dark",
+# or a custom theme file name from ~/.jcode/themes/<name>.toml.
+theme = "auto"
+
 # Pin read images to a side pane (default: true)
 pin_images = true
 
@@ -255,9 +259,6 @@ prompt_entry_animation = true
 # Empty = auto ("⌥" on macOS, "Alt" elsewhere). Examples: "Option", "Alt", "⌥".
 # copy_badge_alt_label = ""
 
-# Color theme: "auto" (query the terminal background), "dark", or "light".
-# theme = "auto"
-
 # Per-role color overrides. Every color the TUI renders is configurable: the
 # named roles below are substituted directly, and the ad hoc shades individual
 # widgets use follow whichever role they belong to.
@@ -296,6 +297,16 @@ persist_memory_injections = false
 # (avoidable) reason: system prompt, tool set, or message prefix changed. These
 # should essentially never happen and indicate a prefix-cache bug.
 kv_cache_miss_notices = true
+# ask_user decision chooser: when the agent needs a decision it blocks the turn
+# and shows an inline chooser instead of guessing. Set false to disable: ask_user
+# then never blocks and the agent asks in plain text.
+# Env override: JCODE_DECISIONS
+decisions = true
+# How long ask_user waits for the user before auto-picking the first option,
+# in seconds. 0 (default) waits forever until the user answers, the client
+# disconnects, or the turn is shut down.
+# Env override: JCODE_DECISION_TIMEOUT_SECS
+decision_timeout_secs = 0
 # Update channel: "stable" (releases only) or "main" (latest commits on push)
 # Set to "main" for bleeding edge updates every time code is pushed
 update_channel = "stable"
@@ -337,6 +348,17 @@ bing_market = "en-US"
 # allowed_callers = ["direct"].
 # native_anthropic_tool_version = "web_search_20250305"
 
+[file_mention]
+# @file mention picker tuning. All values are optional; zero or missing
+# fields fall back to the built-in defaults shown here.
+# Base index refresh TTL in seconds. Workspaces with 2000+ indexed files
+# refresh at 4x this TTL so expensive rebuilds happen less often.
+refresh_ttl_secs = 30
+# Maximum suggestions shown in the @file popover per query.
+max_results = 15
+# Maximum files indexed per workspace (safety cap for huge trees).
+max_files = 5000
+
 [tools]
 # Controls which built-in tools are sent to the model.
 # Profiles: "full" (default), "acp", "minimal"/"lite", or "none".
@@ -372,6 +394,15 @@ profile = "standard"
 # Tool profile requested when `jcode acp` starts the daemon itself.
 # Existing daemons keep their current server-wide tool config.
 tool_profile = "acp"
+# Permission mode when jcode acts as the Cursor ACP client (driving Cursor's
+# agent subprocess). `jcode` (default) applies jcode's safety classification:
+# read-only/search tools are auto-approved, execute/edit tools are cancelled
+# (fail-closed) so a human is required for destructive operations. `yolo`
+# auto-approves all permission requests and bypasses jcode's safety
+# classification — set it explicitly only when you understand the risk. A
+# specific option ID (e.g. `allow-always` or `reject-once`) only matches that
+# option. Overridable by the JCODE_CURSOR_ACP_PERMISSION env var.
+permission_mode = "jcode"
 
 [provider]
 # Default model (optional, uses provider default if not set)
@@ -431,6 +462,30 @@ cross_provider_failover = "countdown"
 # Env overrides: JCODE_MAX_RETRIES, JCODE_RETRY_BACKOFF_CAP_SECS.
 # max_retries = 8
 # retry_backoff_cap_secs = 30
+#
+# Base delay (seconds) for linear backoff between auto-retry attempts after a
+# remote request error. The actual backoff is: base * attempt_number.
+# Default: 2 (2s, 4s, 6s, ...). Raise this for shared gateways that return 429
+# without a retry-after header, so retries are gentler instead of hammering.
+# Env override: JCODE_AUTO_RETRY_BASE_DELAY_SECS
+# auto_retry_base_delay_secs = 2
+#
+# Whether automatic retry scheduling is enabled for transient remote failures.
+# Default: true. Env override: JCODE_AUTO_RETRY_ENABLED
+# auto_retry_enabled = true
+#
+# Maximum auto-retry attempts before giving up and surfacing the error.
+# Default: 3. Raise this for shared services that need more time to free up
+# capacity. Env override: JCODE_AUTO_RETRY_MAX_ATTEMPTS
+# auto_retry_max_attempts = 3
+#
+# Both keys can also be overridden per named provider profile:
+#   [providers.my-gateway]
+#   auto_retry_base_delay_secs = 10
+#   auto_retry_enabled = true
+#   auto_retry_max_attempts = 10
+# Environment variables take precedence over per-provider values, which take
+# precedence over the global [provider] default when that provider is active.
 
 [server]
 # Who executes autonomous wake requests from background completion/stall,
@@ -440,6 +495,13 @@ cross_provider_failover = "countdown"
 # never starts a turn or injects into a running turn.
 # Env override: JCODE_WAKE_MODE
 wake_mode = "internal"
+
+# Destructive-command risk gate for the bash tool (issue #604).
+# When enabled (default), catastrophic commands (rm -rf /, rm -rf ~, credential
+# destruction) are denied outright, and risky commands require a justification
+# that matches the user's actual request. When disabled, all commands run
+# without the gate. Also overridable per-launch via JCODE_RISK_GATE_ENABLED.
+# risk_gate_enabled = true
 
 [agents]
 # Swarm root settings and defaults for helper agents (workers, subagents, sidecars).
@@ -513,7 +575,28 @@ swarm_max_concurrent_agents = 32
 # (OpenAI defaults to gpt-5.6-luna with reasoning effort "none").
 # Env overrides: JCODE_MEMORY_SIDECAR_ENABLED, JCODE_MEMORY_MODEL
 # memory_sidecar_enabled = true
+# Model for the memory sidecar (extraction). Unset = sidecar auto-select
+# (OpenAI defaults to gpt-5.6-luna with reasoning effort "none").
+# When memory_sidecar_backend = "provider", this is applied to the active provider
+# via set_model before complete_simple, so it can be any model your active provider
+# supports (e.g. a custom OpenAI-compatible gateway model).
 # memory_model = "gpt-5.6-luna"
+#
+# Backend for the memory sidecar. Unset or "auto" = auto-select (OpenAI > Claude
+# > active provider). "openai" = force OpenAI Responses API. "claude" = force
+# Claude Messages API. "provider" = dispatch through the active agent provider
+# via complete_simple (works with any provider: Copilot, Gemini, Cursor, Bedrock,
+# OpenRouter, custom OpenAI-compatible, etc.). Use "provider" when you want the
+# sidecar to use your main provider's model instead of OpenAI/Claude.
+# Env override: JCODE_MEMORY_SIDECAR_BACKEND
+# memory_sidecar_backend = "auto"
+#
+# Fallback behavior when no memory model is marked (neither via the TUI model
+# picker nor via memory_model above). Default "openai_claude" preserves the
+# legacy auto-select (OpenAI > Claude > active provider). "provider" uses the
+# active provider's current model directly. "none" disables the sidecar when
+# no model is explicitly marked. Env: JCODE_MEMORY_SIDECAR_FALLBACK
+# memory_sidecar_fallback = "openai_claude"
 # Legacy memory_rerank_* and memory_embedding_* settings are accepted for
 # backwards compatibility, but have no effect on Jev recall.
 
@@ -773,6 +856,65 @@ mod tests {
             ReasoningDisplayMode::Full,
             "the shipped user config must keep the full reasoning trace visible"
         );
+        assert_eq!(
+            config.file_mention.refresh_ttl_secs, DEFAULT_FILE_MENTION_REFRESH_TTL_SECS,
+            "the template must ship the default @file refresh TTL"
+        );
+        assert_eq!(
+            config.file_mention.max_results, DEFAULT_FILE_MENTION_MAX_RESULTS,
+            "the template must ship the default @file popover size"
+        );
+        assert_eq!(
+            config.file_mention.max_files, DEFAULT_FILE_MENTION_MAX_FILES,
+            "the template must ship the default @file index cap"
+        );
+        assert!(
+            config.features.decisions,
+            "the template must ship the decision chooser enabled"
+        );
+        assert_eq!(
+            config.features.decision_timeout_secs, 0,
+            "the template must ship the default no-timeout decision chooser"
+        );
+    }
+
+    /// The `[file_mention]` knobs must round-trip through TOML and default
+    /// themselves when the section or individual fields are missing.
+    #[test]
+    fn file_mention_config_defaults_and_overrides() {
+        let missing_section = toml::from_str::<Config>("").expect("empty config must parse");
+        assert_eq!(
+            missing_section.file_mention,
+            FileMentionConfig::default(),
+            "an absent [file_mention] section must fall back to defaults"
+        );
+
+        let partial = toml::from_str::<Config>("[file_mention]\nmax_results = 40\n")
+            .expect("partial section must parse");
+        assert_eq!(partial.file_mention.max_results, 40);
+        assert_eq!(
+            partial.file_mention.refresh_ttl_secs, DEFAULT_FILE_MENTION_REFRESH_TTL_SECS,
+            "unset fields must keep their defaults"
+        );
+        assert_eq!(
+            partial.file_mention.max_files,
+            DEFAULT_FILE_MENTION_MAX_FILES
+        );
+
+        let full = toml::from_str::<Config>(
+            "[file_mention]\nrefresh_ttl_secs = 120\nmax_results = 25\nmax_files = 8000\n",
+        )
+        .expect("full section must parse");
+        assert_eq!(full.file_mention.refresh_ttl_secs, 120);
+        assert_eq!(full.file_mention.max_results, 25);
+        assert_eq!(full.file_mention.max_files, 8_000);
+
+        // Round-trip through serialization so a saved config re-reads the same.
+        let serialized =
+            toml::to_string_pretty(&full.file_mention).expect("FileMentionConfig must serialize");
+        let reparsed: FileMentionConfig =
+            toml::from_str(&serialized).expect("FileMentionConfig must re-parse");
+        assert_eq!(reparsed, full.file_mention);
     }
 
     /// Colors are only discoverable if the template mentions them, since most

@@ -168,6 +168,7 @@ pub(crate) fn configure_provider_profile(
             _ => None,
         },
         headers: std::collections::BTreeMap::new(),
+        user_agent: None,
         api_key_env: api_key_env.clone(),
         api_key: None,
         env_file: env_file.clone(),
@@ -182,10 +183,15 @@ pub(crate) fn configure_provider_profile(
             reasoning_effort: None,
             context_window: options.context_window,
             input: Vec::new(),
+            ..Default::default()
         }],
         extra_body: None,
         supports_reasoning_effort: None,
         disable_reasoning_heuristics: false,
+        auto_retry_base_delay_secs: None,
+        auto_retry_enabled: None,
+        auto_retry_max_attempts: None,
+        display_name: None,
     };
 
     let config_path = Config::path().ok_or_else(|| anyhow::anyhow!("No config path"))?;

@@ -616,9 +616,19 @@ fn handle_termination_signal(sig: i32) -> ! {
     let _ = crossterm::terminal::disable_raw_mode();
     let _ = crossterm::execute!(
         std::io::stderr(),
+        crossterm::event::DisableBracketedPaste,
+        crossterm::event::DisableFocusChange,
+        crossterm::event::DisableMouseCapture,
         crossterm::terminal::LeaveAlternateScreen,
         crossterm::cursor::Show
     );
+    // The signal handler can fire at any point of the TUI lifetime, including
+    // while the kitty keyboard protocol is active (Ctrl+C races the cleanup
+    // below). Pop it unconditionally: the pop is a no-op on terminals with no
+    // kitty stack, and skipping it leaves the terminal in CSI u mode so the
+    // following shell echoes raw key sequences like `e1;1:3u` after jcode
+    // exits (issue #898).
+    crate::tui::disable_keyboard_enhancement();
 
     if let Some(session_id) = get_current_session() {
         print_session_resume_hint(&session_id);

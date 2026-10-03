@@ -52,7 +52,6 @@ fn first_prompt_stays_visible_with_widgets_during_processing_at_47x51() {
     let _lock = viewport_snapshot_test_lock();
     pin_full_tier();
     const PROMPT: &str = "PROMPT_SENTINEL";
-    const WIDGET: &str = "WIDGET_SENTINEL";
 
     // Keep one terminal through every transition, exercising buffer diffing as
     // well as layout. Unit preparation still bypasses production caches.
@@ -67,7 +66,10 @@ fn first_prompt_stays_visible_with_widgets_during_processing_at_47x51() {
                 chat_native_scrollbar: scrollbar,
                 info_widget_data: info_widget::InfoWidgetData {
                     model: Some("gpt-5.6-sol".into()),
-                    session_name: Some(WIDGET.into()),
+                    // The session row is gone from the panel (it lives in
+                    // the status line now), so the sentinel rides the short
+                    // native-compaction row instead (the box may be narrow).
+                    native_compaction_mode: Some("nwgt".into()),
                     reasoning_effort: Some("high".into()),
                     context_limit: Some(256_000),
                     observed_context_tokens: Some(1_000),
@@ -111,7 +113,7 @@ fn first_prompt_stays_visible_with_widgets_during_processing_at_47x51() {
                         .take(area.height as usize)
                         .collect::<Vec<_>>()
                         .join("\n");
-                    saw_widget |= chat.contains(WIDGET);
+                    saw_widget |= chat.contains("native nwgt");
                     assert!(
                         chat.contains(PROMPT),
                         "prompt disappeared: phase={phase}, centered={centered}, scrollbar={scrollbar}, now={}, area={area:?}, scroll={}, total={}\n{text}",
@@ -445,7 +447,8 @@ fn test_copy_badge_line_prefers_row_with_free_width_over_truncation() {
     let full = Line::from("│ ".to_string() + &"x".repeat(60));
     let short = Line::from("│ short".to_string());
     let visible_lines = vec![full, short];
-    let reserved = 14usize; // " [Alt] [⇧] [S]"
+    let copy_badge_ui = crate::tui::app::CopyBadgeUiState::default();
+    let reserved = copy_badge_reserved_width('s', &copy_badge_ui, Instant::now());
 
     let picked = pick_copy_badge_line(0, 0, 2, 0, 2, &visible_lines, 62, reserved);
     assert_eq!(picked, 1, "badge should move to the line with free width");

@@ -366,6 +366,9 @@ impl WsTestClient {
         self.send_request(Request::Subscribe {
             system_prompt: None,
             supports_pdf_panels: false,
+            // This test client has no chooser: ask_user must degrade to
+            // plain-text asking, never block.
+            supports_decisions: false,
             crash_on_disconnect: false,
             continue_on_disconnect: false,
             id,

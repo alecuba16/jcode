@@ -10,6 +10,17 @@ use super::color_support::rgb;
 mod commits;
 #[path = "info_widget_frame.rs"]
 pub(crate) mod frame;
+
+/// A dashed horizontal separator line that fills the panel width.
+fn dashed_separator(width: u16) -> Line<'static> {
+    let w = width as usize;
+    let dash = "- "
+        .repeat(w.div_ceil(2))
+        .chars()
+        .take(w)
+        .collect::<String>();
+    Line::from(Span::styled(dash, Style::default().fg(rgb(60, 60, 70))))
+}
 #[path = "info_widget_git.rs"]
 mod git;
 #[path = "info_widget_graph.rs"]
@@ -25,14 +36,14 @@ mod swarm_background;
 #[path = "info_widget_swarm_gallery.rs"]
 pub(crate) mod swarm_gallery;
 #[path = "info_widget_text.rs"]
-mod text;
+pub(crate) mod text;
 #[path = "info_widget_tips.rs"]
 mod tips;
 #[path = "info_widget_todos.rs"]
 mod todos_render;
 #[path = "info_widget_usage.rs"]
 mod usage_render;
-use super::info_widget_overview::{InfoPageKind, MAX_TODO_LINES, compute_page_layout};
+use super::info_widget_overview::{InfoPageKind, MAX_TODO_LINES, PageLayout, compute_page_layout};
 use super::workspace_map::VisibleWorkspaceRow;
 use crate::ambient::AmbientStatus;
 pub use crate::memory_types::{
@@ -41,11 +52,14 @@ pub use crate::memory_types::{
 };
 use crate::prompt::ContextInfo;
 use crate::protocol::SwarmMemberStatus;
+use crate::provider::DEFAULT_CONTEXT_LIMIT;
 use crate::todo::TodoItem;
-use memory_render::{render_memory_compact, render_memory_expanded, render_memory_widget};
+#[cfg(test)]
+use memory_render::{format_age, render_memory_compact, wrap_text};
+use memory_render::{render_memory_widget, render_recovered_memories_widget};
 use ratatui::{
     prelude::*,
-    widgets::{Block, BorderType, Borders, Paragraph},
+    widgets::{Block, BorderType, Borders, Clear, Paragraph},
 };
 use std::collections::HashMap;
 #[cfg(test)]
@@ -62,15 +76,26 @@ use git::{
 pub(crate) use git::{edited_paths_from_tool_call, resolve_edited_path};
 pub use graph::{GraphEdge, GraphNode, build_graph_topology, graph_node_score};
 pub(crate) use memory_utils::is_traceworthy_memory_event;
-use memory_utils::{memory_active_summary, memory_last_trace_summary, memory_state_detail};
-use model::{render_model_info, render_model_widget, runtime_has_data, runtime_height};
+#[cfg(test)]
+pub(crate) use memory_utils::memory_active_summary;
+use memory_utils::{memory_last_trace_summary, memory_state_detail};
+use model::{
+    model_info_supplementary_height, render_model_info, render_model_info_supplementary,
+    render_model_widget, runtime_height,
+};
 use swarm_background::{render_background_compact, render_background_widget, render_swarm_widget};
-use text::{truncate_smart, truncate_with_ellipsis};
+use text::{truncate_chars, truncate_smart, truncate_with_ellipsis};
 pub(crate) use tips::occasional_status_tip;
 use tips::render_tips_widget;
+#[cfg(test)]
+use todos_render::render_todos_compact;
+use todos_render::render_todos_expanded;
+use todos_render::render_todos_widget;
 pub(crate) use todos_render::swarm_plan_todos;
-use todos_render::{render_todos_compact, render_todos_expanded, render_todos_widget};
-use usage_render::{render_usage_compact, render_usage_widget};
+#[cfg(test)]
+use usage_render::render_usage_pill;
+use usage_render::render_usage_widget;
+use usage_render::{render_context_usage_line, render_usage_compact};
 
 /// Overview rows used by the Changes section, mirroring [`render_sections`].
 pub(super) fn changes_section_height(data: &InfoWidgetData) -> u16 {
@@ -79,7 +104,7 @@ pub(super) fn changes_section_height(data: &InfoWidgetData) -> u16 {
 
 /// Overview rows used by the Runtime section, mirroring [`render_sections`].
 pub(super) fn model_info_height(data: &InfoWidgetData) -> u16 {
-    runtime_height(data)
+    runtime_height(data) + model_info_supplementary_height(data)
 }
 
 /// Types of info widgets that can be displayed
@@ -91,8 +116,13 @@ pub enum WidgetKind {
     WorkspaceMap,
     /// Todo list with progress
     Todos,
+    /// Token/context usage bar
+    ContextUsage,
     /// Memory sidecar activity
     MemoryActivity,
+    /// Recovered memories list, used only by non-pinned fallback layouts.
+    /// Fixed Overview renders recovered memories inline.
+    RecoveredMemories,
     /// Subagents/sessions status
     SwarmStatus,
     /// Background work indicator
@@ -103,8 +133,7 @@ pub enum WidgetKind {
     UsageLimits,
     /// Session-level KV cache hit ratio
     KvCache,
-    /// Runtime details: service tier, route, transport, throughput, session
-    /// (the status line owns model, effort, provider, and auth)
+    /// Current model name
     ModelInfo,
     /// Mermaid diagrams
     Diagrams,
@@ -112,7 +141,7 @@ pub enum WidgetKind {
     AmbientMode,
     /// Rotating tips/shortcuts
     Tips,
-    /// Changes: the dirty file list (the status line owns branch and counts)
+    /// Git status
     GitStatus,
     /// Commits: recent history on the current branch
     Commits,
@@ -125,10 +154,12 @@ impl WidgetKind {
             WidgetKind::Diagrams => 0, // Highest priority - user explicitly wants to see it
             WidgetKind::WorkspaceMap => 1,
             WidgetKind::Overview => 2,
-            WidgetKind::Todos => 3,
-            WidgetKind::UsageLimits => 5, // Bumped up - important when near limits
-            WidgetKind::KvCache => 6,
-            WidgetKind::MemoryActivity => 7,
+            WidgetKind::MemoryActivity => 3, // Right below Overview so recalls appear under main info
+            WidgetKind::RecoveredMemories => 3, // Attached to Overview, same priority bucket
+            WidgetKind::Todos => 4,
+            WidgetKind::ContextUsage => 5,
+            WidgetKind::UsageLimits => 6, // Bumped up - important when near limits
+            WidgetKind::KvCache => 7,
             WidgetKind::ModelInfo => 8,
             WidgetKind::Compaction => 9,
             WidgetKind::BackgroundTasks => 10,
@@ -147,7 +178,9 @@ impl WidgetKind {
             WidgetKind::WorkspaceMap => Side::Right,
             WidgetKind::Overview => Side::Right,
             WidgetKind::Todos => Side::Right,
+            WidgetKind::ContextUsage => Side::Right,
             WidgetKind::MemoryActivity => Side::Right,
+            WidgetKind::RecoveredMemories => Side::Right, // Attached under Overview
             WidgetKind::SwarmStatus => Side::Left,
             WidgetKind::Compaction => Side::Left,
             WidgetKind::BackgroundTasks => Side::Left,
@@ -168,14 +201,16 @@ impl WidgetKind {
             WidgetKind::WorkspaceMap => 1,
             WidgetKind::Overview => 8,
             WidgetKind::Todos => 3,
+            WidgetKind::ContextUsage => 1, // Can be just "updating..." line
             WidgetKind::MemoryActivity => 3,
+            WidgetKind::RecoveredMemories => 2, // Header line + at least one item
             WidgetKind::SwarmStatus => 3,
             WidgetKind::Compaction => 3,
             WidgetKind::BackgroundTasks => 2,
             WidgetKind::AmbientMode => 3,
             WidgetKind::UsageLimits => 3,
             WidgetKind::KvCache => 3,
-            WidgetKind::ModelInfo => 1,
+            WidgetKind::ModelInfo => 1, // Can be just session/tier line
             WidgetKind::Tips => 3,
             WidgetKind::GitStatus => 1,
             WidgetKind::Commits => 1,
@@ -188,10 +223,12 @@ impl WidgetKind {
             WidgetKind::Diagrams,
             WidgetKind::WorkspaceMap,
             WidgetKind::Overview,
+            WidgetKind::MemoryActivity,
+            WidgetKind::RecoveredMemories,
             WidgetKind::Todos,
+            WidgetKind::ContextUsage,
             WidgetKind::UsageLimits,
             WidgetKind::KvCache,
-            WidgetKind::MemoryActivity,
             WidgetKind::ModelInfo,
             WidgetKind::Compaction,
             WidgetKind::BackgroundTasks,
@@ -209,7 +246,9 @@ impl WidgetKind {
             WidgetKind::WorkspaceMap => "workspace",
             WidgetKind::Overview => "overview",
             WidgetKind::Todos => "todos",
+            WidgetKind::ContextUsage => "context",
             WidgetKind::MemoryActivity => "memory",
+            WidgetKind::RecoveredMemories => "recalled",
             WidgetKind::SwarmStatus => "swarm",
             WidgetKind::BackgroundTasks => "background",
             WidgetKind::Compaction => "compaction",
@@ -244,6 +283,7 @@ pub(crate) fn is_overview_mergeable(kind: WidgetKind) -> bool {
     matches!(
         kind,
         WidgetKind::Todos
+            | WidgetKind::ContextUsage
             | WidgetKind::SwarmStatus
             | WidgetKind::BackgroundTasks
             | WidgetKind::Compaction
@@ -260,6 +300,7 @@ pub struct WidgetPlacement {
     pub kind: WidgetKind,
     pub rect: Rect,
     pub side: Side,
+    pub(crate) overview_layout: Option<PageLayout>,
 }
 
 pub use super::info_widget_layout::Margins;
@@ -531,7 +572,10 @@ pub struct MemoryInfo {
 
 impl MemoryInfo {
     pub(crate) fn should_render(&self) -> bool {
-        !self.disabled && (self.total_count > 0 || self.activity.is_some())
+        // Always show when memory is enabled (even with 0 memories)
+        // to prevent flickering as counts update.
+        // When disabled, only show if there are stored memories to report.
+        !self.disabled || self.total_count > 0
     }
 
     pub(crate) fn should_show_activity(&self) -> bool {
@@ -667,6 +711,13 @@ pub struct InfoWidgetData {
     pub context_limit: Option<usize>,
     pub model: Option<String>,
     pub reasoning_effort: Option<String>,
+    /// Agent-specific model overrides from config: `agents.swarm_model` and
+    /// `agents.memory_model` (plus their efforts). `None` means "inherit the
+    /// coordinator/default model", which is not shown.
+    pub swarm_model_override: Option<String>,
+    pub swarm_model_effort: Option<String>,
+    pub memory_model_override: Option<String>,
+    pub memory_model_effort: Option<String>,
     pub service_tier: Option<String>,
     pub native_compaction_mode: Option<String>,
     pub native_compaction_threshold_tokens: Option<usize>,
@@ -681,12 +732,21 @@ pub struct InfoWidgetData {
     pub swarm_info: Option<SwarmInfo>,
     /// Background tasks status
     pub background_info: Option<BackgroundInfo>,
+    /// Connected MCP servers with their tool counts.
+    pub mcp_servers: Vec<(String, usize)>,
     /// Subscription usage info
     pub usage_info: Option<UsageInfo>,
     /// Show consumed rather than remaining percentages in usage limits.
     pub usage_display_used: bool,
     /// Streaming output tokens per second (approximate)
     pub tokens_per_second: Option<f32>,
+    /// Average t/s over the last up to 5 completed turns (rolling buffer).
+    /// Always shown in the info panel so the user can see throughput at a
+    /// glance, even when not actively streaming.
+    pub avg_tokens_per_second: Option<f32>,
+    /// Hide every t/s readout (config `display.show_tps = false`). The
+    /// counters keep running; only the rendering is suppressed.
+    pub hide_tps: bool,
     /// Active provider name (openrouter/openai/anthropic/...)
     pub provider_name: Option<String>,
     /// Authentication method used to access the model
@@ -714,6 +774,17 @@ pub struct InfoWidgetData {
     pub is_compacting: bool,
     /// Git repository status
     pub git_info: Option<GitInfo>,
+    /// Whether the fixed status line (below the input) is showing model/context
+    /// info. When true, the duplicate margin widgets (ModelInfo, ContextUsage,
+    /// UsageLimits, KvCache) are suppressed so the info appears in one place.
+    /// True for both the always-on mode and the elastic overscroll reveal.
+    pub status_line_active: bool,
+    /// Whether the status line is pinned permanently on (config `on`), as
+    /// opposed to the elastic overscroll reveal. The fixed Overview widget is
+    /// only used when this is true, to avoid popping in during elastic reveals.
+    pub status_line_pinned: bool,
+    /// Available skill names (e.g. /codebase-memory, /bitbucket, ...).
+    pub available_skills: Vec<String>,
     /// Absolute paths the agent edited this session (edit-style tool calls),
     /// used to mark agent changes in the Changes widget.
     pub agent_edited: std::sync::Arc<std::collections::HashSet<std::path::PathBuf>>,
@@ -733,6 +804,12 @@ impl InfoWidgetData {
         matches!(kind, WidgetKind::AmbientMode | WidgetKind::Tips)
     }
 
+    /// Whether the model widget has supplementary info not shown in the status
+    /// line: service tier, native compaction mode, or session count/name.
+    pub fn has_model_supplementary_info(&self) -> bool {
+        model_info_supplementary_height(self) > 0
+    }
+
     pub fn is_empty(&self) -> bool {
         self.todos.is_empty()
             && self.context_info.is_none()
@@ -741,6 +818,7 @@ impl InfoWidgetData {
             && self.memory_info.is_none()
             && self.swarm_info.is_none()
             && self.background_info.is_none()
+            && self.mcp_servers.is_empty()
             && self.diagrams.is_empty()
             && self.workspace_rows.is_empty()
     }
@@ -755,13 +833,39 @@ impl InfoWidgetData {
             WidgetKind::Diagrams => !self.diagrams.is_empty(),
             WidgetKind::WorkspaceMap => !self.workspace_rows.is_empty(),
             WidgetKind::Overview => {
+                // Keep the Overview widget as the single merged widget even when
+                // the status line is active. It combines todos, kv-cache, git,
+                // and supplementary info (service tier, compaction, session)
+                // into one box. Having one widget = one anchor = no jumping
+                // between multiple widget placements.
                 let mut sections = 0usize;
-                // Status-line facts (model, context %, branch) never count:
-                // the overview only joins detail sections.
-                if runtime_has_data(self) {
+                // Model section: shown when there is supplementary info
+                // (service tier, compaction, session) even if the status line
+                // is active.
+                if self.has_model_supplementary_info()
+                    || (!self.status_line_active && self.model.is_some())
+                {
+                    sections += 1;
+                }
+                // Context section: shown when stale even if status line active.
+                if !self.status_line_active
+                    && self
+                        .context_info
+                        .as_ref()
+                        .map(|c| c.total_chars > 0)
+                        .unwrap_or(false)
+                    || self.status_line_active && self.context_info_stale
+                {
                     sections += 1;
                 }
                 if !self.todos.is_empty() {
+                    sections += 1;
+                }
+                // Tokens per second while streaming.
+                if let Some(tps) = self.tokens_per_second
+                    && tps.is_finite()
+                    && tps > 0.1
+                {
                     sections += 1;
                 }
                 if self
@@ -772,9 +876,15 @@ impl InfoWidgetData {
                 {
                     sections += 1;
                 }
+                if !self.mcp_servers.is_empty() {
+                    sections += 1;
+                }
                 if self.queue_mode.is_some() {
                     sections += 1;
                 }
+                // Usage section: always counted. CostBased/Copilot show
+                // $cost+tokens (or $NA) in the Overview instead of using a
+                // standalone margin widget.
                 if self
                     .usage_info
                     .as_ref()
@@ -782,7 +892,11 @@ impl InfoWidgetData {
                     .unwrap_or(false)
                 {
                     sections += 1;
+                } else if self.status_line_active {
+                    // No usage data at all but status line active: $NA line.
+                    sections += 1;
                 }
+                // KV cache is never in the status line, always counts.
                 if self.cache_hit_info.is_some() {
                     sections += 1;
                 }
@@ -792,20 +906,46 @@ impl InfoWidgetData {
                 if self
                     .git_info
                     .as_ref()
-                    .map(changes_has_data)
+                    .map(|g| g.is_interesting())
                     .unwrap_or(false)
                 {
                     sections += 1;
                 }
-                // Only useful as a "join" mode when there are multiple sections.
-                sections >= 2
+                if !self.mcp_servers.is_empty() {
+                    sections += 1;
+                }
+                if !self.available_skills.is_empty() {
+                    sections += 1;
+                }
+                // The Overview is the single merged widget: show it whenever
+                // the panel renders any content at all. The compact page
+                // always includes the swarm "0 sessions" baseline line, so
+                // this is true whenever the panel is renderable — including
+                // the model-only case, which must not fall through to the
+                // (now content-merged) standalone ModelInfo widget that
+                // renders nothing.
+                sections >= 1
             }
             WidgetKind::Todos => !self.todos.is_empty(),
+            WidgetKind::ContextUsage => {
+                if self.status_line_active {
+                    // Keep the widget only for the "updating..." stale state;
+                    // the normal context bar is already in the status line.
+                    return self.context_info_stale;
+                }
+                self.context_info_stale
+                    || self
+                        .context_info
+                        .as_ref()
+                        .map(|c| c.total_chars > 0)
+                        .unwrap_or(false)
+            }
             WidgetKind::MemoryActivity => self
                 .memory_info
                 .as_ref()
                 .map(MemoryInfo::should_render)
                 .unwrap_or(false),
+            WidgetKind::RecoveredMemories => self.has_recovered_memories(),
             WidgetKind::SwarmStatus => self
                 .swarm_info
                 .as_ref()
@@ -818,13 +958,54 @@ impl InfoWidgetData {
                 .unwrap_or(false),
             WidgetKind::Compaction => self.compaction_info.is_some(),
             WidgetKind::AmbientMode => false,
-            WidgetKind::UsageLimits => self
-                .usage_info
-                .as_ref()
-                .map(|u| u.available)
-                .unwrap_or(false),
-            WidgetKind::KvCache => self.cache_hit_info.is_some(),
-            WidgetKind::ModelInfo => runtime_has_data(self),
+            WidgetKind::UsageLimits => {
+                if self.status_line_active {
+                    // Suppress CostBased/Copilot (already in status line);
+                    // keep OAuth subscription bars with reset times.
+                    return self
+                        .usage_info
+                        .as_ref()
+                        .map(|u| {
+                            u.available
+                                && !matches!(
+                                    u.provider,
+                                    UsageProvider::CostBased | UsageProvider::Copilot
+                                )
+                        })
+                        .unwrap_or(false);
+                }
+                self.usage_info
+                    .as_ref()
+                    .map(|u| u.available)
+                    .unwrap_or(false)
+            }
+            WidgetKind::KvCache => {
+                // KV cache is never shown in the status line, so always
+                // keep the widget when data is present.
+                self.cache_hit_info.is_some()
+            }
+            WidgetKind::ModelInfo => {
+                if self.status_line_active {
+                    // Keep the widget when it has supplementary info not shown
+                    // in the status line (service tier, native compaction,
+                    // session count/name).
+                    self.service_tier.is_some()
+                        || self.native_compaction_mode.is_some()
+                        || self.session_count.is_some()
+                        || self
+                            .session_name
+                            .as_deref()
+                            .is_some_and(|s| !s.trim().is_empty())
+                } else {
+                    self.model.is_some()
+                        || self.has_model_supplementary_info()
+                        || self.session_count.is_some()
+                        || self
+                            .session_name
+                            .as_deref()
+                            .is_some_and(|s| !s.trim().is_empty())
+                }
+            }
             WidgetKind::Tips => false,
             WidgetKind::GitStatus => self
                 .git_info
@@ -837,6 +1018,24 @@ impl InfoWidgetData {
                 .map(commits_has_data)
                 .unwrap_or(false),
         }
+    }
+
+    /// Whether any memory was recovered (injected) in the recent activity
+    /// window. Drives the attached `RecoveredMemories` panel below the
+    /// Overview: it only appears when there is something to show.
+    pub fn has_recovered_memories(&self) -> bool {
+        self.memory_info
+            .as_ref()
+            .and_then(|info| info.activity.as_ref())
+            .map(|activity| {
+                activity.recent_events.iter().any(|e| {
+                    matches!(
+                        &e.kind,
+                        MemoryEventKind::MemoryInjected { count, .. } if *count > 0
+                    )
+                })
+            })
+            .unwrap_or(false)
     }
 
     /// Get list of widget kinds that have data, in priority order
@@ -858,6 +1057,7 @@ impl InfoWidgetData {
                     kind.priority()
                 }
             }
+            WidgetKind::RecoveredMemories => kind.priority(),
             WidgetKind::UsageLimits => {
                 let max_pct = self
                     .usage_info
@@ -906,6 +1106,19 @@ impl InfoWidgetData {
             .filter(|&kind| self.has_data_for(kind))
             .collect();
         widgets.sort_by_key(|&kind| self.effective_priority(kind));
+
+        // Always return only the Overview plus any special widgets
+        // (WorkspaceMap, Diagrams, and the non-pinned RecoveredMemories fallback)
+        // that are not merged into Overview.
+        if self.status_line_pinned && widgets.contains(&WidgetKind::Overview) {
+            widgets.retain(|&k| {
+                k == WidgetKind::Overview
+                    || k == WidgetKind::WorkspaceMap
+                    || k == WidgetKind::Diagrams
+                    || k == WidgetKind::RecoveredMemories
+            });
+        }
+
         widgets
     }
 }
@@ -1034,6 +1247,113 @@ pub fn calculate_placements(
         None => return Vec::new(),
     };
 
+    // When the status line is pinned on (default), place the Overview widget
+    // at a fixed top-right position (always visible, drawn on top of content).
+    // Skip on very small terminals where the widget would take too much space;
+    // those fall through to the normal margin-based placement.
+    const MIN_FIXED_WIDTH: u16 = 52;
+    const MIN_FIXED_HEIGHT: u16 = 10;
+    // The top band (pinned todos + previous-prompt preview) is synthetic rows
+    // the viewport reserves above the transcript: the margins report them as
+    // fully occupied (zero free width). The fixed Overview must not cover
+    // them (it would truncate the pinned todo card text and the background
+    // task rows), so skip the fixed spot and fall through to margin-based
+    // placement, which already respects the occupied band. Only the band rows
+    // count here: a fully-occupied ordinary content row (a long transcript
+    // line) is exactly what the fixed spot is meant to draw over.
+    if state.enabled
+        && data.status_line_pinned
+        && data.has_data_for(WidgetKind::Overview)
+        && messages_area.width >= MIN_FIXED_WIDTH
+        && messages_area.height >= MIN_FIXED_HEIGHT
+        && margins.top_band_rows == 0
+    {
+        let mut placements = calculate_fixed_overview_placement(messages_area, data);
+
+        // If memories were recovered this cycle, they are now rendered inline
+        // within the Overview panel (after the memory count line), so no
+        // separate placement is needed.
+
+        // Reserve the Overview's rect so the anchored placement doesn't place
+        // other widgets on top of it. We do this by running the anchored placer
+        // with a modified data that suppresses Overview and mergeable widgets.
+        if placements.iter().any(|p| p.kind == WidgetKind::Overview) {
+            // Run anchored placement for remaining special widgets (WorkspaceMap,
+            // Diagrams). Suppress Overview from the anchored data so it doesn't
+            // try to also place it. Reserve the Overview's rect by zeroing the
+            // free widths in those rows so other widgets won't overlap it.
+            let mut anchored_data = data.clone();
+            anchored_data.todos.clear();
+            anchored_data.cache_hit_info = None;
+            anchored_data.compaction_info = None;
+            anchored_data.git_info = None;
+            anchored_data.background_info = None;
+            anchored_data.queue_mode = None;
+            anchored_data.service_tier = None;
+            anchored_data.native_compaction_mode = None;
+            anchored_data.session_count = None;
+            anchored_data.session_name = None;
+            anchored_data.context_info_stale = false;
+            anchored_data.mcp_servers.clear();
+            anchored_data.available_skills.clear();
+            // Also suppress usage_info and context_info so has_data_for(Overview)
+            // returns false, preventing a duplicate Overview from anchored placement.
+            anchored_data.usage_info = None;
+            anchored_data.context_info = None;
+            anchored_data.model = None;
+            // Clear status_line_active so the "no usage but status line active"
+            // fallback (which always counts 1 section) doesn't make Overview
+            // appear again. Also clear remaining fields that count as sections.
+            anchored_data.status_line_active = false;
+            anchored_data.tokens_per_second = None;
+            anchored_data.avg_tokens_per_second = None;
+            anchored_data.swarm_info = None;
+            // Suppress memory_info so the standalone MemoryActivity widget
+            // is not placed — memory count and recovered memories are now
+            // rendered inline within the Overview panel.
+            anchored_data.memory_info = None;
+
+            // Zero out the free width on the right side where the Overview sits,
+            // so the anchored system won't place WorkspaceMap/Diagrams there.
+            let mut reserved_margins = margins.clone();
+            let reserved_rects: Vec<Rect> = placements
+                .iter()
+                .filter(|p| p.kind == WidgetKind::Overview)
+                .map(|p| p.rect)
+                .collect();
+            for rect in reserved_rects {
+                let row_start = (rect.y.saturating_sub(messages_area.y)) as usize;
+                let row_end = row_start + rect.height as usize;
+                for row in row_start..row_end.min(reserved_margins.right_widths.len()) {
+                    let right_edge = messages_area.x + messages_area.width;
+                    let rect_left = right_edge.saturating_sub(rect.width);
+                    let free_left_of_rect = rect_left.saturating_sub(messages_area.x);
+                    // Only zero the width that the rect occupies on the right side.
+                    // Keep whatever free space is to the LEFT of the rect.
+                    if reserved_margins.right_widths[row] > free_left_of_rect {
+                        reserved_margins.right_widths[row] = free_left_of_rect;
+                    }
+                }
+            }
+
+            let outcome = super::info_widget_layout::calculate_placements_anchored(
+                messages_area,
+                &reserved_margins,
+                &anchored_data,
+                state.enabled,
+                &state.anchors,
+            );
+            state.anchors = outcome.anchors;
+            placements.extend(outcome.visible);
+        }
+
+        state.placements = placements.clone();
+        if swarm_dock_engaged(state) {
+            state.swarm_dock_last_engaged = Some(Instant::now());
+        }
+        return placements;
+    }
+
     let outcome = super::info_widget_layout::calculate_placements_anchored(
         messages_area,
         margins,
@@ -1047,6 +1367,53 @@ pub fn calculate_placements(
         state.swarm_dock_last_engaged = Some(Instant::now());
     }
     outcome.visible
+}
+
+/// Place the Overview widget at a fixed top-right position in the messages
+/// area, always visible. The widget is drawn on top of transcript content
+/// (cells behind it are cleared), so it never hides or jumps.
+fn calculate_fixed_overview_placement(
+    messages_area: Rect,
+    data: &InfoWidgetData,
+) -> Vec<WidgetPlacement> {
+    const FIXED_WIDTH: u16 = 44;
+    const MAX_HEIGHT: u16 = 30;
+    const MIN_WIDTH: u16 = 28;
+
+    // Adapt width to terminal: use full width on narrow terminals, cap at FIXED_WIDTH on wider ones.
+    let width = FIXED_WIDTH
+        .min(messages_area.width.saturating_sub(2))
+        .max(MIN_WIDTH);
+    let width = if messages_area.width < MIN_WIDTH + 2 {
+        messages_area.width.saturating_sub(2)
+    } else {
+        width
+    };
+
+    let inner_width = (width.saturating_sub(2)) as usize;
+    let inner_h = MAX_HEIGHT.saturating_sub(2);
+    let layout = compute_page_layout(data, inner_width, inner_h);
+    let content_h = layout.max_page_height;
+    if content_h == 0 {
+        return Vec::new();
+    }
+    // +2 for the border, +1 for dots if shown
+    let total_h = content_h + 2 + u16::from(layout.show_dots);
+    let clamped_h = total_h.min(messages_area.height).min(MAX_HEIGHT);
+
+    let x = messages_area.x + messages_area.width - width;
+    let y = messages_area.y;
+
+    vec![WidgetPlacement {
+        kind: WidgetKind::Overview,
+        rect: Rect::new(x, y, width, clamped_h),
+        side: Side::Right,
+        overview_layout: if layout.max_page_height <= clamped_h.saturating_sub(2) {
+            Some(layout)
+        } else {
+            None
+        },
+    }]
 }
 
 /// How long the inline swarm strip keeps standing down after the SwarmStatus
@@ -1126,6 +1493,41 @@ pub(crate) fn clear_widget_placements_for_tests() {
     }
 }
 
+/// Force the process-global widget switch off for the guard's lifetime and
+/// restore the previous value on drop. Deterministic render fixtures that
+/// must not show the Overview panel (small terminals where the fixed
+/// top-right placement would truncate the rows under test) use this instead
+/// of mutating config.
+#[cfg(test)]
+pub(crate) struct WidgetsDisabledGuard {
+    previous: bool,
+}
+
+#[cfg(test)]
+impl WidgetsDisabledGuard {
+    pub(crate) fn new() -> Self {
+        let mut guard = get_or_init_state();
+        let previous = guard.as_ref().map(|s| s.enabled).unwrap_or(true);
+        if let Some(state) = guard.as_mut() {
+            state.enabled = false;
+        }
+        Self { previous }
+    }
+}
+
+#[cfg(test)]
+impl Drop for WidgetsDisabledGuard {
+    fn drop(&mut self) {
+        let mut guard = get_or_init_state();
+        if let Some(state) = guard.as_mut() {
+            state.enabled = self.previous;
+            state.placements.clear();
+            state.anchors.clear();
+            state.swarm_dock_last_engaged = None;
+        }
+    }
+}
+
 /// Calculate the height needed for a specific widget type
 pub(crate) fn calculate_widget_height(
     kind: WidgetKind,
@@ -1146,9 +1548,7 @@ pub(crate) fn calculate_widget_height(
             preferred_h.min(max_height.saturating_sub(border_height))
         }
         WidgetKind::Overview => {
-            let mut overview = data.clone();
-            // Keep memory in its own widget so graph rendering stays focused.
-            overview.memory_info = None;
+            let overview = data.clone();
             let inner_h = max_height.saturating_sub(border_height);
             let layout = compute_page_layout(&overview, inner_width, inner_h);
             if layout.max_page_height == 0 {
@@ -1219,11 +1619,24 @@ pub fn render_all(frame: &mut Frame, placements: &[WidgetPlacement], data: &Info
 fn render_single_widget(frame: &mut Frame, placement: &WidgetPlacement, data: &InfoWidgetData) {
     let rect = placement.rect;
 
-    // Semi-transparent looking border (using dim colors)
-    let block = Block::default()
+    // Semi-transparent looking border (using dim colors). When the status line
+    // is pinned, the Overview floats over transcript content. Give the whole
+    // panel (including borders) a dark background so wide characters in the
+    // transcript cannot bleed through or shift the border position.
+    let dark_bg = rgb(30, 30, 35);
+    let mut block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(rgb(70, 70, 80)).dim());
+        .border_style(Style::default().fg(rgb(70, 70, 80)).dim())
+        .style(Style::default().bg(dark_bg));
+
+    if placement.kind == WidgetKind::WorkspaceMap {
+        block = block.title(Span::styled(
+            " Workspace ",
+            Style::default().fg(rgb(120, 120, 130)).dim(),
+        ));
+    }
+
     let inner = block.inner(rect);
 
     // Diagrams need special handling - render image instead of text
@@ -1232,14 +1645,26 @@ fn render_single_widget(frame: &mut Frame, placement: &WidgetPlacement, data: &I
         if data.diagrams.len() > 1 {
             chrome = chrome.title_right(frame::dim(format!("1/{}", data.diagrams.len())));
         }
+        frame.render_widget(Clear, rect);
         frame.render_widget(chrome.apply(block, rect.width), rect);
         render_diagrams_widget(frame, inner, data);
         return;
     }
     if placement.kind == WidgetKind::Overview {
-        let Some(framed) = render_overview_framed(data, inner) else {
+        // Reuse the layout computed at placement time so the height check and
+        // the render cannot disagree. Check the overview would actually render
+        // content before drawing the border.
+        let layout = placement
+            .overview_layout
+            .clone()
+            .unwrap_or_else(|| compute_page_layout(data, inner.width as usize, inner.height));
+        if layout.pages.is_empty() || layout.max_page_height == 0 {
+            return;
+        }
+        let Some(framed) = render_overview_framed(data, inner, layout) else {
             return;
         };
+        frame.render_widget(Clear, rect);
         frame.render_widget(framed.apply(block, rect.width), rect);
         frame.render_widget(Paragraph::new(framed.lines), inner);
         return;
@@ -1249,6 +1674,7 @@ fn render_single_widget(frame: &mut Frame, placement: &WidgetPlacement, data: &I
             return;
         }
         let chrome = Framed::default().title(frame::label("Workspace"));
+        frame.render_widget(Clear, rect);
         frame.render_widget(chrome.apply(block, rect.width), rect);
         super::workspace_map_widget::render_workspace_map(
             frame.buffer_mut(),
@@ -1262,6 +1688,9 @@ fn render_single_widget(frame: &mut Frame, placement: &WidgetPlacement, data: &I
     if framed.is_empty() {
         return;
     }
+    // All floating info widgets can overlap transcript content when the
+    // status line is active. The dark background on the block already wipes
+    // the cells underneath, so no extra Clear widget is needed here.
     frame.render_widget(framed.apply(block, rect.width), rect);
     frame.render_widget(Paragraph::new(framed.lines), inner);
 }
@@ -1282,18 +1711,17 @@ fn render_diagrams_widget(frame: &mut Frame, inner: Rect, data: &InfoWidgetData)
 }
 
 /// Overview: the rotating multi-section page. Border layout: `Overview` or
-/// the focused page's name top-left, page dots bottom-right.
-fn render_overview_framed(data: &InfoWidgetData, inner: Rect) -> Option<Framed> {
+/// the focused page's name top-left, page dots bottom-right. Takes the layout
+/// computed at placement time so the height check and the render agree.
+fn render_overview_framed(
+    data: &InfoWidgetData,
+    inner: Rect,
+    layout: PageLayout,
+) -> Option<Framed> {
     if inner.width == 0 || inner.height == 0 {
         return None;
     }
 
-    let mut overview = data.clone();
-    // Keep memory graph and diagram visuals in dedicated widgets.
-    overview.memory_info = None;
-    overview.diagrams.clear();
-
-    let layout = compute_page_layout(&overview, inner.width as usize, inner.height);
     if layout.pages.is_empty() || layout.max_page_height == 0 {
         return None;
     }
@@ -1320,7 +1748,7 @@ fn render_overview_framed(data: &InfoWidgetData, inner: Rect) -> Option<Framed> 
     let page_index = widget_state.page_index.min(layout.pages.len() - 1);
     drop(guard);
     let page = layout.pages[page_index];
-    let mut lines = render_page(page.kind, &overview, inner);
+    let mut lines = render_page(page.kind, data, inner);
 
     // If the page rendered no content, bail out to avoid an empty box
     if lines.is_empty() {
@@ -1521,6 +1949,11 @@ fn edge_kind_priority(kind: &str) -> u8 {
 }
 
 /// Render content for a specific widget type: body rows plus border text.
+///
+/// Merged-widget kinds (Todos, ContextUsage, UsageLimits, KvCache,
+/// BackgroundTasks, GitStatus, Tips) still have Framed renderers here so the
+/// non-pinned fallback layout keeps working; the pinned status-line layout
+/// only ever places the Overview plus the specials.
 fn render_widget_content(kind: WidgetKind, data: &InfoWidgetData, inner: Rect) -> Framed {
     let framed = match kind {
         // Image/map/paged widgets are handled specially in render_single_widget.
@@ -1529,13 +1962,33 @@ fn render_widget_content(kind: WidgetKind, data: &InfoWidgetData, inner: Rect) -
         }
         WidgetKind::Todos => render_todos_widget(data, inner),
         WidgetKind::MemoryActivity => render_memory_widget(data, inner),
-        WidgetKind::SwarmStatus => render_swarm_widget(data, inner),
-        WidgetKind::BackgroundTasks => render_background_widget(data, inner),
-        WidgetKind::Compaction => render_compaction_widget(data, inner),
+        WidgetKind::RecoveredMemories => {
+            Framed::body(render_recovered_memories_widget(data, inner))
+        }
+        WidgetKind::SwarmStatus | WidgetKind::ContextUsage | WidgetKind::BackgroundTasks => {
+            // Swarm/background/context compact content joined into the Overview
+            // sections; standalone framed rendering is handled via their own
+            // widgets below for the fallback layout.
+
+            match kind {
+                WidgetKind::SwarmStatus => render_swarm_widget(data, inner),
+                WidgetKind::ContextUsage => Framed::body(render_context_compact(data, inner)),
+                _ => render_background_widget(data, inner),
+            }
+        }
         WidgetKind::AmbientMode => render_ambient_widget(data, inner),
+        WidgetKind::Compaction => render_compaction_widget(data, inner),
         WidgetKind::UsageLimits => render_usage_widget(data, inner),
         WidgetKind::KvCache => render_kv_cache_widget(data, inner),
-        WidgetKind::ModelInfo => render_model_widget(data, inner),
+        // Runtime rows plus the supplementary lines the status line never
+        // shows (native compaction mode, threshold).
+        WidgetKind::ModelInfo => {
+            let mut framed = render_model_widget(data, inner);
+            framed
+                .lines
+                .extend(render_model_info_supplementary(data, inner));
+            framed
+        }
         WidgetKind::Tips => render_tips_widget(inner),
         WidgetKind::GitStatus => render_changes_framed(data, inner),
         WidgetKind::Commits => render_commits_widget(data, inner),
@@ -1699,9 +2152,9 @@ fn render_kv_cache_rates_line(cache: &CacheHitInfo) -> Line<'static> {
     Line::from(spans)
 }
 
-fn render_kv_cache_summary_line(cache: &CacheHitInfo) -> Line<'static> {
+fn render_kv_cache_summary_line(cache: &CacheHitInfo) -> Vec<Line<'static>> {
     let Some(lifetime_ratio) = cache.hit_ratio() else {
-        return Line::default();
+        return Vec::new();
     };
 
     let lifetime_pct = ratio_pct(lifetime_ratio);
@@ -1714,50 +2167,69 @@ fn render_kv_cache_summary_line(cache: &CacheHitInfo) -> Line<'static> {
         .unwrap_or(lifetime_pct);
     let color = kv_cache_optimal_color(health_pct);
 
-    let mut spans = vec![Span::styled(
+    let mut lines = Vec::new();
+
+    // Line 1: header + yield/warm + session
+    let mut spans1 = vec![Span::styled(
         "KV cache: ",
         Style::default().fg(rgb(180, 180, 190)).bold(),
     )];
 
     if let Some(warm_pct) = warm_pct {
-        spans.push(Span::styled(
+        spans1.push(Span::styled(
             "yield ",
             Style::default().fg(rgb(140, 140, 150)),
         ));
-        spans.push(Span::styled(
+        spans1.push(Span::styled(
             format!("{}%", warm_pct),
             Style::default().fg(color).bold(),
         ));
     } else {
-        spans.push(Span::styled(
+        spans1.push(Span::styled(
             "priming",
             Style::default().fg(color).add_modifier(Modifier::BOLD),
         ));
     }
-
-    if let Some(last_pct) = last_pct {
-        spans.push(Span::styled(" · ", Style::default().fg(rgb(80, 80, 90))));
-        spans.push(Span::styled(
-            "last ",
-            Style::default().fg(rgb(140, 140, 150)),
-        ));
-        spans.push(Span::styled(
-            format!("{}%", last_pct),
-            Style::default().fg(color).bold(),
-        ));
-    }
-
-    spans.push(Span::styled(" · ", Style::default().fg(rgb(80, 80, 90))));
-    spans.push(Span::styled(
+    spans1.push(Span::styled(" · ", Style::default().fg(rgb(80, 80, 90))));
+    spans1.push(Span::styled(
         "session ",
         Style::default().fg(rgb(140, 140, 150)),
     ));
-    spans.push(Span::styled(
+    spans1.push(Span::styled(
         format!("{}%", lifetime_pct),
         Style::default().fg(color).bold(),
     ));
+    lines.push(Line::from(spans1));
 
-    Line::from(spans)
+    // Line 2: last-turn stats when present.
+    if let Some(last_pct) = last_pct {
+        let mut spans2 = vec![Span::styled("  ", Style::default())];
+        spans2.push(Span::styled(
+            "last ",
+            Style::default().fg(rgb(140, 140, 150)),
+        ));
+        spans2.push(Span::styled(
+            format!("{}%", last_pct),
+            Style::default().fg(color).bold(),
+        ));
+        if let Some(last_optimal_pct) = last_optimal_pct {
+            spans2.push(Span::styled(
+                format!(" (optimal {}%)", last_optimal_pct),
+                Style::default().fg(rgb(140, 140, 150)),
+            ));
+        }
+        lines.push(Line::from(spans2));
+    }
+
+    lines
+}
+
+fn format_cache_turn_label(turn_number: usize, call_index: u16) -> String {
+    if call_index <= 1 {
+        format!("{}>", turn_number)
+    } else {
+        format!("{}.{}>", turn_number, call_index)
+    }
 }
 
 fn ratio_pct(ratio: f32) -> u8 {
@@ -1770,14 +2242,6 @@ fn kv_cache_optimal_color(pct: u8) -> Color {
         25..=59 => rgb(255, 200, 100),
         60..=84 => rgb(140, 180, 255),
         _ => rgb(110, 210, 140),
-    }
-}
-
-fn format_cache_turn_label(turn_number: usize, call_index: u16) -> String {
-    if call_index <= 1 {
-        format!("{}>", turn_number)
-    } else {
-        format!("{}.{}>", turn_number, call_index)
     }
 }
 
@@ -1952,6 +2416,7 @@ pub fn render(frame: &mut Frame, rect: Rect, data: &InfoWidgetData) {
         kind: available[0],
         rect,
         side: Side::Right,
+        overview_layout: None,
     };
     render_single_widget(frame, &placement, data);
 }
@@ -1971,61 +2436,449 @@ fn render_page(kind: InfoPageKind, data: &InfoWidgetData, inner: Rect) -> Vec<Li
 fn render_sections(
     data: &InfoWidgetData,
     inner: Rect,
-    focus: Option<InfoPageKind>,
+    _focus: Option<InfoPageKind>,
 ) -> Vec<Line<'static>> {
     let mut lines: Vec<Line<'static>> = Vec::new();
+    let w = inner.width as usize;
 
-    // Detail layer only: model identity, context %, and branch/counts live on
-    // the overscroll status line and are never repeated here.
-    lines.extend(render_model_info(data, inner));
+    // Line 1: Working directory + git branch (merged into one line).
+    // Identity facts when the status line is pinned: dir, branch, and the
+    // git counts all live there, so the widget skips this line entirely.
+    if !data.status_line_active {
+        let dir_label = data
+            .working_dir
+            .as_deref()
+            .filter(|d| !d.trim().is_empty())
+            .and_then(crate::tui::session_facts::dir_label_short)
+            .map(|label| truncate_smart(&label, w.saturating_sub(2)));
 
-    if !data.todos.is_empty() {
-        if matches!(focus, Some(InfoPageKind::TodosExpanded)) {
-            lines.extend(render_todos_expanded(data, inner));
-        } else {
-            lines.extend(render_todos_compact(data, inner));
+        let git_info = data.git_info.as_ref().filter(|g| !g.branch.is_empty());
+
+        if dir_label.is_some() || git_info.is_some() {
+            let mut spans: Vec<Span<'static>> = Vec::new();
+            if let Some(dir) = dir_label {
+                spans.push(Span::styled(dir, Style::default().fg(rgb(140, 140, 150))));
+            }
+            if let Some(info) = git_info {
+                if !spans.is_empty() {
+                    spans.push(Span::styled("  ", Style::default().fg(rgb(240, 160, 60))));
+                }
+                spans.push(Span::styled(" ", Style::default().fg(rgb(240, 160, 60))));
+                let branch_w = w.saturating_sub(
+                    spans
+                        .iter()
+                        .map(|s| s.content.chars().count())
+                        .sum::<usize>(),
+                );
+                let branch_display =
+                    truncate_smart(&info.branch, branch_w.saturating_sub(12).max(6));
+                spans.push(Span::styled(
+                    branch_display,
+                    Style::default().fg(rgb(160, 160, 170)),
+                ));
+                if info.ahead > 0 {
+                    spans.push(Span::styled(
+                        format!(" ↑{}", info.ahead),
+                        Style::default().fg(rgb(100, 200, 100)),
+                    ));
+                }
+                if info.behind > 0 {
+                    spans.push(Span::styled(
+                        format!(" ↓{}", info.behind),
+                        Style::default().fg(rgb(255, 140, 100)),
+                    ));
+                }
+                if info.modified > 0 {
+                    spans.push(Span::styled(
+                        format!(" ~{}", info.modified),
+                        Style::default().fg(rgb(240, 200, 80)),
+                    ));
+                }
+                if info.staged > 0 {
+                    spans.push(Span::styled(
+                        format!(" +{}", info.staged),
+                        Style::default().fg(rgb(100, 200, 100)),
+                    ));
+                }
+                if info.untracked > 0 {
+                    spans.push(Span::styled(
+                        format!(" ?{}", info.untracked),
+                        Style::default().fg(rgb(140, 140, 150)),
+                    ));
+                }
+            }
+            if !spans.is_empty() {
+                lines.push(Line::from(spans));
+            }
         }
     }
 
-    // Memory info
-    if let Some(info) = &data.memory_info
-        && (info.total_count > 0 || info.activity.is_some())
-    {
-        if matches!(focus, Some(InfoPageKind::MemoryExpanded)) {
-            lines.extend(render_memory_expanded(info, inner));
-        } else {
-            lines.extend(render_memory_compact(info, inner.width));
-        }
+    // Separator between path/git line and the runtime section, only when
+    // the runtime section actually renders rows (an orphan divider at the
+    // top of the panel otherwise).
+    if model_info_height(data) > 0 {
+        lines.push(dashed_separator(inner.width));
     }
 
-    // Background tasks info
-    if let Some(info) = &data.background_info
-        && info.running_count > 0
-    {
-        lines.extend(render_background_compact(info));
+    // Line 3: Runtime rows (selected model + effort, agent model overrides,
+    // service tier, upstream, connection, live t/s).
+    if model_info_height(data) > 0 {
+        lines.extend(render_model_info(data, inner));
     }
 
-    // Usage info (subscription limits)
+    // Usage info (subscription bars with reset times only).
+    // Placed right after model info, above the context bar.
+    // CostBased/Copilot cost+tokens are in the cost line below.
     if let Some(info) = &data.usage_info
         && info.available
+        && !matches!(
+            info.provider,
+            UsageProvider::CostBased | UsageProvider::Copilot
+        )
     {
         lines.extend(render_usage_compact(
             info,
             inner.width,
             data.usage_display_used,
         ));
+        lines.push(dashed_separator(inner.width));
     }
 
+    // Line 4: Context occupancy with bar
+    if let Some(info) = &data.context_info
+        && info.total_chars > 0
+    {
+        lines.extend(render_context_compact(data, inner));
+    } else if data.context_info_stale {
+        lines.extend(render_context_compact(data, inner));
+    }
+
+    // Compaction status — part of the merged context/token section, no
+    // separator between it and the cost line.
+    if let Some(info) = &data.compaction_info {
+        lines.extend(render_compaction_compact(info, inner.width));
+    }
+
+    // Line 5: Cost + tokens IN/OUT + avg t/s — closes the merged
+    // context/token section.
+    let cost_line = render_cost_tokens_line(data, inner);
+    lines.push(cost_line);
+
+    // KV cache — right after token counts, same merged context/token
+    // section, no separator after it
     if let Some(cache) = data.cache_hit_info.as_ref() {
-        lines.push(render_kv_cache_summary_line(cache));
+        lines.extend(render_kv_cache_summary_line(cache));
     }
 
-    // Changed files (the detail behind the line's git counts).
+    // Supplementary fields below the core 5 lines:
+
+    // Service tier, native compaction, etc.
+    if data.has_model_supplementary_info() {
+        lines.extend(render_model_info_supplementary(data, inner));
+    }
+
+    // MCP servers + skills — grouped above background tasks
+    if !data.mcp_servers.is_empty() {
+        lines.extend(render_mcp_servers_line(&data.mcp_servers, inner.width));
+    }
+    if !data.available_skills.is_empty() {
+        lines.extend(render_skills_line(&data.available_skills, inner.width));
+        lines.push(dashed_separator(inner.width));
+    }
+
+    // Background tasks
+    if let Some(info) = &data.background_info
+        && info.running_count > 0
+    {
+        lines.extend(render_background_compact(info));
+    }
+
+    // Swarm status (subagents, managed members, plan progress)
+    // Always show: full widget when swarm active, "0 sessions" when inactive.
+    if data.swarm_info.is_some() {
+        let framed = swarm_background::render_swarm_widget(data, inner);
+        lines.extend(framed.lines);
+    } else {
+        lines.push(Line::from(vec![
+            Span::styled("🐝 ", Style::default().fg(rgb(255, 200, 100))),
+            Span::styled("0 sessions", Style::default().fg(rgb(120, 120, 130))),
+        ]));
+    }
+
+    // Ambient mode status (scheduled agent)
+    if let Some(info) = &data.ambient_info
+        && info.show_widget
+    {
+        let framed = render_ambient_widget(data, inner);
+        lines.extend(framed.lines);
+    }
+
+    // Changed files: the detail behind the status line's git counts.
+    // Rendered just before the memory section so the identity/git block
+    // leads the panel and the working state closes it.
     if data.git_info.as_ref().is_some_and(changes_has_data) {
         lines.extend(render_git_widget(data, inner));
     }
 
+    // Memory info — just before todos, shows count and recalls.
+    // Recovered memories are rendered inline below the count line,
+    // using 2x panel width for the content area.
+    if let Some(info) = &data.memory_info {
+        let label = if info.disabled {
+            "Memory disabled".to_string()
+        } else {
+            format_memory_count(info.total_count)
+        };
+        let mut style = Style::default();
+        if info.disabled {
+            style = style.fg(rgb(120, 120, 130)).add_modifier(Modifier::DIM);
+        } else {
+            style = style.fg(rgb(210, 210, 220));
+        };
+        let mut spans = vec![
+            Span::styled("🧠 ", Style::default().fg(rgb(200, 150, 255))),
+            Span::styled(label, style),
+        ];
+        // Append recalls count if available.
+        if let Some(activity) = info.activity.as_ref() {
+            let recalls = activity
+                .recent_events
+                .iter()
+                .filter(|e| {
+                    matches!(
+                        &e.kind,
+                        MemoryEventKind::MemoryInjected { .. }
+                            | MemoryEventKind::MemorySurfaced { .. }
+                    )
+                })
+                .count();
+            if recalls > 0 {
+                spans.push(Span::styled(
+                    format!(
+                        " · {} recall{}",
+                        recalls,
+                        if recalls == 1 { "" } else { "s" }
+                    ),
+                    Style::default().fg(rgb(140, 210, 255)),
+                ));
+            }
+        }
+        lines.push(Line::from(spans));
+
+        // Render recovered memories inline, using 2x panel width.
+        if data.has_recovered_memories() {
+            let recovered = render_recovered_memories_widget(data, inner);
+            lines.extend(recovered);
+        }
+    }
+
+    // Todos
+    if !data.todos.is_empty() {
+        lines.extend(render_todos_expanded(data, inner));
+    }
+
     lines
+}
+
+fn render_mcp_servers_line(servers: &[(String, usize)], width: u16) -> Vec<Line<'static>> {
+    let w = width as usize;
+    let full_parts: Vec<String> = servers
+        .iter()
+        .map(|(name, count)| {
+            if *count > 0 {
+                format!("{} ({} tools)", name, count)
+            } else {
+                format!("{} (...)", name)
+            }
+        })
+        .collect();
+    let full = format!("mcp: {}", full_parts.join(", "));
+    if full.chars().count() <= w {
+        return vec![Line::from(Span::styled(
+            full,
+            Style::default().fg(rgb(100, 180, 220)),
+        ))];
+    }
+    // Try compact single line
+    let short_parts: Vec<String> = servers
+        .iter()
+        .map(|(name, count)| {
+            if *count > 0 {
+                format!("{}({})", name, count)
+            } else {
+                format!("{}(…)", name)
+            }
+        })
+        .collect();
+    let short = format!("mcp: {}", short_parts.join(" "));
+    if short.chars().count() <= w {
+        return vec![Line::from(Span::styled(
+            short,
+            Style::default().fg(rgb(100, 180, 220)),
+        ))];
+    }
+    // Multi-line: header + one server per line
+    let mut lines = vec![Line::from(Span::styled(
+        format!("mcp: {} servers", servers.len()),
+        Style::default().fg(rgb(100, 180, 220)),
+    ))];
+    for (name, count) in servers {
+        let entry = if *count > 0 {
+            format!("  {} ({} tools)", name, count)
+        } else {
+            format!("  {} (...)", name)
+        };
+        let entry = truncate_smart(&entry, w);
+        lines.push(Line::from(Span::styled(
+            entry,
+            Style::default().fg(rgb(100, 180, 220)),
+        )));
+    }
+    lines
+}
+
+/// Format memory count label (e.g. "0 memories", "1 memory", "5 memories").
+fn format_memory_count(total: usize) -> String {
+    if total == 1 {
+        "1 memory".to_string()
+    } else {
+        format!("{total} memories")
+    }
+}
+
+/// Render the cost + tokens IN/OUT + t/s line (line 5, always visible).
+/// Shows live t/s while streaming, or avg t/s when idle.
+fn render_cost_tokens_line(data: &InfoWidgetData, inner: Rect) -> Line<'static> {
+    let _w = inner.width as usize;
+    let mut spans: Vec<Span<'static>> = Vec::new();
+
+    // Cost + tokens with arrows: ↑ sent (output), ↓ received (input)
+    if let Some(info) = &data.usage_info
+        && info.available
+    {
+        match info.provider {
+            UsageProvider::CostBased => {
+                spans.push(Span::styled("💰 ", Style::default().fg(rgb(140, 180, 255))));
+                spans.push(Span::styled(
+                    format!("${:.4}", info.total_cost),
+                    Style::default().fg(rgb(180, 180, 190)).bold(),
+                ));
+                spans.push(Span::styled(
+                    format!(
+                        "  ↓{} ↑{} tok",
+                        compact_token_count(info.input_tokens),
+                        compact_token_count(info.output_tokens),
+                    ),
+                    Style::default().fg(rgb(140, 140, 150)),
+                ));
+            }
+            UsageProvider::Copilot => {
+                spans.push(Span::styled("💰 ", Style::default().fg(rgb(140, 180, 255))));
+                spans.push(Span::styled(
+                    format!(
+                        "$NA  ↓{} ↑{} tok",
+                        compact_token_count(info.input_tokens),
+                        compact_token_count(info.output_tokens),
+                    ),
+                    Style::default().fg(rgb(140, 140, 150)),
+                ));
+            }
+            _ => {
+                // OAuth subscription providers: show cost if available,
+                // otherwise just token counts. Subscription bars are shown
+                // separately by render_usage_compact below.
+                if info.total_cost > 0.0 {
+                    spans.push(Span::styled(
+                        format!("${:.4}", info.total_cost),
+                        Style::default().fg(rgb(180, 180, 190)).bold(),
+                    ));
+                    spans.push(Span::styled("  ", Style::default()));
+                }
+                spans.push(Span::styled(
+                    format!(
+                        "↓{} ↑{} tok",
+                        compact_token_count(info.input_tokens),
+                        compact_token_count(info.output_tokens),
+                    ),
+                    Style::default().fg(rgb(140, 140, 150)),
+                ));
+            }
+        }
+    } else {
+        spans.push(Span::styled("$NA", Style::default().fg(rgb(140, 140, 150))));
+    }
+
+    // t/s: always show rolling average over last 5 turns (even if 0),
+    // unless the user hid every t/s readout.
+    if !data.hide_tps {
+        if let Some(avg) = data.avg_tokens_per_second
+            && avg.is_finite()
+        {
+            spans.push(Span::styled(
+                format!("  ⌀{:.1} t/s", avg.max(0.0)),
+                Style::default().fg(rgb(140, 180, 255)),
+            ));
+        } else {
+            spans.push(Span::styled(
+                "  ⌀0 t/s",
+                Style::default().fg(rgb(140, 180, 255)),
+            ));
+        }
+    }
+
+    Line::from(spans)
+}
+
+/// Test-only access to the cost line renderer so app-level tests can assert
+/// the rendered text without going through the whole widget draw path.
+#[cfg(test)]
+pub(crate) fn render_cost_tokens_line_for_test(data: &InfoWidgetData) -> Line<'static> {
+    render_cost_tokens_line(data, Rect::new(0, 0, 80, 1))
+}
+
+// ---------------------------------------------------------------------------
+// MCP servers & skills compact lines
+// ---------------------------------------------------------------------------
+
+fn render_compaction_compact(info: &CompactionInfo, width: u16) -> Vec<Line<'static>> {
+    let status = if info.is_compacting {
+        "compacting"
+    } else {
+        "compacted"
+    };
+    let summary_tokens = (info.summary_chars / crate::compaction::CHARS_PER_TOKEN)
+        .max(usize::from(info.summary_chars > 0));
+    let color = if info.is_compacting {
+        rgb(255, 220, 140)
+    } else {
+        rgb(110, 210, 140)
+    };
+    let w = width as usize;
+
+    // Line 1: status + mode
+    let line1 = format!("CMP {} {}", status, info.mode);
+
+    // Line 2: detail stats
+    let detail = format!(
+        "{} old · {} active · ~{} tok",
+        info.compacted_messages, info.active_messages, summary_tokens
+    );
+    let detail = truncate_smart(&detail, w);
+
+    vec![
+        Line::from(Span::styled(line1, Style::default().fg(color))),
+        Line::from(Span::styled(
+            format!("  {}", detail),
+            Style::default().fg(color),
+        )),
+    ]
+}
+
+fn render_skills_line(skills: &[String], _width: u16) -> Vec<Line<'static>> {
+    vec![Line::from(Span::styled(
+        format!("skills: {} loaded", skills.len()),
+        Style::default().fg(rgb(100, 180, 220)),
+    ))]
 }
 
 // ---------------------------------------------------------------------------
@@ -2128,4 +2981,37 @@ fn format_event_for_expanded(
         }
         _ => ("·", String::new(), rgb(100, 100, 110)),
     }
+}
+
+fn render_context_compact(data: &InfoWidgetData, inner: Rect) -> Vec<Line<'static>> {
+    if data.context_info_stale {
+        return vec![Line::from(vec![
+            Span::styled("Context ", Style::default().fg(rgb(140, 140, 150))),
+            Span::styled("updating...", Style::default().fg(rgb(220, 180, 80))),
+        ])];
+    }
+    let Some(info) = &data.context_info else {
+        return Vec::new();
+    };
+    if info.total_chars == 0 && data.observed_context_tokens.is_none() {
+        return Vec::new();
+    }
+
+    let used_tokens = data
+        .observed_context_tokens
+        .map(|t| t as usize)
+        .unwrap_or_else(|| info.estimated_tokens());
+    let limit_tokens = data.context_limit.unwrap_or(DEFAULT_CONTEXT_LIMIT).max(1);
+    let label = if data.is_compacting {
+        "Context📦"
+    } else {
+        "Context"
+    };
+
+    vec![render_context_usage_line(
+        label,
+        used_tokens,
+        limit_tokens,
+        inner.width,
+    )]
 }
