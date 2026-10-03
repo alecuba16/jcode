@@ -199,7 +199,13 @@ pub fn clear_image_input_overrides_for_provider(provider_key: &str) {
         keys.join(", ")
     ));
     if let Ok(mut rejections) = IMAGE_INPUT_REJECTIONS.write() {
-        rejections.retain(|key, _| !key.starts_with(&prefix));
+        // Remove only the exact keys observed above. A blanket prefix retain
+        // would also drop a rejection recorded by a concurrent image-bearing
+        // request between the read and this write, sending images back to a
+        // model that just rejected them.
+        for key in keys {
+            rejections.remove(&key);
+        }
     }
 }
 
@@ -276,6 +282,48 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         )
+    }
+
+    #[test]
+    fn clear_preserves_rejections_recorded_concurrently() {
+        // A model switch collects the keys under the read lock, then logs,
+        // then takes the write lock. If an image-bearing request records a
+        // rejection in that window, the clear must not drop it: the blanket
+        // prefix retain used to delete it, sending images back to a model that
+        // just rejected them.
+        let provider = unique_provider();
+        record_image_input_rejection(
+            Some(&provider),
+            "old-model",
+            "model does not support image input",
+        );
+
+        // Simulate the race window: snapshot what the clear would collect,
+        // have the concurrent request land, then run the clear's removal.
+        let prefix = format!("{provider}::");
+        let keys: Vec<String> = IMAGE_INPUT_REJECTIONS
+            .read()
+            .unwrap()
+            .keys()
+            .filter(|key| key.starts_with(&prefix))
+            .cloned()
+            .collect();
+        record_image_input_rejection(
+            Some(&provider),
+            "new-model",
+            "model does not support image input",
+        );
+        if let Ok(mut rejections) = IMAGE_INPUT_REJECTIONS.write() {
+            for key in &keys {
+                rejections.remove(key);
+            }
+        }
+
+        // The pre-switch record is gone, the concurrent record survives.
+        assert!(!image_input_rejected(&provider, "old-model"));
+        assert!(image_input_rejected(&provider, "new-model"));
+        clear_image_input_overrides_for_provider(&provider);
+        assert!(!image_input_rejected(&provider, "new-model"));
     }
 
     #[test]
