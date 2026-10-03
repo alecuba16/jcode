@@ -180,11 +180,15 @@ impl Drop for UnixHarness {
 }
 
 fn serve_connection(
-    socket: UnixStream,
+    mut socket: UnixStream,
     sessions: Arc<Mutex<Vec<String>>>,
     include_archived: Arc<AtomicBool>,
     events_per_attach: usize,
 ) {
+    // BSD/macOS: the accepted socket inherits O_NONBLOCK from the
+    // nonblocking listener used for the poll-with-deadline accept loop, so
+    // blocking reads below would race with EAGAIN (see upstream #1668).
+    socket.set_nonblocking(false).expect("blocking server socket");
     let mut reader = BufReader::new(socket.try_clone().expect("clone server socket"));
     let mut writer = socket;
     while let Ok(frame) = read_frame::<_, ClientFrame>(&mut reader) {
