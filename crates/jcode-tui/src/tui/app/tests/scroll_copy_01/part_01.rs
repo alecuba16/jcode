@@ -1541,5 +1541,21 @@ fn changes_widget_end_to_end_on_real_git_repo() {
     crate::tui::app::helpers::seed_git_info_cache_for_tests(None);
     assert!(frame2.contains("src/lib.rs"), "{frame2}");
     assert!(!frame2.contains("● agent"), "{frame2}");
-    assert!(!frame2.contains('●'), "{frame2}");
+    // Scope the no-dot scan to the Changes widget's file rows: the header auth
+    // inventory legitimately renders its own state dot (e.g. `● openrouter`)
+    // when ambient credentials exist, and that is not the agent-edit dot this
+    // test asserts the absence of. Same scoping as #1556.
+    let changes_rows: Vec<&str> = frame2
+        .lines()
+        .filter(|l| {
+            ["src/lib.rs", "new.rs", "logo.bin", "new_name.rs", "gone.txt"]
+                .iter()
+                .any(|f| l.contains(f))
+        })
+        .collect();
+    assert!(
+        changes_rows.iter().all(|l| !l.contains('●')),
+        "agent dot must not appear on file rows without agent edits:
+{frame2}"
+    );
 }
