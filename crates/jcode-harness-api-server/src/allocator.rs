@@ -9,15 +9,19 @@
 //! Two arenas are plenty for a handful of connections, and trimming after the
 //! bursty list/attach work returns those pages to the OS.
 
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
 use std::sync::atomic::{AtomicU64, Ordering};
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Arena cap applied at startup. `MALLOC_ARENA_MAX` still wins when set.
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
 const DEFAULT_ARENA_MAX: i32 = 2;
 /// Never trim more often than this; `malloc_trim` walks every arena.
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
 const MIN_TRIM_INTERVAL_MS: u64 = 2_000;
 
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
 static LAST_TRIM_MS: AtomicU64 = AtomicU64::new(0);
 
 /// Configure the system allocator. Call once, before spawning threads.
@@ -34,6 +38,7 @@ pub fn configure() {
 }
 
 /// Return freed heap pages to the OS, at most once per interval.
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
 pub fn trim() {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -52,6 +57,11 @@ pub fn trim() {
         }
     }
 }
+
+/// No-op outside glibc: other allocators (macOS, musl, Windows) already
+/// return freed pages promptly enough for this bridge's footprint.
+#[cfg(not(all(target_os = "linux", target_env = "gnu")))]
+pub fn trim() {}
 
 /// Whether a request typically allocates large transient buffers.
 pub fn request_is_heavy(request: &serde_json::Value) -> bool {
@@ -101,6 +111,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
     fn trim_is_rate_limited_and_safe() {
         trim();
         let first = LAST_TRIM_MS.load(Ordering::Relaxed);

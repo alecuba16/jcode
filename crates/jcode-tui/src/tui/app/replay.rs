@@ -125,7 +125,25 @@ pub(super) async fn run_swarm_replay(
     loop {
         terminal.draw(|frame| {
             draw_swarm_replay_frame(frame, &mut panes, sim_time_ms);
-            jcode_tui_style::adapt_buffer_for_display(frame.buffer_mut());
+            // Apply an explicit background for themes that define one, then run
+            // the final display adapter (theme adapt + configured palette) only
+            // when the theme opts into terminal adaptation. Custom TOML themes
+            // are explicit palettes and must not be luminance-flipped, but
+            // [display.colors] overrides still apply through the palette pass.
+            let bg = jcode_tui_style::theme::background_color();
+            if bg != ratatui::style::Color::Reset {
+                let buf = frame.buffer_mut();
+                for cell in buf.content.iter_mut() {
+                    if cell.bg == ratatui::style::Color::Reset {
+                        cell.bg = bg;
+                    }
+                }
+            }
+            if jcode_tui_style::theme::active_theme_uses_terminal_adaptation() {
+                jcode_tui_style::adapt_buffer_for_display(frame.buffer_mut());
+            } else {
+                jcode_tui_style::palette::adapt_buffer_for_palette(frame.buffer_mut());
+            }
             crate::tui::ui::adapt_buffer_for_emoji_preference(frame.buffer_mut());
         })?;
 
@@ -420,6 +438,8 @@ pub(super) fn apply_replay_event(
             app.streaming.streaming_total_output_tokens = 0;
             app.streaming.streaming_tps_observed_output_tokens = 0;
             app.streaming.streaming_tps_observed_elapsed = Duration::ZERO;
+            app.streaming.last_displayed_tps = None;
+            app.streaming.streaming_total_tps_start = None;
             app.replay_processing_started_ms = replay_processing_started_ms;
         }
         ReplayEvent::MemoryInjection {

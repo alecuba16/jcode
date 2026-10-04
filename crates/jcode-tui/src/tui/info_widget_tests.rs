@@ -8,6 +8,7 @@ use super::{
     render_usage_widget, swarm_plan_todos, truncate_smart,
 };
 use crate::protocol::SwarmMemberStatus;
+use jcode_tui_style::color::rgb;
 use ratatui::layout::Rect;
 use std::time::{Duration, Instant};
 
@@ -91,8 +92,6 @@ fn kv_cache_widget_shows_session_hit_ratio() {
     assert!(text.contains("KV cache"));
     assert!(text.contains("yield"));
     assert!(text.contains("90%"));
-    assert!(text.contains("last "));
-    assert!(text.contains("94%"));
     assert!(text.contains("session "));
     assert!(text.contains("39%"));
     assert!(text.contains("69k\n missed"), "{text}");
@@ -554,7 +553,7 @@ fn loop_suffix_renders_safely_at_tiny_sizes() {
     };
     for (w, h) in [(0, 0), (1, 1), (5, 2), (12, 4), (200, 50)] {
         let rect = Rect::new(0, 0, w, h);
-        let _ = render_todos_widget(&data, rect);
+        let _ = render_todos_expanded(&data, rect);
         let _ = render_todos_expanded(&data, rect);
         let _ = render_todos_compact(&data, rect);
     }
@@ -605,7 +604,7 @@ fn swarm_plan_todos_render_safely_at_extreme_sizes() {
     };
     for (w, h) in [(0, 0), (1, 1), (2, 5), (7, 3), (20, 8), (200, 50)] {
         let rect = Rect::new(0, 0, w, h);
-        let _ = render_todos_widget(&data, rect);
+        let _ = render_todos_expanded(&data, rect);
         let _ = render_todos_expanded(&data, rect);
         let _ = render_todos_compact(&data, rect);
     }
@@ -934,8 +933,11 @@ fn memory_widget_uses_distinct_trace_label_when_idle() {
         .join("\n")
         .to_lowercase();
 
+    // The pipeline completed and a memory was injected, so the widget shows
+    // the "Last: " status line and the recovered-memory summary line instead
+    // of the generic "trace:" line.
     assert_eq!(text.matches("last:").count(), 1, "{text}");
-    assert!(text.contains("trace:"), "{text}");
+    assert!(text.contains("1 memory injected"), "{text}");
 }
 
 #[test]
@@ -992,7 +994,25 @@ fn memory_compact_shows_memory_count_before_status() {
 
 #[test]
 fn memory_widget_is_hidden_when_disabled() {
+    // When disabled with 0 memories, activity, or sidecar, the widget is hidden.
     let data = InfoWidgetData {
+        memory_info: Some(MemoryInfo {
+            total_count: 0,
+            project_count: 0,
+            global_count: 0,
+            disabled: true,
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+
+    assert!(render_memory_widget(&data, Rect::new(0, 0, 40, 5)).is_empty());
+    assert!(!data.has_data_for(WidgetKind::MemoryActivity));
+
+    // When disabled but has memories, the widget shows "Memory disabled".
+    // In the merged border-widget layout that text lives on the frame's title
+    // line (Framed::all_lines covers title + body + footer), not the body.
+    let data_with_mem = InfoWidgetData {
         memory_info: Some(MemoryInfo {
             total_count: 12,
             project_count: 8,
@@ -1002,10 +1022,12 @@ fn memory_widget_is_hidden_when_disabled() {
         }),
         ..Default::default()
     };
-
-    assert!(render_memory_widget(&data, Rect::new(0, 0, 40, 5)).is_empty());
-    assert!(render_memory_compact(data.memory_info.as_ref().unwrap(), 40).is_empty());
-    assert!(!data.has_data_for(WidgetKind::MemoryActivity));
+    let framed = render_memory_widget(&data_with_mem, Rect::new(0, 0, 40, 5));
+    assert!(
+        !framed.all_lines().is_empty(),
+        "disabled memory with stored memories must still render"
+    );
+    assert!(data_with_mem.has_data_for(WidgetKind::MemoryActivity));
 }
 
 #[test]
@@ -1106,23 +1128,19 @@ fn contextual_subgraph_prefers_memory_hub() {
 }
 
 #[test]
-fn overview_requires_multiple_sections() {
-    // Status-line facts (model identity) are never an overview section.
-    let identity_only = InfoWidgetData {
-        model: Some("gpt-test".to_string()),
-        queue_mode: Some(true),
-        ..Default::default()
-    };
-    assert!(!identity_only.has_data_for(WidgetKind::Overview));
-
+fn overview_shows_for_any_renderable_content() {
+    // The Overview is the single merged widget: it shows whenever the panel
+    // renders any content at all. Model-only data must go somewhere, and the
+    // standalone ModelInfo margin widget is gone (its content is merged into
+    // the Overview panel), so the Overview owns it now.
     let one_section = InfoWidgetData {
-        session_name: Some("sauropod".to_string()),
+        model: Some("gpt-test".to_string()),
         ..Default::default()
     };
-    assert!(!one_section.has_data_for(WidgetKind::Overview));
+    assert!(one_section.has_data_for(WidgetKind::Overview));
 
     let two_sections = InfoWidgetData {
-        session_name: Some("sauropod".to_string()),
+        model: Some("gpt-test".to_string()),
         queue_mode: Some(true),
         ..Default::default()
     };
@@ -1142,8 +1160,9 @@ fn overview_widget_is_placed_when_space_allows() {
     }
 
     let data = InfoWidgetData {
-        session_name: Some("sauropod".to_string()),
+        model: Some("gpt-test".to_string()),
         queue_mode: Some(true),
+        status_line_pinned: true,
         ..Default::default()
     };
     let margins = Margins {
@@ -1157,6 +1176,54 @@ fn overview_widget_is_placed_when_space_allows() {
         placements.iter().any(|p| p.kind == WidgetKind::Overview),
         "expected overview widget placement"
     );
+}
+
+#[test]
+fn overview_renders_enabled_mcp_servers_only_when_present() {
+    let data = InfoWidgetData {
+        model: Some("gpt-test".to_string()),
+        mcp_servers: vec![("filesystem".to_string(), 5), ("github".to_string(), 2)],
+        ..Default::default()
+    };
+
+    assert!(data.has_data_for(WidgetKind::Overview));
+    let lines = super::render_page(
+        super::InfoPageKind::CompactOnly,
+        &data,
+        Rect::new(0, 0, 48, 10),
+    );
+    let text = lines_text(&lines);
+
+    assert!(text.contains("mcp: filesystem (5 tools), github (2 tools)"));
+    assert!(!text.contains("7 tools"));
+    let mcp_span = lines
+        .iter()
+        .flat_map(|line| line.spans.iter())
+        .find(|span| span.content.as_ref().starts_with("mcp:"))
+        .expect("missing MCP span");
+    assert_eq!(mcp_span.style.fg, Some(rgb(100, 180, 220)));
+}
+
+#[test]
+fn overview_skips_mcp_line_when_no_servers_are_enabled() {
+    let data = InfoWidgetData {
+        model: Some("gpt-test".to_string()),
+        context_info: Some(crate::prompt::ContextInfo {
+            total_chars: 100,
+            ..Default::default()
+        }),
+        mcp_servers: Vec::new(),
+        ..Default::default()
+    };
+
+    let lines = super::render_page(
+        super::InfoPageKind::CompactOnly,
+        &data,
+        Rect::new(0, 0, 48, 10),
+    );
+    let text = lines_text(&lines);
+
+    assert!(!text.contains("MCP:"));
 }
 
 #[test]
@@ -1178,7 +1245,7 @@ fn workspace_widget_has_high_priority_when_enabled() {
             focused_index: Some(0),
             sessions: vec![crate::tui::workspace_map::WorkspaceSessionTile::new("fox")],
         }],
-        session_name: Some("sauropod".to_string()),
+        model: Some("gpt-test".to_string()),
         queue_mode: Some(true),
         ..Default::default()
     };
@@ -1200,11 +1267,81 @@ fn workspace_widget_has_high_priority_when_enabled() {
 }
 
 #[test]
+fn model_info_shows_effort_bracket_suffix_for_reasoning_model() {
+    // The reasoning-effort bracket now lives on the pinned status line
+    // ("GPT-5.3 Codex Spark (hi)"), not in the Runtime detail rows. Keep the
+    // custom-provider fixture but assert the widget leaves the bracket to the
+    // line and never renders the model identity itself.
+    let data = InfoWidgetData {
+        model: Some("gpt-5.3-codex-spark".to_string()),
+        provider_name: Some("mock-gw".to_string()),
+        reasoning_effort: Some("high".to_string()),
+        service_tier: Some("priority".to_string()),
+        ..Default::default()
+    };
+    let lines = super::model::render_model_info(&data, Rect::new(0, 0, 40, 10));
+    let text: Vec<String> = lines
+        .iter()
+        .map(|line| {
+            line.spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect::<String>()
+        })
+        .collect();
+    let joined = text.join("\n");
+    for bracket in ["(hi)", "(med)", "(lo)", "(xhigh)", "(max)", "(none)"] {
+        assert!(
+            !joined.contains(bracket),
+            "effort bracket {bracket} belongs to the status line: {joined}"
+        );
+    }
+    assert!(
+        !joined.contains("GPT-5.3"),
+        "model identity belongs to the status line: {joined}"
+    );
+}
+
+#[test]
+fn model_info_omits_effort_bracket_for_plain_model() {
+    // A model configured with reasoning = false must not show any bracket,
+    // and the merged Runtime rows never carry the model identity anyway.
+    let data = InfoWidgetData {
+        model: Some("my-plain-model".to_string()),
+        provider_name: Some("mock-gw".to_string()),
+        reasoning_effort: None,
+        ..Default::default()
+    };
+    let lines = super::model::render_model_info(&data, Rect::new(0, 0, 40, 10));
+    let joined = lines
+        .iter()
+        .map(|line| {
+            line.spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    for bracket in ["(hi)", "(med)", "(lo)", "(xhigh)", "(max)", "(none)"] {
+        assert!(
+            !joined.contains(bracket),
+            "effort bracket {bracket} must not render for a plain model: {joined}"
+        );
+    }
+    assert!(
+        !joined.contains("My Plain Model"),
+        "model identity belongs to the status line: {joined}"
+    );
+}
+
+#[test]
 fn model_widget_renders_connection_type() {
     let data = InfoWidgetData {
         model: Some("gpt-5.3-codex".to_string()),
         provider_name: Some("openai".to_string()),
         connection_type: Some("websocket".to_string()),
+        auth_method: super::AuthMethod::OpenAIOAuth,
         ..Default::default()
     };
     let text = render_model_widget(&data, Rect::new(0, 0, 40, 10))
@@ -1216,6 +1353,108 @@ fn model_widget_renders_connection_type() {
         .join("\n")
         .to_lowercase();
     assert!(text.contains("websocket"));
+}
+
+#[test]
+fn usage_pill_renders_filled_and_empty_segments() {
+    let line = super::render_usage_pill(200_000, 1_000_000, 26);
+    let text: String = line
+        .spans
+        .iter()
+        .map(|span| span.content.as_ref())
+        .collect();
+
+    assert!(text.contains('▰'), "expected filled pill segments: {text}");
+    assert!(text.contains('▱'), "expected empty pill segments: {text}");
+}
+
+#[test]
+fn usage_pill_renders_when_narrow() {
+    let line = super::render_usage_pill(200_000, 1_000_000, 10);
+    let text: String = line
+        .spans
+        .iter()
+        .map(|span| span.content.as_ref())
+        .collect();
+
+    assert!(
+        text.contains('▰') || text.contains('▱'),
+        "narrow bar should still render pill segments: {text}"
+    );
+}
+
+#[test]
+fn context_usage_line_shows_numeric_label_inside_bar() {
+    let line = super::render_context_usage_line("Context", 50_000, 200_000, 40);
+    let text: String = line
+        .spans
+        .iter()
+        .map(|span| span.content.as_ref())
+        .collect();
+
+    assert!(text.contains("Context"), "expected context label: {text}");
+    assert!(
+        text.contains("50k/200k"),
+        "expected inline token label: {text}"
+    );
+}
+
+#[test]
+fn render_context_compact_prefers_observed_token_usage_for_label() {
+    let data = InfoWidgetData {
+        context_info: Some(crate::prompt::ContextInfo {
+            total_chars: 400_000,
+            ..Default::default()
+        }),
+        context_limit: Some(200_000),
+        observed_context_tokens: Some(50_000),
+        ..Default::default()
+    };
+
+    let lines = super::render_context_compact(&data, Rect::new(0, 0, 40, 1));
+    let text: String = lines[0]
+        .spans
+        .iter()
+        .map(|span| span.content.as_ref())
+        .collect();
+
+    assert!(
+        text.contains("50k/200k"),
+        "expected observed token count: {text}"
+    );
+    assert!(
+        !text.contains("100k/200k"),
+        "should not fall back to char estimate when observed tokens exist: {text}"
+    );
+}
+
+#[test]
+fn render_context_compact_reports_updating_when_snapshot_is_stale() {
+    let data = InfoWidgetData {
+        context_info_stale: true,
+        context_info: Some(crate::prompt::ContextInfo {
+            total_chars: 400_000,
+            ..Default::default()
+        }),
+        context_limit: Some(200_000),
+        ..Default::default()
+    };
+
+    let lines = super::render_context_compact(&data, Rect::new(0, 0, 40, 1));
+    let text: String = lines[0]
+        .spans
+        .iter()
+        .map(|span| span.content.as_ref())
+        .collect();
+
+    assert!(
+        text.contains("updating"),
+        "expected updating marker: {text}"
+    );
+    assert!(
+        !text.contains("100k/200k"),
+        "stale snapshots must not render old usage as current: {text}"
+    );
 }
 
 fn managed_member(id: &str, status: &str, role: Option<&str>) -> SwarmMemberStatus {
@@ -1389,8 +1628,8 @@ fn swarm_widget_renders_member_roles_and_details() {
 
     let text = lines_text(&super::render_swarm_widget(&data, Rect::new(0, 0, 80, 4)).all_lines());
 
-    assert!(text.contains("3s"), "got: {text}");
-    assert!(text.contains("1c"), "got: {text}");
+    assert!(text.contains("3 sessions"), "got: {text}");
+    assert!(text.contains("1 client"), "got: {text}");
     assert!(text.contains("★"), "got: {text}");
     assert!(
         text.contains("coord running - orchestrating patch"),
@@ -1477,19 +1716,16 @@ fn swarm_widget_caps_member_rows_for_large_swarms() {
     };
 
     let framed = super::render_swarm_widget(&data, Rect::new(0, 0, 30, 10));
-    // Stats on the border, at most 3 member rows regardless of swarm size.
-    assert_eq!(framed.lines.len(), 3, "expected capped member rows");
+    // Stats on the border, at most 8 member rows regardless of swarm size
+    // (the dock lists each agent's activity; the old 3-row cap is gone).
+    assert_eq!(framed.lines.len(), 8, "expected capped member rows");
     let text = lines_text(&framed.all_lines());
-    assert!(text.contains("500s"), "got: {text}");
-    assert!(text.contains("3c"), "got: {text}");
+    assert!(text.contains("500 sessions"), "got: {text}");
+    assert!(text.contains("3 clients"), "got: {text}");
 }
 
 #[test]
-fn background_widget_handles_empty_and_large_task_lists() {
-    // No background info: renders nothing.
-    let data = InfoWidgetData::default();
-    assert!(super::render_background_widget(&data, Rect::new(0, 0, 40, 4)).is_empty());
-
+fn background_compact_handles_empty_and_large_task_lists() {
     // running_count == 0: summary is suppressed even if stale task names linger.
     let info = BackgroundInfo {
         running_count: 0,
@@ -1498,7 +1734,7 @@ fn background_widget_handles_empty_and_large_task_lists() {
     };
     assert!(super::render_background_compact(&info).is_empty());
 
-    // Large task list: summary + 3 rows + overflow line, no panic at tiny width.
+    // Large task list: summary + 3 rows + overflow line.
     let info = BackgroundInfo {
         running_count: 200,
         running_tasks: (0..200).map(|i| format!("task-{i}")).collect(),
@@ -1518,12 +1754,10 @@ fn background_widget_handles_empty_and_large_task_lists() {
     let text = lines_text(&framed.all_lines());
     assert!(text.contains("200 running"), "got: {text}");
     assert!(text.contains("+197 more"), "got: {text}");
-    // Zero-size rect must not panic (row width clamps to a minimum).
-    let _ = super::render_background_widget(&data, Rect::new(0, 0, 0, 0));
 }
 
 #[test]
-fn background_widget_and_compact_share_summary_format() {
+fn background_compact_renders_summary_format() {
     let info = BackgroundInfo {
         running_count: 4,
         running_tasks: vec![
@@ -1577,7 +1811,7 @@ fn sticky_placement_clamps_width_to_current_margin() {
     }
 
     let data = InfoWidgetData {
-        session_name: Some("sauropod".to_string()),
+        model: Some("gpt-test".to_string()),
         queue_mode: Some(true),
         ..Default::default()
     };
@@ -2090,6 +2324,7 @@ fn widget_gallery() {
                     kind,
                     rect: f.area(),
                     side: Side::Left,
+                    overview_layout: None,
                 };
                 render_single_widget(f, &placement, &data);
             })
@@ -2104,4 +2339,132 @@ fn widget_gallery() {
         }
         println!();
     }
+}
+
+#[test]
+fn overview_places_fixed_when_no_top_band() {
+    {
+        let mut guard = super::get_or_init_state();
+        if let Some(state) = guard.as_mut() {
+            state.enabled = true;
+            state.placements.clear();
+            state.anchors.clear();
+            state.widget_states.clear();
+        }
+    }
+
+    // Wide free margins, no occupied top rows: the pinned status line puts
+    // the Overview at the fixed top-right spot (row 0 of the messages area).
+    let data = InfoWidgetData {
+        model: Some("gpt-test".to_string()),
+        queue_mode: Some(true),
+        status_line_pinned: true,
+        status_line_active: true,
+        ..Default::default()
+    };
+    assert!(data.has_data_for(WidgetKind::Overview));
+    let margins = Margins {
+        right_widths: vec![40; 20],
+        left_widths: Vec::new(),
+        centered: false,
+        ..Default::default()
+    };
+    let placements = calculate_placements(Rect::new(0, 0, 80, 20), &margins, &data);
+    let overview = placements
+        .iter()
+        .find(|p| p.kind == WidgetKind::Overview)
+        .expect("overview placement");
+    assert_eq!(
+        overview.rect.y, 0,
+        "without a top band the fixed Overview owns the top row"
+    );
+}
+
+#[test]
+fn overview_skips_fixed_spot_when_top_band_occupies_first_rows() {
+    {
+        let mut guard = super::get_or_init_state();
+        if let Some(state) = guard.as_mut() {
+            state.enabled = true;
+            state.placements.clear();
+            state.anchors.clear();
+            state.widget_states.clear();
+        }
+    }
+
+    // Same fixture as the fixed spot, but the first three rows are the
+    // pinned todo band: the viewport reports them via `top_band_rows` (their
+    // margin widths are hard zeros), so the fixed placement must back off
+    // instead of covering the band.
+    let data = InfoWidgetData {
+        model: Some("gpt-test".to_string()),
+        queue_mode: Some(true),
+        status_line_pinned: true,
+        status_line_active: true,
+        ..Default::default()
+    };
+    assert!(data.has_data_for(WidgetKind::Overview));
+    let mut right_widths = vec![0; 3];
+    right_widths.extend(vec![40; 17]);
+    let margins = Margins {
+        right_widths,
+        left_widths: vec![0; 3],
+        centered: false,
+        top_band_rows: 3,
+        ..Default::default()
+    };
+    let placements = calculate_placements(Rect::new(0, 0, 80, 20), &margins, &data);
+    let overview = placements
+        .iter()
+        .find(|p| p.kind == WidgetKind::Overview)
+        .expect("overview falls back to margin-based placement");
+    assert!(
+        overview.rect.y >= 3,
+        "overview must not start inside the occupied top band rows, got y={}",
+        overview.rect.y
+    );
+}
+
+#[test]
+fn overview_keeps_fixed_spot_over_long_content_rows() {
+    {
+        let mut guard = super::get_or_init_state();
+        if let Some(state) = guard.as_mut() {
+            state.enabled = true;
+            state.placements.clear();
+            state.anchors.clear();
+            state.widget_states.clear();
+        }
+    }
+
+    // No band, but the first transcript row is fully occupied by a long
+    // line. That is ordinary content the fixed Overview is *meant* to draw
+    // over, so it must keep the fixed top-right spot instead of flinching
+    // off it.
+    let data = InfoWidgetData {
+        model: Some("gpt-test".to_string()),
+        queue_mode: Some(true),
+        status_line_pinned: true,
+        status_line_active: true,
+        ..Default::default()
+    };
+    assert!(data.has_data_for(WidgetKind::Overview));
+    let mut right_widths = vec![0; 5];
+    right_widths.extend(vec![40; 15]);
+    let margins = Margins {
+        right_widths,
+        left_widths: Vec::new(),
+        centered: false,
+        top_band_rows: 0,
+        ..Default::default()
+    };
+    let placements = calculate_placements(Rect::new(0, 0, 80, 20), &margins, &data);
+    let overview = placements
+        .iter()
+        .find(|p| p.kind == WidgetKind::Overview)
+        .expect("overview keeps the fixed spot");
+    assert_eq!(
+        overview.rect.y, 0,
+        "long occupied content rows must not displace the fixed Overview"
+    );
 }

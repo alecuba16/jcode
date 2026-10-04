@@ -112,15 +112,18 @@ pub(super) fn render_usage_compact(
     }
 
     if matches!(info.provider, UsageProvider::CostBased) {
-        return vec![Line::from(vec![Span::styled(
-            format!(
-                "${:.4} · {} in + {} out",
-                info.total_cost,
-                format_tokens(info.input_tokens),
-                format_tokens(info.output_tokens)
+        return vec![Line::from(vec![
+            Span::styled("💰 ", Style::default().fg(rgb(140, 180, 255))),
+            Span::styled(
+                format!(
+                    "${:.4} · {} in + {} out",
+                    info.total_cost,
+                    format_tokens(info.input_tokens),
+                    format_tokens(info.output_tokens)
+                ),
+                Style::default().fg(rgb(140, 140, 150)),
             ),
-            Style::default().fg(rgb(140, 140, 150)),
-        )])];
+        ])];
     }
 
     let five_hr_used = (info.five_hour * 100.0).round().clamp(0.0, 100.0) as u8;
@@ -332,6 +335,104 @@ mod tests {
         assert!(!text.contains("5-hour"));
         assert!(!text.contains("Weekly"));
         assert_eq!(lines.len(), 2); // Provider label plus one quota bar.
+    }
+}
+
+pub(super) fn render_usage_pill(
+    used_tokens: usize,
+    limit_tokens: usize,
+    width: u16,
+) -> Line<'static> {
+    let safe_limit = limit_tokens.max(1);
+    let bar_width = (width as usize).min(24);
+    if bar_width == 0 {
+        return Line::default();
+    }
+
+    let mut used_cells = ((used_tokens as f64 / safe_limit as f64) * bar_width as f64)
+        .round()
+        .max(0.0) as usize;
+    if used_cells > bar_width {
+        used_cells = bar_width;
+    }
+
+    let used_pct = ((used_tokens as f64 / safe_limit as f64) * 100.0)
+        .round()
+        .clamp(0.0, 100.0) as u8;
+    let left_pct = 100u8.saturating_sub(used_pct);
+    let used_color = if left_pct <= 20 {
+        rgb(255, 100, 100)
+    } else if left_pct <= 50 {
+        rgb(255, 200, 100)
+    } else {
+        rgb(100, 200, 100)
+    };
+
+    let empty_cells = bar_width.saturating_sub(used_cells);
+    let mut spans = Vec::new();
+    spans.push(Span::styled(
+        "▰".repeat(used_cells),
+        Style::default().fg(used_color),
+    ));
+    if empty_cells > 0 {
+        spans.push(Span::styled(
+            "▱".repeat(empty_cells),
+            Style::default().fg(rgb(50, 50, 60)),
+        ));
+    }
+    Line::from(spans)
+}
+
+pub(super) fn render_context_usage_line(
+    label: &str,
+    used_tokens: usize,
+    limit_tokens: usize,
+    width: u16,
+) -> Line<'static> {
+    let tokens = format!(
+        "{}/{}",
+        format_token_k(used_tokens),
+        format_token_k(limit_tokens)
+    );
+    let used_pct = ((used_tokens as f64 / limit_tokens.max(1) as f64) * 100.0)
+        .round()
+        .clamp(0.0, 100.0) as u8;
+    let left_pct = 100u8.saturating_sub(used_pct);
+    let token_color = if left_pct <= 20 {
+        rgb(255, 100, 100)
+    } else if left_pct <= 50 {
+        rgb(255, 200, 100)
+    } else {
+        rgb(100, 200, 100)
+    };
+
+    let pct_str = format!("({}%) ", used_pct);
+    let label_width = UnicodeWidthStr::width(label);
+    let tokens_width = UnicodeWidthStr::width(tokens.as_str());
+    let pct_width = UnicodeWidthStr::width(pct_str.as_str());
+    // label + space + tokens + space + pct + bar
+    let bar_width = width.saturating_sub((label_width + 1 + tokens_width + 1 + pct_width) as u16);
+
+    let mut spans = vec![
+        Span::styled(format!("{label} "), Style::default().fg(rgb(140, 140, 150))),
+        Span::styled(
+            format!("{tokens} "),
+            Style::default().fg(token_color).bold(),
+        ),
+        Span::styled(pct_str, Style::default().fg(token_color)),
+    ];
+
+    if bar_width >= 3 {
+        spans.extend(render_usage_pill(used_tokens, limit_tokens, bar_width).spans);
+    }
+    Line::from(spans)
+}
+
+fn format_token_k(tokens: usize) -> String {
+    if tokens >= 1000 {
+        format!("{}k", tokens / 1000)
+    } else {
+        format!("{}", tokens)
     }
 }
 

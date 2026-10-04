@@ -12,13 +12,91 @@ use super::text::truncate_smart;
 use crate::tui::color_support::rgb;
 use ratatui::prelude::*;
 
+/// Render only the supplementary model info not shown in the status line:
+/// native compaction mode. Service tier is already shown inline on the
+/// model name line. Used when `status_line_active` suppresses the full
+/// `render_model_info`.
+pub(super) fn render_model_info_supplementary(
+    data: &InfoWidgetData,
+    _inner: Rect,
+) -> Vec<Line<'static>> {
+    let mut lines: Vec<Line<'static>> = Vec::new();
+
+    // Native compaction mode.
+    if let Some(mode) = &data.native_compaction_mode {
+        let label = if let Some(tokens) = data.native_compaction_threshold_tokens {
+            format!("native {} @ {}k", mode, tokens / 1000)
+        } else {
+            format!("native {}", mode)
+        };
+        lines.push(Line::from(vec![
+            Span::styled("📦 ", Style::default().fg(rgb(120, 210, 230))),
+            Span::styled(label, Style::default().fg(rgb(120, 210, 230))),
+        ]));
+    }
+
+    lines
+}
+
+#[allow(dead_code)] // Retained for status-bar model rendering; currently unused after a layout change.
+pub(crate) fn shorten_model_name(model: &str) -> String {
+    if model.contains("claude") {
+        if model.contains("opus-4-5") || model.contains("opus-4.5") {
+            return "opus-4.5".to_string();
+        }
+        if model.contains("sonnet-4") {
+            return "sonnet-4".to_string();
+        }
+        if model.contains("sonnet-3-5") || model.contains("sonnet-3.5") {
+            return "sonnet-3.5".to_string();
+        }
+        if model.contains("haiku") {
+            return "haiku".to_string();
+        }
+        if let Some(idx) = model.find("claude-") {
+            let rest = &model[idx + 7..];
+            if let Some(end) = rest.find('-') {
+                return rest[..end].to_string();
+            }
+        }
+    }
+
+    if model.contains("gpt")
+        && let Some(start) = model.find("gpt-")
+    {
+        let rest = &model[start..];
+        let parts: Vec<&str> = rest.splitn(3, '-').collect();
+        if parts.len() >= 2 {
+            return format!("{}-{}", parts[0], parts[1]);
+        }
+    }
+
+    if model.len() > 15 {
+        format!("{}…", crate::util::truncate_str(model, 14))
+    } else {
+        model.to_string()
+    }
+}
+
+fn short_service_tier(service_tier: &str) -> Option<&str> {
+    let service_tier = service_tier.trim();
+    if service_tier.is_empty() || service_tier == "off" || service_tier == "default" {
+        return None;
+    }
+    Some(match service_tier {
+        "priority" => "fast",
+        "flex" => "flex",
+        other => other,
+    })
+}
+
+pub(super) fn model_info_supplementary_height(data: &InfoWidgetData) -> u16 {
+    u16::from(data.native_compaction_mode.is_some())
+}
+
 /// Content rows the Runtime widget renders, mirroring [`render_model_widget`].
 pub(super) fn runtime_height(data: &InfoWidgetData) -> u16 {
     runtime_rows(data).len() as u16
-}
-
-pub(super) fn runtime_has_data(data: &InfoWidgetData) -> bool {
-    !runtime_rows(data).is_empty()
 }
 
 /// Border layout: ` Runtime ` top-left, live throughput bottom-right (it is
@@ -91,6 +169,49 @@ fn runtime_rows(data: &InfoWidgetData) -> Vec<RuntimeRow> {
     let muted = rgb(140, 140, 150);
     let mut rows = Vec::new();
 
+    // Selected (default) model + effort first: the primary identity of the
+    // session. The home icon marks the default model the session runs on;
+    // the status line shows a shortened form, the panel carries the full name.
+    if let Some(model) = non_empty(data.model.as_deref()) {
+        let mut text = model.to_string();
+        if let Some(effort) = non_empty(data.reasoning_effort.as_deref()) {
+            text.push_str(&format!(" · {effort}"));
+        }
+        rows.push(RuntimeRow {
+            icon: "🏠",
+            icon_color: rgb(255, 135, 200),
+            text,
+            text_color: rgb(220, 220, 230),
+        });
+    }
+
+    // Agent model overrides from config. Only shown when actually set; the
+    // inherit default (None) is silent to keep the panel compact.
+    if let Some(model) = non_empty(data.swarm_model_override.as_deref()) {
+        let mut text = model.to_string();
+        if let Some(effort) = non_empty(data.swarm_model_effort.as_deref()) {
+            text.push_str(&format!(" · {effort}"));
+        }
+        rows.push(RuntimeRow {
+            icon: "🐝",
+            icon_color: rgb(255, 200, 100),
+            text,
+            text_color: muted,
+        });
+    }
+    if let Some(model) = non_empty(data.memory_model_override.as_deref()) {
+        let mut text = model.to_string();
+        if let Some(effort) = non_empty(data.memory_model_effort.as_deref()) {
+            text.push_str(&format!(" · {effort}"));
+        }
+        rows.push(RuntimeRow {
+            icon: "🧠",
+            icon_color: rgb(200, 150, 255),
+            text,
+            text_color: muted,
+        });
+    }
+
     let is_openai = data
         .provider_name
         .as_deref()
@@ -134,41 +255,12 @@ fn runtime_rows(data: &InfoWidgetData) -> Vec<RuntimeRow> {
         });
     }
 
-    let mut session_parts = Vec::new();
-    if let Some(name) = non_empty(data.session_name.as_deref()) {
-        session_parts.push(name.to_string());
-    }
-    if let Some(sessions) = data.session_count.filter(|n| *n > 1) {
-        session_parts.push(format!("{sessions} sessions"));
-    }
-    if !session_parts.is_empty() {
-        rows.push(RuntimeRow {
-            icon: "◆",
-            icon_color: accent,
-            text: session_parts.join(" · "),
-            text_color: muted,
-        });
-    }
-
     rows
 }
 
 fn non_empty(value: Option<&str>) -> Option<&str> {
     value.map(str::trim).filter(|s| !s.is_empty())
 }
-
-fn short_service_tier(service_tier: &str) -> Option<&str> {
-    let service_tier = service_tier.trim();
-    if service_tier.is_empty() || service_tier == "off" || service_tier == "default" {
-        return None;
-    }
-    Some(match service_tier {
-        "priority" => "fast",
-        "flex" => "flex",
-        other => other,
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -199,18 +291,33 @@ mod tests {
             .join("\n")
     }
 
+    fn first_line_text(lines: Vec<Line<'static>>) -> String {
+        lines
+            .into_iter()
+            .next()
+            .expect("first model line")
+            .spans
+            .into_iter()
+            .map(|span| span.content.into_owned())
+            .collect::<String>()
+    }
+
     #[test]
-    fn runtime_widget_never_repeats_status_line_identity() {
+    fn runtime_widget_shows_model_and_effort_plus_runtime_detail() {
         let mut d = data();
         d.connection_type = Some("websocket".to_string());
         d.tokens_per_second = Some(61.7);
         let out = text(render_model_widget(&d, Rect::new(0, 0, 30, 8)).all_lines());
-        for owned in ["GPT", "codex", "high", "(hi)", "openai", "OAuth", "jcode"] {
+        // The panel leads with the selected model + effort (user-requested),
+        // then the runtime detail. Identity facts that only the status line
+        // owns (provider name, auth, dir) stay out.
+        for owned in ["openai", "OAuth", "jcode"] {
             assert!(
                 !out.contains(owned),
                 "{owned:?} belongs to the status line: {out}"
             );
         }
+        assert!(out.contains("gpt-5-codex · high"), "{out}");
         assert!(out.contains("fast tier"), "{out}");
         assert!(out.contains("websocket"), "{out}");
         assert!(out.contains("62 tok/s"), "{out}");
@@ -226,26 +333,67 @@ mod tests {
         for tier in [None, Some("off"), Some("default")] {
             let mut d = data();
             d.service_tier = tier.map(str::to_string);
-            assert!(!runtime_has_data(&d), "tier {tier:?}");
+            assert!(
+                !text(render_model_widget(&d, Rect::new(0, 0, 30, 8)).all_lines()).contains("tier"),
+                "tier {tier:?} must stay hidden"
+            );
         }
     }
 
     #[test]
-    fn identity_only_session_has_no_runtime_widget() {
+    fn identity_only_session_renders_just_the_model_row() {
         let mut d = data();
         d.service_tier = None;
-        assert!(!runtime_has_data(&d));
-        assert_eq!(runtime_height(&d), 0);
+        // With no runtime detail, the selected model + effort row still
+        // renders: the panel always shows what model the session runs on.
+        assert_eq!(runtime_height(&d), 1);
     }
 
     #[test]
     fn height_matches_rendered_rows() {
         let mut d = data();
         d.upstream_provider = Some("fireworks".to_string());
-        d.session_name = Some("sauropod".to_string());
-        d.session_count = Some(3);
         let framed = render_model_widget(&d, Rect::new(0, 0, 30, 8));
         assert_eq!(framed.lines.len() as u16, runtime_height(&d));
-        assert!(text(framed.all_lines()).contains("sauropod · 3 sessions"));
+        assert!(text(framed.all_lines()).contains("via fireworks"));
+    }
+
+    #[test]
+    fn overview_shows_runtime_metadata() {
+        let rect = Rect::new(0, 0, 40, 8);
+        let mut data = data();
+        data.provider_name = Some("openai".to_string());
+
+        let out = text(render_model_info(&data, rect));
+        // The status line owns the identity facts (model, effort, provider);
+        // the Overview rows carry the runtime facts behind them.
+        assert!(out.contains("fast tier"), "{out}");
+    }
+
+    #[test]
+    fn openai_fast_badge_follows_service_tier_not_model_name() {
+        let rect = Rect::new(0, 0, 40, 8);
+        let mut data = data();
+        data.provider_name = Some("OpenAI".to_string());
+        data.model = Some("gpt-future-model".to_string());
+
+        for (tier, badge) in [(Some("priority"), "fast tier"), (Some("flex"), "flex tier")] {
+            data.service_tier = tier.map(str::to_string);
+            assert!(text(render_model_info(&data, rect)).contains(badge));
+        }
+        for tier in [None, Some("off"), Some("default")] {
+            data.service_tier = tier.map(str::to_string);
+            assert!(!text(render_model_info(&data, rect)).contains("tier"));
+        }
+    }
+
+    #[test]
+    fn non_openai_provider_hides_openai_service_tier() {
+        let rect = Rect::new(0, 0, 40, 8);
+        let mut data = data();
+        data.model = Some("deepseek-v4-flash".to_string());
+        data.provider_name = Some("deepseek".to_string());
+
+        assert!(!text(render_model_info(&data, rect)).contains("tier"));
     }
 }

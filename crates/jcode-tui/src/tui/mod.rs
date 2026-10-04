@@ -533,6 +533,11 @@ pub trait TuiState {
     /// the list also depends on mutable session state. Defaults to a no-op for
     /// impls that do not cache.
     fn advance_command_suggestions_epoch(&self) {}
+
+    /// Absolute paths of confirmed @file references. Used for chip rendering.
+    fn file_chips(&self) -> &[std::path::PathBuf] {
+        &[]
+    }
     fn command_suggestion_selected(&self) -> usize {
         0
     }
@@ -797,6 +802,11 @@ pub trait TuiState {
         self.inline_interactive_state()
             .map(InlineUiStateRef::Interactive)
             .or_else(|| self.inline_view_state().map(InlineUiStateRef::View))
+            .or_else(|| self.pending_decision().map(InlineUiStateRef::Decision))
+    }
+    /// Blocking decision request from the agent's ask_user tool, if active.
+    fn pending_decision(&self) -> Option<&crate::tui::app::PendingDecision> {
+        None
     }
     /// Changelog overlay scroll offset (None = not showing)
     // ---- Overlay ----
@@ -1318,6 +1328,8 @@ impl InlineViewState {
 pub enum InlineUiStateRef<'a> {
     View(&'a InlineViewState),
     Interactive(&'a InlineInteractiveState),
+    /// Blocking decision chooser from the agent's ask_user tool
+    Decision(&'a crate::tui::app::PendingDecision),
 }
 
 impl PickerKind {
@@ -1736,6 +1748,7 @@ pub struct PickerEntry {
     pub is_current: bool,
     pub is_default: bool,
     pub is_favorite: bool,
+    pub is_memory_model: bool,
     pub recommended: bool,
     pub recommendation_rank: usize,
     pub usage_score: u32,

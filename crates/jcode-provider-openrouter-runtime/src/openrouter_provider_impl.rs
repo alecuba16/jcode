@@ -42,6 +42,7 @@ impl Provider for OpenRouterProvider {
         _resume_session_id: Option<&str>,
     ) -> Result<EventStream> {
         let model = self.model.read().await.clone();
+        let model_key = self.model_key.read().await.clone();
         let reasoning_effort = self.reasoning_effort();
         let thinking_override = Self::thinking_override();
         // Moonshot's dedicated Kimi coding endpoint enables thinking server-side
@@ -67,7 +68,7 @@ impl Provider for OpenRouterProvider {
         // (issue #815). Unlike Kimi, this only unlocks stored reasoning: it does
         // not synthesize the field when the prior turn did not return one.
         let direct_deepseek_model =
-            !self.supports_provider_features && Self::model_is_deepseek_family(&model);
+            !self.supports_provider_features && Self::model_key_is_deepseek_family(&model_key);
         let allow_reasoning =
             (self.supports_provider_features || kimi_coding_endpoint || direct_deepseek_model)
                 && thinking_enabled != Some(false);
@@ -134,7 +135,10 @@ impl Provider for OpenRouterProvider {
             });
         }
 
-        if let Some(max_tokens) = self.max_tokens {
+        // Per-model `max_output_tokens` from named-provider config overrides the
+        // runtime default (opencode `limit.output` parity).
+        let effective_max_tokens = self.max_output_tokens_for_key(&model_key);
+        if let Some(max_tokens) = effective_max_tokens {
             request["max_tokens"] = serde_json::json!(max_tokens);
         }
 
@@ -266,8 +270,21 @@ impl Provider for OpenRouterProvider {
         let send_openrouter_headers = self.send_openrouter_headers;
         let conversation_id = self.conversation_id.clone();
         let request_for_retries = request;
-        let model_for_stream = model.clone();
+        // The stream records image-modality rejections under this model
+        // string, and its consumers (runtime `supports_image_input` and the
+        // `OpenRouterStream` provider-pin matching) compare against the bare
+        // model id that `set_model` normalizes into state. The raw state
+        // string can transiently carry a session-routing
+        // `<profile>:<model>` prefix (right after session restore, before
+        // `set_model` normalizes it, see #403); recording under that spelling
+        // would never match the stripped lookups, so hand the stream the
+        // same stripped form the lookups use.
+        let model_for_stream = self.strip_session_profile_prefix(&model).to_string();
         let provider_pin = Arc::clone(&self.provider_pin);
+        let http_header_overrides = self.http_header_overrides.clone();
+        // Same capability scope `supports_image_input` looks up under: the
+        // stream records rejections under the identical key the lookup uses.
+        let capability_scope_key = self.capability_scope_key();
 
         tokio::spawn(async move {
             if tx
@@ -284,11 +301,13 @@ impl Provider for OpenRouterProvider {
                 api_base,
                 auth,
                 send_openrouter_headers,
+                http_header_overrides,
                 conversation_id,
                 request_for_retries,
                 tx,
                 provider_pin,
                 model_for_stream,
+                capability_scope_key,
             )
             .await;
         });
@@ -298,6 +317,10 @@ impl Provider for OpenRouterProvider {
 
     fn name(&self) -> &str {
         "openrouter"
+    }
+
+    fn capability_scope(&self) -> Option<String> {
+        Some(self.capability_scope_key())
     }
 
     fn display_name(&self) -> String {
@@ -317,6 +340,20 @@ impl Provider for OpenRouterProvider {
             .strip_session_profile_prefix(&raw_model)
             .trim()
             .to_ascii_lowercase();
+        // A recorded runtime rejection (this endpoint/model answered "no
+        // image input" earlier, see `jcode_provider_core::image_capability`)
+        // is authoritative over the optimistic direct-endpoint default below,
+        // so follow-up requests filter images at build time. The lookup key is
+        // the same capability scope the streaming retry loop records under
+        // (profile id or endpoint base), so a rejection on one OpenAI-compatible
+        // profile never suppresses images for another profile serving the same
+        // model name.
+        if jcode_provider_core::image_capability::image_input_rejected(
+            &self.capability_scope_key(),
+            &model_id,
+        ) {
+            return false;
+        }
         if let Some(supports_images) = self.static_image_input_support.get(&model_id) {
             return *supports_images;
         }
@@ -373,8 +410,13 @@ impl Provider for OpenRouterProvider {
         // untouched so cross-provider switches from a saved session still work.
         let trimmed = self.strip_session_profile_prefix(trimmed);
 
+        // The picker sends the display-name alias (from `models[].display_name`)
+        // back through `set_model`. Resolve it to the raw upstream id so the
+        // API request uses the identifier the endpoint actually expects.
+        let trimmed = self.resolve_display_name_to_id(trimmed);
+
         let (model_id, provider) = if self.supports_provider_features {
-            let (model_id, provider) = parse_model_spec(trimmed);
+            let (model_id, provider) = parse_model_spec(&trimmed);
             let model_id = if provider.is_some() {
                 jcode_base::provider::openrouter_catalog_model_id(&model_id).unwrap_or(model_id)
             } else {
@@ -397,13 +439,18 @@ impl Provider for OpenRouterProvider {
                 model_id
             );
         }
-        if let Ok(mut current) = self.model.try_write() {
-            *current = model_id.clone();
-        } else {
-            return Err(anyhow::anyhow!(
-                "Cannot change model while a request is in progress"
-            ));
-        }
+        let mut current = self
+            .model
+            .try_write()
+            .map_err(|_| anyhow::anyhow!("Cannot change model while a request is in progress"))?;
+        let mut current_key = self
+            .model_key
+            .try_write()
+            .map_err(|_| anyhow::anyhow!("Cannot change model while a request is in progress"))?;
+        *current = model_id.clone();
+        *current_key = Self::normalized_model_key(&model_id);
+        drop(current_key);
+        drop(current);
 
         if self.supports_provider_features {
             if let Some(provider) = provider {
@@ -420,6 +467,7 @@ impl Provider for OpenRouterProvider {
                 .model_reasoning_config()
                 .and_then(|config| config.1.as_ref())
                 .is_some()
+            || self.model_reasoning_map().is_some()
         {
             let configured = self.configured_effort_for_model();
             if let Ok(mut effort) = self.reasoning_effort.try_write() {
@@ -453,6 +501,11 @@ impl Provider for OpenRouterProvider {
             .and_then(|effort| effort.clone())
     }
 
+    fn effective_reasoning_effort(&self) -> Option<String> {
+        self.reasoning_effort()
+            .or_else(|| self.extra_body_reasoning_effort())
+    }
+
     fn set_reasoning_effort(&self, effort: &str) -> Result<()> {
         if !self.supports_any_reasoning_effort() {
             anyhow::bail!(
@@ -483,6 +536,19 @@ impl Provider for OpenRouterProvider {
     }
 
     fn available_efforts(&self) -> Vec<&'static str> {
+        // A configured per-model reasoning map defines the ladder exactly:
+        // only enabled rungs are selectable (opencode per-level mapping). The
+        // swarm sentinels stay appended since they are Jcode UI modes resolved
+        // to the root effort before any map lookup.
+        if let Some(map) = self.model_reasoning_map() {
+            let mut efforts: Vec<&'static str> = jcode_base::config::REASONING_EFFORT_MAP_KEYS
+                .iter()
+                .copied()
+                .filter(|rung| map.rung(rung).is_some_and(|config| !config.disabled))
+                .collect();
+            efforts.extend(jcode_provider_core::reasoning::SWARM_EFFORTS);
+            return efforts;
+        }
         if self.supports_deepseek_reasoning_effort() {
             jcode_provider_core::DEEPSEEK_SELECTABLE_EFFORTS.to_vec()
         } else if self.supports_openai_reasoning_effort() {
@@ -505,6 +571,22 @@ impl Provider for OpenRouterProvider {
 
     fn available_models_display(&self) -> Vec<String> {
         let finalize = |models: Vec<String>| self.filter_profile_chat_supported_models(models);
+        // Replace raw model ids with their configured display name aliases so
+        // the picker shows the user-friendly name (opencode `name` parity).
+        let apply_display_names = |mut models: Vec<String>| {
+            if self.static_model_display_names.is_empty() {
+                return models;
+            }
+            for model in &mut models {
+                if let Some(display) = self
+                    .static_model_display_names
+                    .get(&model.to_ascii_lowercase())
+                {
+                    *model = display.clone();
+                }
+            }
+            models
+        };
         let with_current_model = |mut models: Vec<String>| {
             let current = self.model();
             if !current.trim().is_empty() && !models.iter().any(|model| model == &current) {
@@ -528,14 +610,16 @@ impl Provider for OpenRouterProvider {
 
         if !self.supports_model_catalog {
             if !self.static_models.is_empty() {
-                return finalize(with_current_model(self.static_models.clone()));
+                return finalize(apply_display_names(with_current_model(
+                    self.static_models.clone(),
+                )));
             }
             let model = self.model();
-            return finalize(if model.trim().is_empty() {
+            return finalize(apply_display_names(if model.trim().is_empty() {
                 Vec::new()
             } else {
                 vec![model]
-            });
+            }));
         }
 
         if let Ok(cache) = self.models_cache.try_read()
@@ -548,9 +632,9 @@ impl Provider for OpenRouterProvider {
             {
                 self.maybe_schedule_model_catalog_refresh(cache_age, "display memory cache");
             }
-            return finalize(merge_static_models(
+            return finalize(apply_display_names(merge_static_models(
                 cache.models.iter().map(|m| m.id.clone()).collect(),
-            ));
+            )));
         }
 
         if let Some(cache_entry) = self.load_usable_model_disk_cache_entry() {
@@ -563,9 +647,9 @@ impl Provider for OpenRouterProvider {
                 cache.cached_at = Some(cache_entry.cached_at);
             }
             self.maybe_schedule_model_catalog_refresh(cache_age, "display disk cache");
-            return finalize(merge_static_models(
+            return finalize(apply_display_names(merge_static_models(
                 cache_entry.models.into_iter().map(|m| m.id).collect(),
-            ));
+            )));
         }
 
         // No memory or disk catalog yet. This commonly happens immediately after
@@ -578,15 +662,17 @@ impl Provider for OpenRouterProvider {
         self.maybe_schedule_model_catalog_refresh(u64::MAX, "display cache miss");
 
         if !self.static_models.is_empty() {
-            return finalize(with_current_model(self.static_models.clone()));
+            return finalize(apply_display_names(with_current_model(
+                self.static_models.clone(),
+            )));
         }
 
         let model = self.model();
-        finalize(if model.trim().is_empty() {
+        finalize(apply_display_names(if model.trim().is_empty() {
             Vec::new()
         } else {
             vec![model]
-        })
+        }))
     }
 
     fn available_models_for_switching(&self) -> Vec<String> {
@@ -625,6 +711,18 @@ impl Provider for OpenRouterProvider {
                 } else {
                     detail.clone()
                 };
+                let raw_model_id = self.resolve_display_name_to_id(&model);
+                let raw_model_key = Self::normalized_model_key(&raw_model_id);
+                let route_detail =
+                    if let Some(max_tokens) = self.max_output_tokens_for_key(&raw_model_key) {
+                        if route_detail.trim().is_empty() {
+                            format!("max output {}", max_tokens)
+                        } else {
+                            format!("{}; max output {}", route_detail, max_tokens)
+                        }
+                    } else {
+                        route_detail
+                    };
                 jcode_provider_core::ModelRoute {
                     model,
                     provider: provider_label.clone(),
@@ -794,6 +892,12 @@ impl Provider for OpenRouterProvider {
             model: Arc::new(RwLock::new(
                 self.model.try_read().map(|m| m.clone()).unwrap_or_default(),
             )),
+            model_key: Arc::new(RwLock::new(
+                self.model_key
+                    .try_read()
+                    .map(|m| m.clone())
+                    .unwrap_or_default(),
+            )),
             reasoning_effort: Arc::new(RwLock::new(self.reasoning_effort())),
             api_base: self.api_base.clone(),
             auth: self.auth.clone(),
@@ -808,6 +912,12 @@ impl Provider for OpenRouterProvider {
             static_models: self.static_models.clone(),
             static_context_limits: self.static_context_limits.clone(),
             static_image_input_support: self.static_image_input_support.clone(),
+            static_model_display_names: self.static_model_display_names.clone(),
+            static_display_name_to_id: self.static_display_name_to_id.clone(),
+            static_model_reasoning: self.static_model_reasoning.clone(),
+            static_model_reasoning_maps: self.static_model_reasoning_maps.clone(),
+            static_model_max_output_tokens: self.static_model_max_output_tokens.clone(),
+            display_name: self.display_name.clone(),
             send_openrouter_headers: self.send_openrouter_headers,
             // A fork is a new conversation (new session or subagent), so it
             // gets its own stable id.
@@ -828,11 +938,49 @@ impl Provider for OpenRouterProvider {
             )),
             endpoints_cache: Arc::clone(&self.endpoints_cache),
             endpoint_refresh: Arc::clone(&self.endpoint_refresh),
+            http_header_overrides: self.http_header_overrides.clone(),
         })
     }
 }
 
 impl OpenRouterProvider {
+    /// Stable capability-record scope for this runtime instance.
+    ///
+    /// Image-input rejections are recorded per concrete endpoint, not per
+    /// provider slot: named OpenAI-compatible profiles are distinguished by
+    /// profile id, and endpoint-only runtimes (explicit `OPENROUTER_BASE_URL`,
+    /// autodetected Ollama/LM Studio) by their api base. A profile id and an
+    /// api base are both stable for the instance lifetime and both are known
+    /// at construction, so record and lookup paths derive the identical key.
+    /// Falls back to the bare slot key when neither is present.
+    pub(crate) fn capability_scope_key(&self) -> String {
+        if let Some(profile_id) = self.profile_id.as_deref().map(str::trim)
+            && !profile_id.is_empty()
+        {
+            return format!(
+                "{}::profile:{}",
+                jcode_provider_core::selection::provider_key(
+                    jcode_provider_core::selection::ActiveProvider::OpenRouter,
+                ),
+                profile_id.to_ascii_lowercase(),
+            );
+        }
+        let api_base = self.api_base.trim();
+        if !api_base.is_empty() {
+            return format!(
+                "{}::endpoint:{}",
+                jcode_provider_core::selection::provider_key(
+                    jcode_provider_core::selection::ActiveProvider::OpenRouter,
+                ),
+                api_base.to_ascii_lowercase(),
+            );
+        }
+        jcode_provider_core::selection::provider_key(
+            jcode_provider_core::selection::ActiveProvider::OpenRouter,
+        )
+        .to_string()
+    }
+
     /// The disk-cache namespace this provider's *foreground* catalog reads and
     /// writes should use.
     ///

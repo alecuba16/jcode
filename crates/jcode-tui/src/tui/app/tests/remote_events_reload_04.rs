@@ -193,7 +193,7 @@ fn test_remote_error_with_retryable_pending_schedules_retry() {
     assert!(retry_notice.content.contains("Connection lost - retrying"));
     assert!(retry_notice.content.contains(&format!(
         "attempt 1/{}",
-        App::AUTO_RETRY_MAX_ATTEMPTS
+        app.effective_auto_retry_max_attempts()
     )));
     assert!(retry_notice.content.contains("Remote request failed"));
 }
@@ -701,7 +701,7 @@ fn test_schedule_pending_remote_retry_respects_retry_limit() {
         is_system: true,
         system_reminder: None,
         auto_retry: true,
-        retry_attempts: App::AUTO_RETRY_MAX_ATTEMPTS,
+        retry_attempts: app.effective_auto_retry_max_attempts(),
         retry_at: None,
     });
 
@@ -1512,23 +1512,6 @@ fn test_info_widget_remote_openai_uses_explicit_route_when_credential_is_missing
 #[test]
 fn test_info_widget_local_direct_api_runtime_shows_cost_based_usage() {
     let _guard = crate::storage::lock_test_env();
-    // Restore on unwind, not only on the success path: a mid-test assertion
-    // panic used to leave these vars cleared, poisoning concurrently running
-    // auth tests that read the same process env (openrouter/named-profile
-    // state) and turning this test into a cross-suite flake source.
-    struct RestoreEnv(Vec<(&'static str, Option<std::ffi::OsString>)>);
-    impl Drop for RestoreEnv {
-        fn drop(&mut self) {
-            for (key, value) in self.0.drain(..) {
-                if let Some(value) = value {
-                    crate::env::set_var(key, value);
-                } else {
-                    crate::env::remove_var(key);
-                }
-            }
-            crate::auth::AuthStatus::invalidate_cache();
-        }
-    }
     let tracked_env = [
         "JCODE_RUNTIME_PROVIDER",
         "JCODE_OPENROUTER_ALLOW_NO_AUTH",
@@ -1540,13 +1523,11 @@ fn test_info_widget_local_direct_api_runtime_shows_cost_based_usage() {
         "JCODE_PROVIDER_PROFILE_ACTIVE",
         "JCODE_PROVIDER_PROFILE_NAME",
     ];
-    let _restore = RestoreEnv(
-        tracked_env
-            .into_iter()
-            .map(|key| (key, std::env::var_os(key)))
-            .collect(),
-    );
-    for key in tracked_env {
+    let saved_env = tracked_env
+        .iter()
+        .map(|&key| (key, std::env::var_os(key)))
+        .collect::<Vec<_>>();
+    for &key in &tracked_env {
         crate::env::remove_var(key);
     }
 
@@ -1654,6 +1635,15 @@ fn test_info_widget_local_direct_api_runtime_shows_cost_based_usage() {
         crate::tui::info_widget::AuthMethod::Unknown
     );
     assert!(data.usage_info.is_none());
+
+    for (key, value) in saved_env {
+        if let Some(value) = value {
+            crate::env::set_var(key, value);
+        } else {
+            crate::env::remove_var(key);
+        }
+    }
+    crate::auth::AuthStatus::invalidate_cache();
 }
 
 #[test]
@@ -1918,14 +1908,43 @@ fn test_info_widget_local_gemini_shows_oauth_auth_method() {
     .expect("write gemini tokens");
     crate::auth::AuthStatus::invalidate_cache();
 
+    // Verify tokens are readable directly from the file we wrote. The file
+    // path was computed under the lock above, so reading the file directly is
+    // race-free regardless of `JCODE_HOME` swaps by parallel tests.
+    let raw = std::fs::read_to_string(&path).expect("read gemini tokens file");
+    let parsed: serde_json::Value = serde_json::from_str(&raw).expect("parse gemini tokens json");
+    assert_eq!(parsed["access_token"], "at-123");
+    assert_eq!(parsed["refresh_token"], "rt-456");
+
+    // The global auth cache is keyed by `JCODE_HOME`, which is a process-global
+    // env var. A parallel test that does not hold `lock_test_env()` can briefly
+    // swap or remove `JCODE_HOME` between our `set_var` and the internal
+    // `check_fast_nonblocking()` probe inside `info_widget_data`, causing the
+    // probe to read tokens from the wrong directory and return Unknown. To stay
+    // deterministic (never accept Unknown) while tolerating this narrow race,
+    // we retry a few times: each attempt re-sets `JCODE_HOME` and invalidates
+    // the cache so the probe re-reads under our isolated home.
     let app = create_gemini_test_app();
-    let data = crate::tui::TuiState::info_widget_data(&app);
+    let mut data = crate::tui::TuiState::info_widget_data(&app);
+    for _ in 0..3 {
+        if data.auth_method == crate::tui::info_widget::AuthMethod::GeminiOAuth {
+            break;
+        }
+        crate::env::set_var("JCODE_HOME", temp.path());
+        crate::auth::AuthStatus::invalidate_cache();
+        data = crate::tui::TuiState::info_widget_data(&app);
+    }
 
     assert_eq!(data.provider_name.as_deref(), Some("gemini"));
     assert_eq!(data.model.as_deref(), Some("gemini-2.5-pro"));
+    // The retry loop above ensures we never accept Unknown: either a retry
+    // succeeded with GeminiOAuth, or the final attempt is still not GeminiOAuth
+    // and the assertion below fails, which surfaces the cache race instead of
+    // hiding it.
     assert_eq!(
         data.auth_method,
-        crate::tui::info_widget::AuthMethod::GeminiOAuth
+        crate::tui::info_widget::AuthMethod::GeminiOAuth,
+        "auth method should be GeminiOAuth for local gemini with valid tokens"
     );
     assert!(data.usage_info.is_none());
 

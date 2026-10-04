@@ -357,6 +357,9 @@ impl RemoteConnection {
         conn.send_request(Request::Subscribe {
             system_prompt: None,
             supports_pdf_panels: false,
+            // The TUI renders the ask_user chooser, so opt in to blocking
+            // decision requests.
+            supports_decisions: true,
             id: conn.next_request_id,
             working_dir,
             selfdev,
@@ -463,7 +466,8 @@ impl RemoteConnection {
             | Request::GetHistory { id }
             | Request::ResumeSession { id, .. }
             | Request::GetModelCatalog { id, .. }
-            | Request::GetState { id } => Some(*id),
+            | Request::GetState { id }
+            | Request::DecisionResponse { id, .. } => Some(*id),
             _ => None,
         };
         if let Some(id) = control_id {
@@ -924,6 +928,21 @@ impl RemoteConnection {
             id: self.next_request_id,
             request_id: request_id.to_string(),
             input: input.to_string(),
+        };
+        self.next_request_id += 1;
+        self.send_request(request).await
+    }
+
+    /// Send the user's answer back to a blocking decision request (ask_user)
+    pub async fn send_decision_response(
+        &mut self,
+        request_id: &str,
+        choice: crate::protocol::DecisionChoice,
+    ) -> Result<()> {
+        let request = Request::DecisionResponse {
+            id: self.next_request_id,
+            request_id: request_id.to_string(),
+            choice,
         };
         self.next_request_id += 1;
         self.send_request(request).await
@@ -1573,6 +1592,43 @@ mod tests {
             .unwrap();
         assert!(matches!(remote.next_event().await,
             RemoteRead::Event(ServerEvent::Done { id }) if id == message_id));
+    }
+
+    #[tokio::test]
+    async fn decision_response_done_is_filtered_as_control_ack() {
+        let mut remote = RemoteConnection::dummy();
+        let peer = remote.take_dummy_peer().unwrap();
+        let (reader, mut writer) = peer.into_split();
+        let mut reader = BufReader::new(reader);
+
+        remote
+            .send_decision_response(
+                "decision-call-1",
+                crate::protocol::DecisionChoice::Option { index: 1 },
+            )
+            .await
+            .unwrap();
+        let mut request = String::new();
+        reader.read_line(&mut request).await.unwrap();
+        let id = match serde_json::from_str::<Request>(&request).unwrap() {
+            Request::DecisionResponse { id, .. } => id,
+            other => panic!("expected decision response, got {other:?}"),
+        };
+
+        writer
+            .write_all(
+                format!(
+                    "{{\"type\":\"done\",\"id\":{id}}}\n{{\"type\":\"text_delta\",\"text\":\"Still waiting\"}}\n"
+                )
+                .as_bytes(),
+            )
+            .await
+            .unwrap();
+
+        assert!(matches!(
+            remote.next_event().await,
+            RemoteRead::Event(ServerEvent::TextDelta { text }) if text == "Still waiting"
+        ));
     }
 
     #[tokio::test]

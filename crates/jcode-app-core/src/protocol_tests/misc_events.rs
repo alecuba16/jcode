@@ -200,6 +200,7 @@ fn test_subscribe_request_roundtrip_preserves_session_takeover_flags() -> Result
     let req = Request::Subscribe {
         system_prompt: None,
         supports_pdf_panels: false,
+        supports_decisions: false,
         id: 89,
         working_dir: Some("/tmp/project".to_string()),
         selfdev: Some(true),
