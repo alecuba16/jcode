@@ -476,9 +476,26 @@ impl SessionPicker {
     }
 
     /// Record the working directory `/resume` was opened from so sessions that
-    /// share it can be visually highlighted in the list.
+    /// share it can be visually highlighted in the list. Rebuilds the items
+    /// when the value actually changes, so callers that set this right after
+    /// construction (before the first render) still get the pinned group on
+    /// the first frame instead of waiting for an unrelated rebuild.
     pub fn set_current_dir(&mut self, dir: Option<String>) {
-        self.current_dir = dir.map(|d| normalize_dir(&d));
+        let normalized = dir.map(|d| normalize_dir(&d));
+        if normalized == self.current_dir {
+            return;
+        }
+        self.current_dir = normalized;
+        self.rebuild_items();
+    }
+
+    /// Enter search mode with an initial query. Applies the filter immediately
+    /// so the picker opens pre-filtered, with the search bar active so typing
+    /// continues refining the same query.
+    pub fn start_search(&mut self, query: impl Into<String>) {
+        self.search_query = query.into();
+        self.search_active = true;
+        self.rebuild_items();
     }
 
     /// Whether the given session's working directory matches the directory the
@@ -534,10 +551,11 @@ impl SessionPicker {
     }
 
     /// Periodically re-snapshot live presence while the picker is on screen so
-    /// working/ready badges track reality. Rebuilds the list when the Active
-    /// view is showing and membership or streaming state changed (a session
-    /// finished its turn, went idle, or exited). Returns true when anything
-    /// changed so callers can redraw.
+    /// working/ready badges track reality. Rebuilds the list when membership
+    /// or streaming state changed (a session finished its turn, went idle, or
+    /// exited): live-dependent views (Active/Working) re-filter, and every
+    /// other view re-sorts, since running sessions float above stopped ones.
+    /// Returns true when anything changed so callers can redraw.
     pub fn maybe_refresh_live_presence(&mut self) -> bool {
         if self.loading_message.is_some() {
             return false;
@@ -551,7 +569,7 @@ impl SessionPicker {
         let before = std::mem::take(&mut self.live_presence);
         self.refresh_live_presence();
         let changed = before != self.live_presence;
-        if changed && self.filter_mode == SessionFilterMode::Active {
+        if changed {
             self.rebuild_items();
         }
         changed
@@ -2442,7 +2460,14 @@ pub fn pick_session() -> Result<Option<PickerResult>> {
         return Ok(None);
     }
 
-    let picker = SessionPicker::new_grouped(server_groups, orphan_sessions);
+    let mut picker = SessionPicker::new_grouped(server_groups, orphan_sessions);
+    // Pin sessions from the folder the picker was launched from, matching the
+    // in-app `/resume` behavior.
+    picker.set_current_dir(
+        std::env::current_dir()
+            .ok()
+            .map(|p| p.to_string_lossy().into_owned()),
+    );
     picker.run()
 }
 

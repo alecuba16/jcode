@@ -474,6 +474,21 @@ impl SessionPicker {
                     Style::default().fg(dim),
                 )])),
             ]
+        } else if self.items.is_empty()
+            && self.filter_mode == jcode_tui_session_picker::SessionFilterMode::Working
+        {
+            vec![
+                ListItem::new(Line::from(vec![Span::styled(
+                    "  No sessions working right now",
+                    Style::default()
+                        .fg(rgb(220, 220, 220))
+                        .add_modifier(Modifier::BOLD),
+                )])),
+                ListItem::new(Line::from(vec![Span::styled(
+                    "     live-but-idle sessions show as ready · s cycles · Esc closes",
+                    Style::default().fg(dim),
+                )])),
+            ]
         } else {
             self.items
                 .iter()
@@ -532,6 +547,26 @@ impl SessionPicker {
                                 ),
                                 Span::styled(
                                     format!("  {}", session_count),
+                                    Style::default().fg(dim),
+                                ),
+                            ]);
+                            ListItem::new(vec![line1])
+                        }
+                        PickerItem::CurrentDirHeader {
+                            label,
+                            session_count,
+                        } => {
+                            // Same green as the per-row "this folder" highlight
+                            // so the pinned group reads as one visual unit.
+                            let dir_color: Color = rgb(120, 200, 140);
+                            let line1 = Line::from(vec![
+                                Span::styled("📁 ", Style::default().fg(dir_color)),
+                                Span::styled(
+                                    "This folder",
+                                    Style::default().fg(dir_color).add_modifier(Modifier::BOLD),
+                                ),
+                                Span::styled(
+                                    format!("  {} · {}", label, session_count),
                                     Style::default().fg(dim),
                                 ),
                             ]);

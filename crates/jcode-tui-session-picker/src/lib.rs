@@ -45,6 +45,10 @@ pub enum SessionFilterMode {
     /// annotated with whether each is still streaming a response or is ready
     /// for input. Backs the opt-in "active sessions manager" view.
     Active,
+    /// Sessions whose live process is streaming a response right now: the
+    /// "working" subset of the Active view (a live-but-idle session is ready
+    /// for input, not working).
+    Working,
     ClaudeCode,
     Codex,
     Pi,
@@ -63,7 +67,8 @@ impl SessionFilterMode {
             Self::CurrentDir => Self::CatchUp,
             Self::CatchUp => Self::Saved,
             Self::Saved => Self::Active,
-            Self::Active => Self::ClaudeCode,
+            Self::Active => Self::Working,
+            Self::Working => Self::ClaudeCode,
             Self::ClaudeCode => Self::Codex,
             Self::Codex => Self::Pi,
             Self::Pi => Self::OpenCode,
@@ -82,7 +87,8 @@ impl SessionFilterMode {
             Self::CatchUp => Self::CurrentDir,
             Self::Saved => Self::CatchUp,
             Self::Active => Self::Saved,
-            Self::ClaudeCode => Self::Active,
+            Self::Working => Self::Active,
+            Self::ClaudeCode => Self::Working,
             Self::Codex => Self::ClaudeCode,
             Self::Pi => Self::Codex,
             Self::OpenCode => Self::Pi,
@@ -98,6 +104,7 @@ impl SessionFilterMode {
             Self::CatchUp => Some("⏭ catch up"),
             Self::Saved => Some("📌 saved"),
             Self::Active => Some("⚡ active"),
+            Self::Working => Some("⚙ working"),
             Self::ClaudeCode => Some("🧵 Claude Code"),
             Self::Codex => Some("🧠 Codex"),
             Self::Pi => Some("π Pi"),
@@ -186,6 +193,13 @@ pub enum PickerItem {
         session_count: usize,
     },
     SavedHeader {
+        session_count: usize,
+    },
+    /// Sessions whose working directory matches the directory the picker was
+    /// opened from, pinned to the top of the All view so the user's current
+    /// project is immediately visible.
+    CurrentDirHeader {
+        label: String,
         session_count: usize,
     },
 }
