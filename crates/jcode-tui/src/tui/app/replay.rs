@@ -125,7 +125,9 @@ pub(super) async fn run_swarm_replay(
     loop {
         terminal.draw(|frame| {
             draw_swarm_replay_frame(frame, &mut panes, sim_time_ms);
-            jcode_tui_style::adapt_buffer_for_display(frame.buffer_mut());
+            // Replay loop bypasses `ui::draw`; run the shared
+            // explicit-background + adapter pass here.
+            jcode_tui_style::finish_frame(frame.buffer_mut());
             crate::tui::ui::adapt_buffer_for_emoji_preference(frame.buffer_mut());
         })?;
 
