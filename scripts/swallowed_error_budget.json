@@ -1631,6 +1631,11 @@
       "let_underscore": 0,
       "unwrap_or_default": 0
     },
+    "crates/jcode-provider-openrouter-runtime/src/ollama_context.rs": {
+      "dot_ok": 0,
+      "let_underscore": 1,
+      "unwrap_or_default": 0
+    },
     "crates/jcode-provider-openrouter-runtime/src/opencode_go_responses.rs": {
       "dot_ok": 0,
       "let_underscore": 0,
