@@ -1343,6 +1343,10 @@ pub(in crate::tui::app) async fn submit_remote_enter_input(
             app.upstream_provider = None;
             remote.set_model(model_name).await?;
             app.remote_model_switch_in_flight = true;
+            // Persist user-initiated /model switch to config after
+            // server confirms (same as picker). The provider_key is
+            // resolved from the model name.
+            app.pending_persist_model_spec = Some(model_name.to_string());
             return Ok(());
         }
 
