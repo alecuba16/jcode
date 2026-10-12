@@ -422,3 +422,78 @@ pub fn remote_model_is_server_copilot_only(model: &str) -> bool {
             Some("claude" | "openai" | "gemini" | "cursor")
         )
 }
+
+/// Effort ladder the client UI should offer when the session runs a named
+/// provider profile with a per-model `reasoning_map`.
+///
+/// Remote TUI sessions cannot ask the server-side provider for
+/// `available_efforts()`: they only know the provider display name and the
+/// model id. When that identity resolves to a configured named profile whose
+/// model has a `reasoning_map`, the map is authoritative for the ladder
+/// (enabled rungs in ladder order plus the swarm sentinels), so this returns
+/// it. Returns `None` when the identity matches no configured map, letting
+/// callers fall back to the built-in family inference.
+///
+/// The provider name is matched against both the profile key and the
+/// profile's user-configured `display_name`, because the server reports
+/// `display_name()` as the provider name for named profiles.
+pub fn configured_reasoning_efforts(
+    provider_name: Option<&str>,
+    model_name: Option<&str>,
+) -> Option<Vec<String>> {
+    configured_reasoning_efforts_in(
+        provider_name,
+        model_name,
+        &crate::config::config().providers,
+    )
+}
+
+pub(super) fn configured_reasoning_efforts_in(
+    provider_name: Option<&str>,
+    model_name: Option<&str>,
+    providers: &std::collections::BTreeMap<String, crate::config::NamedProviderConfig>,
+) -> Option<Vec<String>> {
+    let provider = provider_name?.trim();
+    let model = model_name?.trim();
+    if provider.is_empty() || model.is_empty() {
+        return None;
+    }
+    let provider_lower = provider.to_ascii_lowercase();
+    let model_lower = model.to_ascii_lowercase();
+    for (profile_name, profile_config) in providers {
+        let profile_label = profile_config
+            .display_name
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or(profile_name);
+        if profile_name.to_ascii_lowercase() != provider_lower
+            && profile_label.to_ascii_lowercase() != provider_lower
+        {
+            continue;
+        }
+        let model_config = profile_config
+            .models
+            .iter()
+            .find(|entry| entry.id.trim().to_ascii_lowercase() == model_lower)?;
+        let map = model_config.reasoning_map.as_ref()?;
+        if map.is_empty() {
+            return None;
+        }
+        let mut efforts: Vec<String> = map
+            .rungs()
+            .filter(|(_, rung)| !rung.disabled)
+            .map(|(key, _)| key.to_string())
+            .collect();
+        if efforts.is_empty() {
+            return None;
+        }
+        efforts.extend(
+            jcode_provider_core::SWARM_EFFORTS
+                .iter()
+                .map(|s| s.to_string()),
+        );
+        return Some(efforts);
+    }
+    None
+}

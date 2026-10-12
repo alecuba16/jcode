@@ -911,9 +911,13 @@ impl App {
         // and the picker consistent (both expose swarm / swarm-deep).
         let efforts = if self.is_remote {
             let (provider_name, provider_model) = self.remote_effort_identity();
-            inferred_reasoning_efforts(provider_name.as_deref(), provider_model.as_deref())
+            remote_reasoning_efforts(provider_name.as_deref(), provider_model.as_deref())
         } else {
-            self.provider.available_efforts()
+            self.provider
+                .available_efforts()
+                .into_iter()
+                .map(ToString::to_string)
+                .collect()
         };
         if efforts.is_empty() {
             self.set_status_notice("Reasoning effort not available for this provider");
@@ -927,7 +931,7 @@ impl App {
         };
         let current_index = current
             .as_ref()
-            .and_then(|c| efforts.iter().position(|e| *e == c.as_str()))
+            .and_then(|c| efforts.iter().position(|e| e == c))
             .unwrap_or(efforts.len() - 1); // default to last (highest)
 
         let len = efforts.len();
@@ -943,9 +947,9 @@ impl App {
             current_index - 1
         };
 
-        let next_effort = efforts[next_index];
-        if Some(next_effort.to_string()) == current {
-            let label = effort_display_label(next_effort);
+        let next_effort = efforts[next_index].clone();
+        if Some(next_effort.clone()) == current {
+            let label = effort_display_label(&next_effort);
             self.set_status_notice(format!(
                 "Effort: {} (already at {})",
                 label,
@@ -954,9 +958,9 @@ impl App {
             return;
         }
 
-        match self.provider.set_reasoning_effort(next_effort) {
+        match self.provider.set_reasoning_effort(&next_effort) {
             Ok(()) => {
-                let label = effort_display_label(next_effort);
+                let label = effort_display_label(&next_effort);
                 let bar = effort_bar(next_index, len);
                 self.set_status_notice(format!("Effort: {} {}", label, bar));
             }

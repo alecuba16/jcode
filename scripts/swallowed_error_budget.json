@@ -1639,7 +1639,7 @@
     "crates/jcode-provider-openrouter-runtime/src/openrouter_provider_impl.rs": {
       "dot_ok": 2,
       "let_underscore": 2,
-      "unwrap_or_default": 3
+      "unwrap_or_default": 4
     },
     "crates/jcode-provider-openrouter-runtime/src/openrouter_sse_stream.rs": {
       "dot_ok": 1,

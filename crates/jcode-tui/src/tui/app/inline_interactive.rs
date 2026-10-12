@@ -1269,11 +1269,16 @@ impl App {
         } else {
             self.provider.reasoning_effort()
         };
-        let available_efforts = if self.is_remote {
-            inferred_reasoning_efforts(
+        let available_efforts_storage;
+        let available_efforts: Vec<&str> = if self.is_remote {
+            available_efforts_storage = remote_reasoning_efforts(
                 self.remote_provider_name.as_deref(),
                 self.remote_provider_model.as_deref(),
-            )
+            );
+            available_efforts_storage
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<&str>>()
         } else {
             self.provider.available_efforts()
         };
@@ -1530,11 +1535,16 @@ impl App {
         } else {
             self.provider.reasoning_effort()
         };
-        let available_efforts = if self.is_remote {
-            inferred_reasoning_efforts(
+        let available_efforts_storage;
+        let available_efforts: Vec<&str> = if self.is_remote {
+            available_efforts_storage = remote_reasoning_efforts(
                 self.remote_provider_name.as_deref(),
                 self.remote_provider_model.as_deref(),
-            )
+            );
+            available_efforts_storage
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<&str>>()
         } else {
             self.provider.available_efforts()
         };
@@ -2169,11 +2179,16 @@ impl App {
         } else {
             self.provider.reasoning_effort()
         };
-        let available_efforts = if self.is_remote {
-            inferred_reasoning_efforts(
+        let available_efforts_storage;
+        let available_efforts: Vec<&str> = if self.is_remote {
+            available_efforts_storage = remote_reasoning_efforts(
                 self.remote_provider_name.as_deref(),
                 self.remote_provider_model.as_deref(),
-            )
+            );
+            available_efforts_storage
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<&str>>()
         } else {
             self.provider.available_efforts()
         };
