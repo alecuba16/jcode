@@ -181,10 +181,10 @@ fn parse_bracket_setting(model: &str, key: &str) -> Option<String> {
     let (_, rest) = model.split_once('[')?;
     let rest = rest.strip_suffix(']').unwrap_or(rest);
     for pair in rest.split(',') {
-        if let Some((k, v)) = pair.split_once('=') {
-            if k.trim() == key {
-                return Some(v.trim().to_string());
-            }
+        if let Some((k, v)) = pair.split_once('=')
+            && k.trim() == key
+        {
+            return Some(v.trim().to_string());
         }
     }
     None
@@ -232,11 +232,11 @@ fn set_bracket_setting(model: &str, key: &str, value: &str) -> String {
     let parts: Vec<String> = rest
         .split(',')
         .map(|pair| {
-            if let Some((k, _)) = pair.split_once('=') {
-                if k.trim() == key {
-                    replaced = true;
-                    return format!("{key}={value}");
-                }
+            if let Some((k, _)) = pair.split_once('=')
+                && k.trim() == key
+            {
+                replaced = true;
+                return format!("{key}={value}");
             }
             pair.to_string()
         })
@@ -1220,10 +1220,10 @@ impl Provider for CursorAcpProvider {
         // `gpt-5.6-sol[context=272k,...]`. Parse it so auto-compact targets
         // the real limit instead of the 200k default.
         let model = self.model();
-        if let Some(ctx_str) = parse_bracket_setting(&model, "context") {
-            if let Some(tokens) = parse_token_count(&ctx_str) {
-                return tokens;
-            }
+        if let Some(ctx_str) = parse_bracket_setting(&model, "context")
+            && let Some(tokens) = parse_token_count(&ctx_str)
+        {
+            return tokens;
         }
         DEFAULT_CONTEXT_LIMIT
     }
@@ -1370,7 +1370,12 @@ mod tests {
     /// fake-process tests populate (e.g. `gpt-5.3-codex`), so bracket-setting
     /// tests must pin their own catalog instead of depending on which tests
     /// happened to run before them. Restores the previous value afterwards.
+    ///
+    /// Takes the process-wide shared-state mutex for the whole window:
+    /// parallel tests in this crate (fake-process discovery writes the same
+    /// shared catalog, and unseeded tests assert on it) would otherwise race.
     fn with_seeded_discovered_models<T>(models: &[&str], f: impl FnOnce() -> T) -> T {
+        let _guard = tests_shared_state_mutex().blocking_lock();
         let shared = shared_discovered_models();
         let previous = shared.read().map(|known| known.clone()).unwrap_or_default();
         if let Ok(mut guard) = shared.write() {
@@ -1381,6 +1386,22 @@ mod tests {
             *guard = previous;
         }
         result
+    }
+
+    /// Mutex serializing every test that touches the process-wide shared
+    /// discovered-models catalog, either by seeding it (sync tests) or by
+    /// populating it through a fake ACP subprocess handshake (async tests).
+    /// A tokio Mutex so async tests can hold it across `.await`.
+    async fn with_shared_state_lock_async<T, F: std::future::Future<Output = T>>(f: F) -> T {
+        let mutex = tests_shared_state_mutex();
+        let _guard = mutex.lock().await;
+        f.await
+    }
+
+    fn tests_shared_state_mutex() -> &'static tokio::sync::Mutex<()> {
+        static TEST_STATE_MUTEX: std::sync::LazyLock<tokio::sync::Mutex<()>> =
+            std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
+        &TEST_STATE_MUTEX
     }
 
     #[test]
@@ -1484,6 +1505,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn unconfigured_command_reports_no_catalog_and_unknown_model() {
+        let _guard = tests_shared_state_mutex().blocking_lock();
         let provider = CursorAcpProvider::with_command(CursorAcpCommand::new(
             "jcode-cursor-acp-command-that-does-not-exist",
             ["acp"],
@@ -1500,6 +1522,7 @@ mod tests {
         // `sh` always exists on unix, so configured() is true, but the catalog
         // is still empty until a real ACP process advertises models. This
         // guards against the picker showing a bogus row before prefetch runs.
+        let _guard = tests_shared_state_mutex().blocking_lock();
         let provider = CursorAcpProvider::with_command(CursorAcpCommand::new("sh", ["-c", "true"]));
         assert!(provider.command.configured());
         assert!(provider.available_models_display().is_empty());
@@ -1553,7 +1576,7 @@ mod tests {
     }
 
     #[test]
-    fn catalog_extracts_model_id_from_modelId_field() {
+    fn catalog_extracts_model_id_from_model_id_field() {
         // Cursor ACP's availableModels array uses objects with a "modelId" field,
         // not "id" or "value". The catalog must extract the model ID from that field.
         let mut catalog = ModelCatalog::default();
@@ -1601,350 +1624,374 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn fake_acp_process_discovers_models_and_streams_prompt() {
-        use tokio_stream::StreamExt;
+        with_shared_state_lock_async(async {
+                use tokio_stream::StreamExt;
 
-        let script = r#"
-while IFS= read -r line; do
-  id=$(printf '%s\n' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
-  case "$line" in
-    *'"method":"initialize"'*)
-      printf '{"jsonrpc":"2.0","id":%s,"result":{"agentCapabilities":{"promptCapabilities":{"image":true}}}}\n' "$id"
-      ;;
-    *'"method":"session/new"'*)
-      printf '%s\n' '{"jsonrpc":"2.0","id":'"$id"',"result":{"sessionId":"fake-session","models":{"currentModelId":"gpt-5.3-codex","availableModels":["gpt-5.3-codex","composer-2.5[fast=true]"]},"configOptions":[{"id":"model","category":"model","currentValue":"gpt-5.3-codex","options":[{"value":"gpt-5.3-codex"},{"value":"composer-2.5[fast=true]"}]}]}}'
-      ;;
-    *'"method":"session/set_config_option"'*)
-      printf '{"jsonrpc":"2.0","id":%s,"result":{}}\n' "$id"
-      ;;
-    *'"method":"session/prompt"'*)
-      printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"hello from fake Cursor"}}}}'
-      printf '{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"end_turn"}}\n' "$id"
-      ;;
-  esac
-done
-"#;
-        let provider = CursorAcpProvider::with_command(CursorAcpCommand::new("sh", ["-c", script]));
+            let script = r#"
+    while IFS= read -r line; do
+      id=$(printf '%s\n' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+      case "$line" in
+        *'"method":"initialize"'*)
+          printf '{"jsonrpc":"2.0","id":%s,"result":{"agentCapabilities":{"promptCapabilities":{"image":true}}}}\n' "$id"
+          ;;
+        *'"method":"session/new"'*)
+          printf '%s\n' '{"jsonrpc":"2.0","id":'"$id"',"result":{"sessionId":"fake-session","models":{"currentModelId":"gpt-5.3-codex","availableModels":["gpt-5.3-codex","composer-2.5[fast=true]"]},"configOptions":[{"id":"model","category":"model","currentValue":"gpt-5.3-codex","options":[{"value":"gpt-5.3-codex"},{"value":"composer-2.5[fast=true]"}]}]}}'
+          ;;
+        *'"method":"session/set_config_option"'*)
+          printf '{"jsonrpc":"2.0","id":%s,"result":{}}\n' "$id"
+          ;;
+        *'"method":"session/prompt"'*)
+          printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"hello from fake Cursor"}}}}'
+          printf '{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"end_turn"}}\n' "$id"
+          ;;
+      esac
+    done
+    "#;
+            let provider = CursorAcpProvider::with_command(CursorAcpCommand::new("sh", ["-c", script]));
 
-        provider.prefetch_models().await.unwrap();
-        assert_eq!(
-            provider.available_models_display(),
-            ids(&["gpt-5.3-codex", "composer-2.5[fast=true]"])
-        );
-        assert_eq!(provider.model(), "gpt-5.3-codex");
-        assert!(provider.supports_image_input());
+            provider.prefetch_models().await.unwrap();
+            assert_eq!(
+                provider.available_models_display(),
+                ids(&["gpt-5.3-codex", "composer-2.5[fast=true]"])
+            );
+            assert_eq!(provider.model(), "gpt-5.3-codex");
+            assert!(provider.supports_image_input());
 
-        let mut stream = provider
-            .complete(&[Message::user("hello")], &[], "", None)
-            .await
-            .unwrap();
-        let mut text = String::new();
-        while let Some(event) = stream.next().await {
-            match event.unwrap() {
-                StreamEvent::TextDelta(delta) => text.push_str(&delta),
-                StreamEvent::MessageEnd { stop_reason } => {
-                    assert_eq!(stop_reason.as_deref(), Some("end_turn"));
+            let mut stream = provider
+                .complete(&[Message::user("hello")], &[], "", None)
+                .await
+                .unwrap();
+            let mut text = String::new();
+            while let Some(event) = stream.next().await {
+                match event.unwrap() {
+                    StreamEvent::TextDelta(delta) => text.push_str(&delta),
+                    StreamEvent::MessageEnd { stop_reason } => {
+                        assert_eq!(stop_reason.as_deref(), Some("end_turn"));
+                    }
+                    _ => {}
                 }
-                _ => {}
             }
-        }
-        assert_eq!(text, "hello from fake Cursor");
+            assert_eq!(text, "hello from fake Cursor");
+
+        })
+        .await;
     }
 
     #[cfg(unix)]
     #[tokio::test]
     async fn tool_call_and_result_are_surfaced_as_stream_events() {
-        use tokio_stream::StreamExt;
+        with_shared_state_lock_async(async {
+                use tokio_stream::StreamExt;
 
-        // Fake Cursor ACP that emits a tool_call, a tool_call_update with
-        // status=completed and rawOutput (exitCode/stdout/stderr), then a text
-        // message. jcode must surface these as ToolUseStart -> ToolUseEnd ->
-        // ToolResult so the agent loop renders and persists the tool execution.
-        let script = r#"
-while IFS= read -r line; do
-  id=$(printf '%s\n' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
-  case "$line" in
-    *'"method":"initialize"'*)
-      printf '{"jsonrpc":"2.0","id":%s,"result":{"agentCapabilities":{"promptCapabilities":{"image":false}}}}\n' "$id"
-      ;;
-    *'"method":"session/new"'*)
-      printf '%s\n' '{"jsonrpc":"2.0","id":'"$id"',"result":{"sessionId":"tool-sess","models":{"currentModelId":"gpt-5.3-codex","availableModels":["gpt-5.3-codex"]},"configOptions":[{"id":"model","category":"model","currentValue":"gpt-5.3-codex","options":[{"value":"gpt-5.3-codex"}]}]}}'
-      ;;
-    *'"method":"session/set_config_option"'*)
-      printf '{"jsonrpc":"2.0","id":%s,"result":{}}\n' "$id"
-      ;;
-    *'"method":"session/prompt"'*)
-      printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"tool_call","toolCallId":"tool-abc","title":"`echo hello`","kind":"execute","status":"pending","rawInput":{"command":"echo hello"}}}}'
-      printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"tool_call_update","toolCallId":"tool-abc","status":"completed","rawOutput":{"exitCode":0,"stdout":"hello\n","stderr":""}}}}'
-      printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"done!"}}}}'
-      printf '{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"end_turn"}}\n' "$id"
-      ;;
-  esac
-done
-"#;
-        let provider = CursorAcpProvider::with_command(CursorAcpCommand::new("sh", ["-c", script]));
+            // Fake Cursor ACP that emits a tool_call, a tool_call_update with
+            // status=completed and rawOutput (exitCode/stdout/stderr), then a text
+            // message. jcode must surface these as ToolUseStart -> ToolUseEnd ->
+            // ToolResult so the agent loop renders and persists the tool execution.
+            let script = r#"
+    while IFS= read -r line; do
+      id=$(printf '%s\n' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+      case "$line" in
+        *'"method":"initialize"'*)
+          printf '{"jsonrpc":"2.0","id":%s,"result":{"agentCapabilities":{"promptCapabilities":{"image":false}}}}\n' "$id"
+          ;;
+        *'"method":"session/new"'*)
+          printf '%s\n' '{"jsonrpc":"2.0","id":'"$id"',"result":{"sessionId":"tool-sess","models":{"currentModelId":"gpt-5.3-codex","availableModels":["gpt-5.3-codex"]},"configOptions":[{"id":"model","category":"model","currentValue":"gpt-5.3-codex","options":[{"value":"gpt-5.3-codex"}]}]}}'
+          ;;
+        *'"method":"session/set_config_option"'*)
+          printf '{"jsonrpc":"2.0","id":%s,"result":{}}\n' "$id"
+          ;;
+        *'"method":"session/prompt"'*)
+          printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"tool_call","toolCallId":"tool-abc","title":"`echo hello`","kind":"execute","status":"pending","rawInput":{"command":"echo hello"}}}}'
+          printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"tool_call_update","toolCallId":"tool-abc","status":"completed","rawOutput":{"exitCode":0,"stdout":"hello\n","stderr":""}}}}'
+          printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"done!"}}}}'
+          printf '{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"end_turn"}}\n' "$id"
+          ;;
+      esac
+    done
+    "#;
+            let provider = CursorAcpProvider::with_command(CursorAcpCommand::new("sh", ["-c", script]));
 
-        let mut stream = provider
-            .complete(&[Message::user("run echo hello")], &[], "", None)
-            .await
-            .unwrap();
+            let mut stream = provider
+                .complete(&[Message::user("run echo hello")], &[], "", None)
+                .await
+                .unwrap();
 
-        let mut saw_tool_use_start = false;
-        let mut saw_tool_use_end = false;
-        let mut tool_result_content = None;
-        let mut tool_result_is_error = None;
-        let mut text = String::new();
-        while let Some(event) = stream.next().await {
-            match event.unwrap() {
-                StreamEvent::ToolUseStart { name, .. } => {
-                    assert_eq!(name, "execute");
-                    saw_tool_use_start = true;
+            let mut saw_tool_use_start = false;
+            let mut saw_tool_use_end = false;
+            let mut tool_result_content = None;
+            let mut tool_result_is_error = None;
+            let mut text = String::new();
+            while let Some(event) = stream.next().await {
+                match event.unwrap() {
+                    StreamEvent::ToolUseStart { name, .. } => {
+                        assert_eq!(name, "execute");
+                        saw_tool_use_start = true;
+                    }
+                    StreamEvent::ToolUseEnd => {
+                        saw_tool_use_end = true;
+                    }
+                    StreamEvent::ToolResult {
+                        content, is_error, ..
+                    } => {
+                        tool_result_content = Some(content);
+                        tool_result_is_error = Some(is_error);
+                    }
+                    StreamEvent::TextDelta(delta) => text.push_str(&delta),
+                    _ => {}
                 }
-                StreamEvent::ToolUseEnd => {
-                    saw_tool_use_end = true;
-                }
-                StreamEvent::ToolResult {
-                    content, is_error, ..
-                } => {
-                    tool_result_content = Some(content);
-                    tool_result_is_error = Some(is_error);
-                }
-                StreamEvent::TextDelta(delta) => text.push_str(&delta),
-                _ => {}
             }
-        }
-        assert!(
-            saw_tool_use_start,
-            "ToolUseStart must be emitted for tool_call"
-        );
-        assert!(
-            saw_tool_use_end,
-            "ToolUseEnd must be emitted after tool_call"
-        );
-        assert_eq!(
-            tool_result_content.as_deref(),
-            Some("hello\n"),
-            "ToolResult must surface stdout from rawOutput"
-        );
-        assert_eq!(
-            tool_result_is_error,
-            Some(false),
-            "exitCode 0 means no error"
-        );
-        assert_eq!(text, "done!");
+            assert!(
+                saw_tool_use_start,
+                "ToolUseStart must be emitted for tool_call"
+            );
+            assert!(
+                saw_tool_use_end,
+                "ToolUseEnd must be emitted after tool_call"
+            );
+            assert_eq!(
+                tool_result_content.as_deref(),
+                Some("hello\n"),
+                "ToolResult must surface stdout from rawOutput"
+            );
+            assert_eq!(
+                tool_result_is_error,
+                Some(false),
+                "exitCode 0 means no error"
+            );
+            assert_eq!(text, "done!");
+
+        })
+        .await;
     }
 
     #[cfg(unix)]
     #[tokio::test]
     async fn tool_call_failed_status_marks_result_as_error() {
-        use tokio_stream::StreamExt;
+        with_shared_state_lock_async(async {
+                use tokio_stream::StreamExt;
 
-        // A failed tool call (non-zero exit code) must surface as an error result.
-        let script = r#"
-while IFS= read -r line; do
-  id=$(printf '%s\n' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
-  case "$line" in
-    *'"method":"initialize"'*)
-      printf '{"jsonrpc":"2.0","id":%s,"result":{"agentCapabilities":{"promptCapabilities":{"image":false}}}}\n' "$id"
-      ;;
-    *'"method":"session/new"'*)
-      printf '%s\n' '{"jsonrpc":"2.0","id":'"$id"',"result":{"sessionId":"err-sess","models":{"currentModelId":"gpt-5.3-codex","availableModels":["gpt-5.3-codex"]},"configOptions":[{"id":"model","category":"model","currentValue":"gpt-5.3-codex","options":[{"value":"gpt-5.3-codex"}]}]}}'
-      ;;
-    *'"method":"session/set_config_option"'*)
-      printf '{"jsonrpc":"2.0","id":%s,"result":{}}\n' "$id"
-      ;;
-    *'"method":"session/prompt"'*)
-      printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"tool_call","toolCallId":"tool-err","title":"`false`","kind":"execute","status":"pending","rawInput":{"command":"false"}}}}'
-      printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"tool_call_update","toolCallId":"tool-err","status":"completed","rawOutput":{"exitCode":1,"stdout":"","stderr":"command not found"}}}}'
-      printf '{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"end_turn"}}\n' "$id"
-      ;;
-  esac
-done
-"#;
-        let provider = CursorAcpProvider::with_command(CursorAcpCommand::new("sh", ["-c", script]));
+            // A failed tool call (non-zero exit code) must surface as an error result.
+            let script = r#"
+    while IFS= read -r line; do
+      id=$(printf '%s\n' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+      case "$line" in
+        *'"method":"initialize"'*)
+          printf '{"jsonrpc":"2.0","id":%s,"result":{"agentCapabilities":{"promptCapabilities":{"image":false}}}}\n' "$id"
+          ;;
+        *'"method":"session/new"'*)
+          printf '%s\n' '{"jsonrpc":"2.0","id":'"$id"',"result":{"sessionId":"err-sess","models":{"currentModelId":"gpt-5.3-codex","availableModels":["gpt-5.3-codex"]},"configOptions":[{"id":"model","category":"model","currentValue":"gpt-5.3-codex","options":[{"value":"gpt-5.3-codex"}]}]}}'
+          ;;
+        *'"method":"session/set_config_option"'*)
+          printf '{"jsonrpc":"2.0","id":%s,"result":{}}\n' "$id"
+          ;;
+        *'"method":"session/prompt"'*)
+          printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"tool_call","toolCallId":"tool-err","title":"`false`","kind":"execute","status":"pending","rawInput":{"command":"false"}}}}'
+          printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"tool_call_update","toolCallId":"tool-err","status":"completed","rawOutput":{"exitCode":1,"stdout":"","stderr":"command not found"}}}}'
+          printf '{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"end_turn"}}\n' "$id"
+          ;;
+      esac
+    done
+    "#;
+            let provider = CursorAcpProvider::with_command(CursorAcpCommand::new("sh", ["-c", script]));
 
-        let mut stream = provider
-            .complete(&[Message::user("run false")], &[], "", None)
-            .await
-            .unwrap();
+            let mut stream = provider
+                .complete(&[Message::user("run false")], &[], "", None)
+                .await
+                .unwrap();
 
-        let mut tool_result = None;
-        let mut is_error = None;
-        while let Some(event) = stream.next().await {
-            if let Ok(StreamEvent::ToolResult {
-                content,
-                is_error: err,
-                ..
-            }) = event
-            {
-                tool_result = Some(content);
-                is_error = Some(err);
+            let mut tool_result = None;
+            let mut is_error = None;
+            while let Some(event) = stream.next().await {
+                if let Ok(StreamEvent::ToolResult {
+                    content,
+                    is_error: err,
+                    ..
+                }) = event
+                {
+                    tool_result = Some(content);
+                    is_error = Some(err);
+                }
             }
-        }
-        assert_eq!(
-            tool_result.as_deref(),
-            Some("command not found"),
-            "failed tool with empty stdout must surface stderr directly"
-        );
-        assert_eq!(is_error, Some(true), "non-zero exit must be an error");
+            assert_eq!(
+                tool_result.as_deref(),
+                Some("command not found"),
+                "failed tool with empty stdout must surface stderr directly"
+            );
+            assert_eq!(is_error, Some(true), "non-zero exit must be an error");
+
+        })
+        .await;
     }
 
     #[cfg(unix)]
     #[tokio::test]
     async fn refresh_re_spawns_and_re_reads_catalog() {
-        // The fake Cursor emits a different model catalog on every process
-        // launch by persisting a launch counter to a temp file. A refresh must
-        // drop the existing process and re-spawn so the new catalog is observed.
-        // Without the drop, the cached catalog from the first launch would be
-        // re-published unchanged.
-        let counter = std::env::temp_dir().join(format!(
-            "jcode-cursor-acp-refresh-test-{}.txt",
-            std::process::id()
-        ));
-        std::fs::write(&counter, "0").unwrap();
-        let counter_arg = counter.to_string_lossy().into_owned();
-        let script = r#"
-counter="$1"
-while IFS= read -r line; do
-  id=$(printf '%s\n' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
-  case "$line" in
-    *'"method":"initialize"'*)
-      count=$(($(cat "$counter") + 1))
-      printf '%s' "$count" > "$counter"
-      if [ "$count" -eq 1 ]; then
-        printf '{"jsonrpc":"2.0","id":%s,"result":{"agentCapabilities":{"promptCapabilities":{"image":false}}}}\n' "$id"
-      else
-        printf '{"jsonrpc":"2.0","id":%s,"result":{"agentCapabilities":{"promptCapabilities":{"image":false}}}}\n' "$id"
-      fi
-      ;;
-    *'"method":"session/new"'*)
-      count=$(cat "$counter")
-      if [ "$count" -eq 1 ]; then
-        printf '%s\n' '{"jsonrpc":"2.0","id":'"$id"',"result":{"sessionId":"s1","models":{"currentModelId":"gpt-5.3-codex","availableModels":["gpt-5.3-codex"]},"configOptions":[{"id":"model","category":"model","currentValue":"gpt-5.3-codex","options":[{"value":"gpt-5.3-codex"}]}]}}'
-      else
-        printf '%s\n' '{"jsonrpc":"2.0","id":'"$id"',"result":{"sessionId":"s2","models":{"currentModelId":"gpt-5.3-codex","availableModels":["gpt-5.3-codex","composer-2.5[fast=true]"]},"configOptions":[{"id":"model","category":"model","currentValue":"gpt-5.3-codex","options":[{"value":"gpt-5.3-codex"},{"value":"composer-2.5[fast=true]"}]}]}}'
-      fi
-      ;;
-    *'"method":"session/set_config_option"'*)
-      printf '{"jsonrpc":"2.0","id":%s,"result":{}}\n' "$id"
-      ;;
-  esac
-done
-"#;
-        let provider = CursorAcpProvider::with_command(CursorAcpCommand::new(
-            "sh",
-            ["-c", script, "sh", &counter_arg],
-        ));
+        with_shared_state_lock_async(async {
+            // The fake Cursor emits a different model catalog on every process
+            // launch by persisting a launch counter to a temp file. A refresh must
+            // drop the existing process and re-spawn so the new catalog is observed.
+            // Without the drop, the cached catalog from the first launch would be
+            // re-published unchanged.
+            let counter = std::env::temp_dir().join(format!(
+                "jcode-cursor-acp-refresh-test-{}.txt",
+                std::process::id()
+            ));
+            std::fs::write(&counter, "0").unwrap();
+            let counter_arg = counter.to_string_lossy().into_owned();
+            let script = r#"
+    counter="$1"
+    while IFS= read -r line; do
+      id=$(printf '%s\n' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+      case "$line" in
+        *'"method":"initialize"'*)
+          count=$(($(cat "$counter") + 1))
+          printf '%s' "$count" > "$counter"
+          if [ "$count" -eq 1 ]; then
+            printf '{"jsonrpc":"2.0","id":%s,"result":{"agentCapabilities":{"promptCapabilities":{"image":false}}}}\n' "$id"
+          else
+            printf '{"jsonrpc":"2.0","id":%s,"result":{"agentCapabilities":{"promptCapabilities":{"image":false}}}}\n' "$id"
+          fi
+          ;;
+        *'"method":"session/new"'*)
+          count=$(cat "$counter")
+          if [ "$count" -eq 1 ]; then
+            printf '%s\n' '{"jsonrpc":"2.0","id":'"$id"',"result":{"sessionId":"s1","models":{"currentModelId":"gpt-5.3-codex","availableModels":["gpt-5.3-codex"]},"configOptions":[{"id":"model","category":"model","currentValue":"gpt-5.3-codex","options":[{"value":"gpt-5.3-codex"}]}]}}'
+          else
+            printf '%s\n' '{"jsonrpc":"2.0","id":'"$id"',"result":{"sessionId":"s2","models":{"currentModelId":"gpt-5.3-codex","availableModels":["gpt-5.3-codex","composer-2.5[fast=true]"]},"configOptions":[{"id":"model","category":"model","currentValue":"gpt-5.3-codex","options":[{"value":"gpt-5.3-codex"},{"value":"composer-2.5[fast=true]"}]}]}}'
+          fi
+          ;;
+        *'"method":"session/set_config_option"'*)
+          printf '{"jsonrpc":"2.0","id":%s,"result":{}}\n' "$id"
+          ;;
+      esac
+    done
+    "#;
+            let provider = CursorAcpProvider::with_command(CursorAcpCommand::new(
+                "sh",
+                ["-c", script, "sh", &counter_arg],
+            ));
 
-        // Cold prefetch: first catalog (one model).
-        provider.prefetch_models().await.unwrap();
-        assert_eq!(provider.available_models_display(), ids(&["gpt-5.3-codex"]));
-        assert_eq!(provider.model(), "gpt-5.3-codex");
+            // Cold prefetch: first catalog (one model).
+            provider.prefetch_models().await.unwrap();
+            assert_eq!(provider.available_models_display(), ids(&["gpt-5.3-codex"]));
+            assert_eq!(provider.model(), "gpt-5.3-codex");
 
-        // Refresh must drop the live process and re-spawn to see the new model.
-        // Without the drop, the cached single-model catalog would be re-published
-        // and the newly advertised composer-2.5 variant would never appear.
-        provider.prefetch_models().await.unwrap();
-        assert_eq!(
-            provider.available_models_display(),
-            ids(&["gpt-5.3-codex", "composer-2.5[fast=true]"])
-        );
-        // Cursor kept the same current model, so jcode preserves it.
-        assert_eq!(provider.model(), "gpt-5.3-codex");
+            // Refresh must drop the live process and re-spawn to see the new model.
+            // Without the drop, the cached single-model catalog would be re-published
+            // and the newly advertised composer-2.5 variant would never appear.
+            provider.prefetch_models().await.unwrap();
+            assert_eq!(
+                provider.available_models_display(),
+                ids(&["gpt-5.3-codex", "composer-2.5[fast=true]"])
+            );
+            // Cursor kept the same current model, so jcode preserves it.
+            assert_eq!(provider.model(), "gpt-5.3-codex");
 
-        let _ = std::fs::remove_file(&counter);
+            let _ = std::fs::remove_file(&counter);
+
+        })
+        .await;
     }
 
     #[cfg(unix)]
     #[tokio::test]
     async fn yolo_permission_mode_auto_approves_first_option() {
-        use tokio_stream::StreamExt;
+        with_shared_state_lock_async(async {
+                use tokio_stream::StreamExt;
 
-        // Fake Cursor ACP that sends a permission request during a prompt.
-        // The test verifies jcode auto-selects the first option (YOLO mode).
-        let script = r#"
-while IFS= read -r line; do
-  id=$(printf '%s\n' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
-  case "$line" in
-    *'"method":"initialize"'*)
-      printf '{"jsonrpc":"2.0","id":%s,"result":{"agentCapabilities":{"promptCapabilities":{"image":false}}}}\n' "$id"
-      ;;
-    *'"method":"session/new"'*)
-      printf '%s\n' '{"jsonrpc":"2.0","id":'"$id"',"result":{"sessionId":"perm-session","models":{"currentModelId":"gpt-5.3-codex","availableModels":["gpt-5.3-codex"]},"configOptions":[{"id":"model","category":"model","currentValue":"gpt-5.3-codex","options":[{"value":"gpt-5.3-codex"}]}]}}'
-      ;;
-    *'"method":"session/set_config_option"'*)
-      printf '{"jsonrpc":"2.0","id":%s,"result":{}}\n' "$id"
-      ;;
-    *'"method":"session/prompt"'*)
-      printf '%s\n' '{"jsonrpc":"2.0","method":"session/request_permission","id":999,"params":{"options":[{"optionId":"allow-once"},{"optionId":"allow-always"},{"optionId":"reject-once"}]}}'
-      printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"approved!"}}}}'
-      printf '{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"end_turn"}}\n' "$id"
-      ;;
-  esac
-done
-"#;
-        // Ensure YOLO mode is active (default, but explicit for test clarity).
-        unsafe { std::env::set_var("JCODE_CURSOR_ACP_PERMISSION", "yolo") };
-        let provider = CursorAcpProvider::with_command(CursorAcpCommand::new("sh", ["-c", script]));
+            // Fake Cursor ACP that sends a permission request during a prompt.
+            // The test verifies jcode auto-selects the first option (YOLO mode).
+            let script = r#"
+    while IFS= read -r line; do
+      id=$(printf '%s\n' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+      case "$line" in
+        *'"method":"initialize"'*)
+          printf '{"jsonrpc":"2.0","id":%s,"result":{"agentCapabilities":{"promptCapabilities":{"image":false}}}}\n' "$id"
+          ;;
+        *'"method":"session/new"'*)
+          printf '%s\n' '{"jsonrpc":"2.0","id":'"$id"',"result":{"sessionId":"perm-session","models":{"currentModelId":"gpt-5.3-codex","availableModels":["gpt-5.3-codex"]},"configOptions":[{"id":"model","category":"model","currentValue":"gpt-5.3-codex","options":[{"value":"gpt-5.3-codex"}]}]}}'
+          ;;
+        *'"method":"session/set_config_option"'*)
+          printf '{"jsonrpc":"2.0","id":%s,"result":{}}\n' "$id"
+          ;;
+        *'"method":"session/prompt"'*)
+          printf '%s\n' '{"jsonrpc":"2.0","method":"session/request_permission","id":999,"params":{"options":[{"optionId":"allow-once"},{"optionId":"allow-always"},{"optionId":"reject-once"}]}}'
+          printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"approved!"}}}}'
+          printf '{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"end_turn"}}\n' "$id"
+          ;;
+      esac
+    done
+    "#;
+            // Ensure YOLO mode is active (default, but explicit for test clarity).
+            unsafe { std::env::set_var("JCODE_CURSOR_ACP_PERMISSION", "yolo") };
+            let provider = CursorAcpProvider::with_command(CursorAcpCommand::new("sh", ["-c", script]));
 
-        let mut stream = provider
-            .complete(&[Message::user("do something")], &[], "", None)
-            .await
-            .unwrap();
-        let mut text = String::new();
-        while let Some(event) = stream.next().await {
-            if let Ok(StreamEvent::TextDelta(delta)) = event {
-                text.push_str(&delta);
+            let mut stream = provider
+                .complete(&[Message::user("do something")], &[], "", None)
+                .await
+                .unwrap();
+            let mut text = String::new();
+            while let Some(event) = stream.next().await {
+                if let Ok(StreamEvent::TextDelta(delta)) = event {
+                    text.push_str(&delta);
+                }
             }
-        }
-        assert_eq!(text, "approved!");
-        unsafe { std::env::remove_var("JCODE_CURSOR_ACP_PERMISSION") };
+            assert_eq!(text, "approved!");
+            unsafe { std::env::remove_var("JCODE_CURSOR_ACP_PERMISSION") };
+
+        })
+        .await;
     }
 
     #[cfg(unix)]
     #[tokio::test]
     async fn yolo_permission_prefers_allow_always_over_allow_once() {
-        use tokio_stream::StreamExt;
+        with_shared_state_lock_async(async {
+                use tokio_stream::StreamExt;
 
-        // Fake Cursor ACP that sends a permission request with both allow-once
-        // and allow-always. YOLO mode should select allow-always (session-persisting).
-        let script = r#"
-while IFS= read -r line; do
-  id=$(printf '%s\n' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
-  case "$line" in
-    *'"method":"initialize"'*)
-      printf '{"jsonrpc":"2.0","id":%s,"result":{"agentCapabilities":{"promptCapabilities":{"image":false}}}}\n' "$id"
-      ;;
-    *'"method":"session/new"'*)
-      printf '%s\n' '{"jsonrpc":"2.0","id":'"$id"',"result":{"sessionId":"perm-session2","models":{"currentModelId":"gpt-5.3-codex","availableModels":["gpt-5.3-codex"]},"configOptions":[{"id":"model","category":"model","currentValue":"gpt-5.3-codex","options":[{"value":"gpt-5.3-codex"}]}]}}'
-      ;;
-    *'"method":"session/set_config_option"'*)
-      printf '{"jsonrpc":"2.0","id":%s,"result":{}}\n' "$id"
-      ;;
-    *'"method":"session/prompt"'*)
-      printf '%s\n' '{"jsonrpc":"2.0","method":"session/request_permission","id":888,"params":{"options":[{"optionId":"allow-once"},{"optionId":"allow-always"},{"optionId":"reject-once"}]}}'
-      printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"approved!"}}}}'
-      printf '{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"end_turn"}}\n' "$id"
-      ;;
-  esac
-done
-"#;
-        // Explicitly opt into yolo mode (no longer the default) so this test
-        // verifies the allow-always preference path.
-        unsafe { std::env::set_var("JCODE_CURSOR_ACP_PERMISSION", "yolo") };
-        let provider = CursorAcpProvider::with_command(CursorAcpCommand::new("sh", ["-c", script]));
+            // Fake Cursor ACP that sends a permission request with both allow-once
+            // and allow-always. YOLO mode should select allow-always (session-persisting).
+            let script = r#"
+    while IFS= read -r line; do
+      id=$(printf '%s\n' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+      case "$line" in
+        *'"method":"initialize"'*)
+          printf '{"jsonrpc":"2.0","id":%s,"result":{"agentCapabilities":{"promptCapabilities":{"image":false}}}}\n' "$id"
+          ;;
+        *'"method":"session/new"'*)
+          printf '%s\n' '{"jsonrpc":"2.0","id":'"$id"',"result":{"sessionId":"perm-session2","models":{"currentModelId":"gpt-5.3-codex","availableModels":["gpt-5.3-codex"]},"configOptions":[{"id":"model","category":"model","currentValue":"gpt-5.3-codex","options":[{"value":"gpt-5.3-codex"}]}]}}'
+          ;;
+        *'"method":"session/set_config_option"'*)
+          printf '{"jsonrpc":"2.0","id":%s,"result":{}}\n' "$id"
+          ;;
+        *'"method":"session/prompt"'*)
+          printf '%s\n' '{"jsonrpc":"2.0","method":"session/request_permission","id":888,"params":{"options":[{"optionId":"allow-once"},{"optionId":"allow-always"},{"optionId":"reject-once"}]}}'
+          printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"approved!"}}}}'
+          printf '{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"end_turn"}}\n' "$id"
+          ;;
+      esac
+    done
+    "#;
+            // Explicitly opt into yolo mode (no longer the default) so this test
+            // verifies the allow-always preference path.
+            unsafe { std::env::set_var("JCODE_CURSOR_ACP_PERMISSION", "yolo") };
+            let provider = CursorAcpProvider::with_command(CursorAcpCommand::new("sh", ["-c", script]));
 
-        let mut stream = provider
-            .complete(&[Message::user("do something")], &[], "", None)
-            .await
-            .unwrap();
-        while let Some(event) = stream.next().await {
-            if let Ok(StreamEvent::TextDelta(_)) = event {
-                // Just drain; the real assertion is that the fake script
-                // completed (it would hang if allow-always was not selected
-                // because the script only emits one message after permission).
+            let mut stream = provider
+                .complete(&[Message::user("do something")], &[], "", None)
+                .await
+                .unwrap();
+            while let Some(event) = stream.next().await {
+                if let Ok(StreamEvent::TextDelta(_)) = event {
+                    // Just drain; the real assertion is that the fake script
+                    // completed (it would hang if allow-always was not selected
+                    // because the script only emits one message after permission).
+                }
             }
-        }
-        unsafe { std::env::remove_var("JCODE_CURSOR_ACP_PERMISSION") };
+            unsafe { std::env::remove_var("JCODE_CURSOR_ACP_PERMISSION") };
+
+        })
+        .await;
     }
 
     #[test]
@@ -1965,138 +2012,150 @@ done
     #[cfg(unix)]
     #[tokio::test]
     async fn jcode_permission_mode_cancels_execute_tools() {
-        use tokio_stream::StreamExt;
+        with_shared_state_lock_async(async {
+                use tokio_stream::StreamExt;
 
-        // In jcode mode, a tool call with kind="execute" should be cancelled
-        // (fail-closed) rather than auto-approved.
-        let script = r#"
-while IFS= read -r line; do
-  id=$(printf '%s\n' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
-  case "$line" in
-    *'"method":"initialize"'*)
-      printf '{"jsonrpc":"2.0","id":%s,"result":{"agentCapabilities":{"promptCapabilities":{"image":false}}}}\n' "$id"
-      ;;
-    *'"method":"session/new"'*)
-      printf '%s\n' '{"jsonrpc":"2.0","id":'"$id"',"result":{"sessionId":"jcode-sess","models":{"currentModelId":"gpt-5.3-codex","availableModels":["gpt-5.3-codex"]},"configOptions":[{"id":"model","category":"model","currentValue":"gpt-5.3-codex","options":[{"value":"gpt-5.3-codex"}]}]}}'
-      ;;
-    *'"method":"session/set_config_option"'*)
-      printf '{"jsonrpc":"2.0","id":%s,"result":{}}\n' "$id"
-      ;;
-    *'"method":"session/prompt"'*)
-      printf '%s\n' '{"jsonrpc":"2.0","method":"session/request_permission","id":777,"params":{"toolCall":{"kind":"execute","title":"rm -rf /"},"options":[{"optionId":"allow-once"},{"optionId":"allow-always"},{"optionId":"reject-once"}]}}'
-      printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"cancelled!"}}}}'
-      printf '{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"end_turn"}}\n' "$id"
-      ;;
-  esac
-done
-"#;
-        unsafe { std::env::set_var("JCODE_CURSOR_ACP_PERMISSION", "jcode") };
-        let provider = CursorAcpProvider::with_command(CursorAcpCommand::new("sh", ["-c", script]));
+            // In jcode mode, a tool call with kind="execute" should be cancelled
+            // (fail-closed) rather than auto-approved.
+            let script = r#"
+    while IFS= read -r line; do
+      id=$(printf '%s\n' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+      case "$line" in
+        *'"method":"initialize"'*)
+          printf '{"jsonrpc":"2.0","id":%s,"result":{"agentCapabilities":{"promptCapabilities":{"image":false}}}}\n' "$id"
+          ;;
+        *'"method":"session/new"'*)
+          printf '%s\n' '{"jsonrpc":"2.0","id":'"$id"',"result":{"sessionId":"jcode-sess","models":{"currentModelId":"gpt-5.3-codex","availableModels":["gpt-5.3-codex"]},"configOptions":[{"id":"model","category":"model","currentValue":"gpt-5.3-codex","options":[{"value":"gpt-5.3-codex"}]}]}}'
+          ;;
+        *'"method":"session/set_config_option"'*)
+          printf '{"jsonrpc":"2.0","id":%s,"result":{}}\n' "$id"
+          ;;
+        *'"method":"session/prompt"'*)
+          printf '%s\n' '{"jsonrpc":"2.0","method":"session/request_permission","id":777,"params":{"toolCall":{"kind":"execute","title":"rm -rf /"},"options":[{"optionId":"allow-once"},{"optionId":"allow-always"},{"optionId":"reject-once"}]}}'
+          printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"cancelled!"}}}}'
+          printf '{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"end_turn"}}\n' "$id"
+          ;;
+      esac
+    done
+    "#;
+            unsafe { std::env::set_var("JCODE_CURSOR_ACP_PERMISSION", "jcode") };
+            let provider = CursorAcpProvider::with_command(CursorAcpCommand::new("sh", ["-c", script]));
 
-        let mut stream = provider
-            .complete(&[Message::user("rm -rf /")], &[], "", None)
-            .await
-            .unwrap();
-        let mut text = String::new();
-        while let Some(event) = stream.next().await {
-            if let Ok(StreamEvent::TextDelta(delta)) = event {
-                text.push_str(&delta);
+            let mut stream = provider
+                .complete(&[Message::user("rm -rf /")], &[], "", None)
+                .await
+                .unwrap();
+            let mut text = String::new();
+            while let Some(event) = stream.next().await {
+                if let Ok(StreamEvent::TextDelta(delta)) = event {
+                    text.push_str(&delta);
+                }
             }
-        }
-        assert_eq!(text, "cancelled!");
-        unsafe { std::env::remove_var("JCODE_CURSOR_ACP_PERMISSION") };
+            assert_eq!(text, "cancelled!");
+            unsafe { std::env::remove_var("JCODE_CURSOR_ACP_PERMISSION") };
+
+        })
+        .await;
     }
 
     #[cfg(unix)]
     #[tokio::test]
     async fn jcode_permission_mode_allows_read_tools() {
-        use tokio_stream::StreamExt;
+        with_shared_state_lock_async(async {
+                use tokio_stream::StreamExt;
 
-        // In jcode mode, a tool call with kind="read" should be auto-approved.
-        let script = r#"
-while IFS= read -r line; do
-  id=$(printf '%s\n' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
-  case "$line" in
-    *'"method":"initialize"'*)
-      printf '{"jsonrpc":"2.0","id":%s,"result":{"agentCapabilities":{"promptCapabilities":{"image":false}}}}\n' "$id"
-      ;;
-    *'"method":"session/new"'*)
-      printf '%s\n' '{"jsonrpc":"2.0","id":'"$id"',"result":{"sessionId":"jcode-sess2","models":{"currentModelId":"gpt-5.3-codex","availableModels":["gpt-5.3-codex"]},"configOptions":[{"id":"model","category":"model","currentValue":"gpt-5.3-codex","options":[{"value":"gpt-5.3-codex"}]}]}}'
-      ;;
-    *'"method":"session/set_config_option"'*)
-      printf '{"jsonrpc":"2.0","id":%s,"result":{}}\n' "$id"
-      ;;
-    *'"method":"session/prompt"'*)
-      printf '%s\n' '{"jsonrpc":"2.0","method":"session/request_permission","id":666,"params":{"toolCall":{"kind":"read","title":"read file"},"options":[{"optionId":"allow-once"},{"optionId":"allow-always"},{"optionId":"reject-once"}]}}'
-      printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"allowed!"}}}}'
-      printf '{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"end_turn"}}\n' "$id"
-      ;;
-  esac
-done
-"#;
-        unsafe { std::env::set_var("JCODE_CURSOR_ACP_PERMISSION", "jcode") };
-        let provider = CursorAcpProvider::with_command(CursorAcpCommand::new("sh", ["-c", script]));
+            // In jcode mode, a tool call with kind="read" should be auto-approved.
+            let script = r#"
+    while IFS= read -r line; do
+      id=$(printf '%s\n' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+      case "$line" in
+        *'"method":"initialize"'*)
+          printf '{"jsonrpc":"2.0","id":%s,"result":{"agentCapabilities":{"promptCapabilities":{"image":false}}}}\n' "$id"
+          ;;
+        *'"method":"session/new"'*)
+          printf '%s\n' '{"jsonrpc":"2.0","id":'"$id"',"result":{"sessionId":"jcode-sess2","models":{"currentModelId":"gpt-5.3-codex","availableModels":["gpt-5.3-codex"]},"configOptions":[{"id":"model","category":"model","currentValue":"gpt-5.3-codex","options":[{"value":"gpt-5.3-codex"}]}]}}'
+          ;;
+        *'"method":"session/set_config_option"'*)
+          printf '{"jsonrpc":"2.0","id":%s,"result":{}}\n' "$id"
+          ;;
+        *'"method":"session/prompt"'*)
+          printf '%s\n' '{"jsonrpc":"2.0","method":"session/request_permission","id":666,"params":{"toolCall":{"kind":"read","title":"read file"},"options":[{"optionId":"allow-once"},{"optionId":"allow-always"},{"optionId":"reject-once"}]}}'
+          printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"allowed!"}}}}'
+          printf '{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"end_turn"}}\n' "$id"
+          ;;
+      esac
+    done
+    "#;
+            unsafe { std::env::set_var("JCODE_CURSOR_ACP_PERMISSION", "jcode") };
+            let provider = CursorAcpProvider::with_command(CursorAcpCommand::new("sh", ["-c", script]));
 
-        let mut stream = provider
-            .complete(&[Message::user("read file")], &[], "", None)
-            .await
-            .unwrap();
-        let mut text = String::new();
-        while let Some(event) = stream.next().await {
-            if let Ok(StreamEvent::TextDelta(delta)) = event {
-                text.push_str(&delta);
+            let mut stream = provider
+                .complete(&[Message::user("read file")], &[], "", None)
+                .await
+                .unwrap();
+            let mut text = String::new();
+            while let Some(event) = stream.next().await {
+                if let Ok(StreamEvent::TextDelta(delta)) = event {
+                    text.push_str(&delta);
+                }
             }
-        }
-        assert_eq!(text, "allowed!");
-        unsafe { std::env::remove_var("JCODE_CURSOR_ACP_PERMISSION") };
+            assert_eq!(text, "allowed!");
+            unsafe { std::env::remove_var("JCODE_CURSOR_ACP_PERMISSION") };
+
+        })
+        .await;
     }
 
     #[cfg(unix)]
     #[tokio::test]
     async fn default_permission_mode_cancels_execute_tools() {
-        use tokio_stream::StreamExt;
+        with_shared_state_lock_async(async {
+                use tokio_stream::StreamExt;
 
-        // Without any explicit JCODE_CURSOR_ACP_PERMISSION env var, the default
-        // mode must be jcode (safe), which cancels execute tool permission
-        // requests rather than auto-approving them.
-        unsafe { std::env::remove_var("JCODE_CURSOR_ACP_PERMISSION") };
-        let script = r#"
-while IFS= read -r line; do
-  id=$(printf '%s\n' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
-  case "$line" in
-    *'"method":"initialize"'*)
-      printf '{"jsonrpc":"2.0","id":%s,"result":{"agentCapabilities":{"promptCapabilities":{"image":false}}}}\n' "$id"
-      ;;
-    *'"method":"session/new"'*)
-      printf '%s\n' '{"jsonrpc":"2.0","id":'"$id"',"result":{"sessionId":"default-sess","models":{"currentModelId":"gpt-5.3-codex","availableModels":["gpt-5.3-codex"]},"configOptions":[{"id":"model","category":"model","currentValue":"gpt-5.3-codex","options":[{"value":"gpt-5.3-codex"}]}]}}'
-      ;;
-    *'"method":"session/set_config_option"'*)
-      printf '{"jsonrpc":"2.0","id":%s,"result":{}}\n' "$id"
-      ;;
-    *'"method":"session/prompt"'*)
-      printf '%s\n' '{"jsonrpc":"2.0","method":"session/request_permission","id":555,"params":{"toolCall":{"kind":"execute","title":"rm -rf /"},"options":[{"optionId":"allow-once"},{"optionId":"allow-always"},{"optionId":"reject-once"}]}}'
-      printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"cancelled by default!"}}}}'
-      printf '{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"end_turn"}}\n' "$id"
-      ;;
-  esac
-done
-"#;
-        let provider = CursorAcpProvider::with_command(CursorAcpCommand::new("sh", ["-c", script]));
+            // Without any explicit JCODE_CURSOR_ACP_PERMISSION env var, the default
+            // mode must be jcode (safe), which cancels execute tool permission
+            // requests rather than auto-approving them.
+            unsafe { std::env::remove_var("JCODE_CURSOR_ACP_PERMISSION") };
+            let script = r#"
+    while IFS= read -r line; do
+      id=$(printf '%s\n' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+      case "$line" in
+        *'"method":"initialize"'*)
+          printf '{"jsonrpc":"2.0","id":%s,"result":{"agentCapabilities":{"promptCapabilities":{"image":false}}}}\n' "$id"
+          ;;
+        *'"method":"session/new"'*)
+          printf '%s\n' '{"jsonrpc":"2.0","id":'"$id"',"result":{"sessionId":"default-sess","models":{"currentModelId":"gpt-5.3-codex","availableModels":["gpt-5.3-codex"]},"configOptions":[{"id":"model","category":"model","currentValue":"gpt-5.3-codex","options":[{"value":"gpt-5.3-codex"}]}]}}'
+          ;;
+        *'"method":"session/set_config_option"'*)
+          printf '{"jsonrpc":"2.0","id":%s,"result":{}}\n' "$id"
+          ;;
+        *'"method":"session/prompt"'*)
+          printf '%s\n' '{"jsonrpc":"2.0","method":"session/request_permission","id":555,"params":{"toolCall":{"kind":"execute","title":"rm -rf /"},"options":[{"optionId":"allow-once"},{"optionId":"allow-always"},{"optionId":"reject-once"}]}}'
+          printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"cancelled by default!"}}}}'
+          printf '{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"end_turn"}}\n' "$id"
+          ;;
+      esac
+    done
+    "#;
+            let provider = CursorAcpProvider::with_command(CursorAcpCommand::new("sh", ["-c", script]));
 
-        let mut stream = provider
-            .complete(&[Message::user("rm -rf /")], &[], "", None)
-            .await
-            .unwrap();
-        let mut text = String::new();
-        while let Some(event) = stream.next().await {
-            if let Ok(StreamEvent::TextDelta(delta)) = event {
-                text.push_str(&delta);
+            let mut stream = provider
+                .complete(&[Message::user("rm -rf /")], &[], "", None)
+                .await
+                .unwrap();
+            let mut text = String::new();
+            while let Some(event) = stream.next().await {
+                if let Ok(StreamEvent::TextDelta(delta)) = event {
+                    text.push_str(&delta);
+                }
             }
-        }
-        assert_eq!(
-            text, "cancelled by default!",
-            "default permission mode must be jcode (safe), cancelling execute tools"
-        );
+            assert_eq!(
+                text, "cancelled by default!",
+                "default permission mode must be jcode (safe), cancelling execute tools"
+            );
+
+        })
+        .await;
     }
 
     #[test]
