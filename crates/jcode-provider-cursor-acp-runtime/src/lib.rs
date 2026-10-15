@@ -1381,11 +1381,25 @@ mod tests {
         if let Ok(mut guard) = shared.write() {
             *guard = ids(models);
         }
-        let result = f();
-        if let Ok(mut guard) = shared.write() {
-            *guard = previous;
+        // Restore the previous catalog even if the test body panics, so a
+        // failing bracket-setting test does not leak its seed into the rest
+        // of the parallel suite.
+        struct RestoreOnDrop {
+            shared: std::sync::Arc<std::sync::RwLock<Vec<String>>>,
+            previous: Vec<String>,
         }
-        result
+        impl Drop for RestoreOnDrop {
+            fn drop(&mut self) {
+                if let Ok(mut guard) = self.shared.write() {
+                    *guard = self.previous.clone();
+                }
+            }
+        }
+        let _restore = RestoreOnDrop {
+            shared: shared.clone(),
+            previous,
+        };
+        f()
     }
 
     /// Mutex serializing every test that touches the process-wide shared
@@ -1457,7 +1471,38 @@ mod tests {
     fn from_env_defaults_and_overrides() {
         // These tests manipulate global env vars and must run sequentially.
         // Merged into one function to avoid cross-test races under parallel
-        // test execution.
+        // test execution. Takes the shared-state mutex because other tests
+        // construct providers via `new()`/`from_env()` and read these vars.
+        let _guard = tests_shared_state_mutex().blocking_lock();
+
+        // Restore the vars even if an assertion panics mid-section, so a
+        // failed run does not leak overrides into other tests' `from_env()`
+        // and does not wipe vars the host environment originally set.
+        struct RestoreEnvOnDrop {
+            path: Option<String>,
+            args: Option<String>,
+            extra_args: Option<String>,
+        }
+        impl Drop for RestoreEnvOnDrop {
+            fn drop(&mut self) {
+                let entries = [
+                    ("JCODE_CURSOR_ACP_PATH", &self.path),
+                    ("JCODE_CURSOR_ACP_ARGS", &self.args),
+                    ("JCODE_CURSOR_ACP_EXTRA_ARGS", &self.extra_args),
+                ];
+                for (key, value) in entries {
+                    match value {
+                        Some(v) => unsafe { std::env::set_var(key, v) },
+                        None => unsafe { std::env::remove_var(key) },
+                    }
+                }
+            }
+        }
+        let _restore = RestoreEnvOnDrop {
+            path: std::env::var("JCODE_CURSOR_ACP_PATH").ok(),
+            args: std::env::var("JCODE_CURSOR_ACP_ARGS").ok(),
+            extra_args: std::env::var("JCODE_CURSOR_ACP_EXTRA_ARGS").ok(),
+        };
 
         // 1) Default path: no env overrides → --force --trust acp
         unsafe {
@@ -2241,6 +2286,9 @@ mod tests {
 
     #[test]
     fn available_efforts_returns_supported_levels() {
+        // `new()` reads the JCODE_CURSOR_ACP_* env vars via `from_env()`,
+        // so serialize against `from_env_defaults_and_overrides`.
+        let _guard = tests_shared_state_mutex().blocking_lock();
         let provider = CursorAcpProvider::new();
         let efforts = provider.available_efforts();
         assert!(efforts.contains(&"none"));
