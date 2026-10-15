@@ -198,8 +198,7 @@ pub fn load_memory_model_store() -> MemoryModelStore {
     };
     match std::fs::read_to_string(&path) {
         Ok(contents) => {
-            let mut store: MemoryModelStore =
-                serde_json::from_str(&contents).unwrap_or_default();
+            let mut store: MemoryModelStore = serde_json::from_str(&contents).unwrap_or_default();
             store.version = MEMORY_MODEL_VERSION;
             // Clean empty/null entries.
             if store

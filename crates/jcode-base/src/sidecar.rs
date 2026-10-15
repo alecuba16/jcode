@@ -390,12 +390,9 @@ impl Sidecar {
                 model,
                 provider_model_override,
             } => (backend, model, provider_model_override, false),
-            MemorySidecarSelection::Dormant => (
-                SidecarBackend::Provider,
-                String::new(),
-                None,
-                true,
-            ),
+            MemorySidecarSelection::Dormant => {
+                (SidecarBackend::Provider, String::new(), None, true)
+            }
         };
 
         // Fork the active provider for Provider-backend dispatch. The fork is
@@ -633,13 +630,13 @@ impl Sidecar {
         // Apply the user's memory_model override if one was configured. If the
         // provider does not support model switching, we log a warning and proceed
         // with the default model rather than failing the sidecar call.
-        if let Some(model) = &self.provider_model_override {
-            if let Err(err) = provider.set_model(model) {
-                crate::logging::warn(&format!(
-                    "Sidecar: provider does not support switching to memory_model '{}': {}; using provider default model",
-                    model, err
-                ));
-            }
+        if let Some(model) = &self.provider_model_override
+            && let Err(err) = provider.set_model(model)
+        {
+            crate::logging::warn(&format!(
+                "Sidecar: provider does not support switching to memory_model '{}': {}; using provider default model",
+                model, err
+            ));
         }
         let (text, usage) = provider
             .complete_simple_with_usage(user_message, system)
