@@ -1,11 +1,11 @@
-/// End-to-end test: `persist_model_switch_to_config` writes the model to
-/// `config.toml` so it survives relaunch/new sessions.
-///
-/// Before the fix, `finalize_model_switch` only saved to the *session* file.
-/// A resumed session restored the model, but a NEW session or relaunch read
-/// `config.toml`'s `[provider].default_model` and reverted to the old default.
-/// This test proves the fix: after `cycle_model`, the config file on disk
-/// reflects the new model.
+// End-to-end test: `persist_model_switch_to_config` writes the model to
+// `config.toml` so it survives relaunch/new sessions.
+//
+// Before the fix, `finalize_model_switch` only saved to the *session* file.
+// A resumed session restored the model, but a NEW session or relaunch read
+// `config.toml`'s `[provider].default_model` and reverted to the old default.
+// This test proves the fix: after `cycle_model`, the config file on disk
+// reflects the new model.
 
 use std::sync::RwLock;
 
