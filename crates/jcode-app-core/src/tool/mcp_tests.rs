@@ -1,4 +1,3 @@
-
 use super::*;
 use crate::tool::Tool;
 use std::fs;
@@ -441,8 +440,8 @@ fn write_global_mcp_config(jcode_home: &std::path::Path, server_name: &str, disa
 /// Read back the global `mcp.json` as a JSON value so tests can assert on
 /// the persisted enabled/disabled flags after a toggle.
 fn read_global_mcp_config(jcode_home: &std::path::Path) -> serde_json::Value {
-    let content = fs::read_to_string(jcode_home.join("mcp.json"))
-        .expect("read global mcp.json after toggle");
+    let content =
+        fs::read_to_string(jcode_home.join("mcp.json")).expect("read global mcp.json after toggle");
     serde_json::from_str(&content).expect("mcp.json is valid JSON")
 }
 
@@ -464,11 +463,10 @@ async fn test_toggle_enable_persists_flags_to_disk() {
     let ctx = create_test_context();
     let input = json!({"action": "enable", "server": server_name});
 
-    let result =
-        tokio::time::timeout(std::time::Duration::from_secs(15), tool.execute(input, ctx))
-            .await
-            .expect("toggle enable must not hang")
-            .expect("toggle enable returns Ok even if the connect fails");
+    let result = tokio::time::timeout(std::time::Duration::from_secs(15), tool.execute(input, ctx))
+        .await
+        .expect("toggle enable must not hang")
+        .expect("toggle enable returns Ok even if the connect fails");
 
     // Config persistence is the key behavior: flags flipped to enabled.
     let saved = read_global_mcp_config(temp.path());
