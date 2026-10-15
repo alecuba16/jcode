@@ -245,7 +245,10 @@ const ALL_THEME_COLORS: [ThemeColor; THEME_COLOR_COUNT] = [
 const _: () = {
     let mut i = 0;
     while i < ALL_THEME_COLORS.len() {
-        assert!(ALL_THEME_COLORS[i] as usize == i, "ThemeColor index mismatch");
+        assert!(
+            ALL_THEME_COLORS[i] as usize == i,
+            "ThemeColor index mismatch"
+        );
         i += 1;
     }
 };
