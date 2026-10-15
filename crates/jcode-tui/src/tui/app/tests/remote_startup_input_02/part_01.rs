@@ -579,104 +579,104 @@ fn test_remote_mixed_catalog_keeps_jcode_subscription_separate_from_other_provid
     // empty home, which is what the sibling subscription-catalog test already
     // does for exactly this reason.
     with_temp_jcode_home(|| {
-    crate::auth::AuthStatus::invalidate_cache();
-    clear_persisted_test_ui_state();
-    crate::tui::ui::clear_test_render_state_for_tests();
+        crate::auth::AuthStatus::invalidate_cache();
+        clear_persisted_test_ui_state();
+        crate::tui::ui::clear_test_render_state_for_tests();
 
-    let mut app = create_test_app();
-    app.is_remote = true;
-    app.remote_provider_name = Some("Claude".to_string());
-    app.remote_available_entries = vec![
-        "claude-fable-5".to_string(),
-        "claude-opus-4-8".to_string(),
-        "gpt-5.5".to_string(),
-        "gpt-5.6-sol".to_string(),
-        "deepseek/deepseek-v4-pro".to_string(),
-    ];
-    app.remote_model_options = vec![
-        crate::provider::ModelRoute {
-            model: "claude-fable-5".to_string(),
-            provider: "Anthropic".to_string(),
-            api_method: "claude-oauth".to_string(),
-            available: true,
-            detail: String::new(),
-            usage: None,
-            cheapness: None,
-        },
-        crate::provider::ModelRoute {
-            model: "claude-opus-4-8".to_string(),
-            provider: crate::subscription_catalog::JCODE_PROVIDER_DISPLAY_NAME.to_string(),
-            api_method: crate::subscription_catalog::JCODE_ROUTE_API_METHOD.to_string(),
-            available: true,
-            detail: "managed subscription route".to_string(),
-            usage: None,
-            cheapness: None,
-        },
-        crate::provider::ModelRoute {
-            model: "gpt-5.5".to_string(),
-            provider: crate::subscription_catalog::JCODE_PROVIDER_DISPLAY_NAME.to_string(),
-            api_method: crate::subscription_catalog::JCODE_ROUTE_API_METHOD.to_string(),
-            available: true,
-            detail: "managed subscription route".to_string(),
-            usage: None,
-            cheapness: None,
-        },
-        crate::provider::ModelRoute {
-            model: "gpt-5.6-sol".to_string(),
-            provider: crate::subscription_catalog::JCODE_PROVIDER_DISPLAY_NAME.to_string(),
-            api_method: crate::subscription_catalog::JCODE_ROUTE_API_METHOD.to_string(),
-            available: true,
-            detail: "managed subscription route".to_string(),
-            usage: None,
-            cheapness: None,
-        },
-        crate::provider::ModelRoute {
-            model: "deepseek/deepseek-v4-pro".to_string(),
-            provider: "auto".to_string(),
-            api_method: "openrouter".to_string(),
-            available: true,
-            detail: String::new(),
-            usage: None,
-            cheapness: None,
-        },
-    ];
+        let mut app = create_test_app();
+        app.is_remote = true;
+        app.remote_provider_name = Some("Claude".to_string());
+        app.remote_available_entries = vec![
+            "claude-fable-5".to_string(),
+            "claude-opus-4-8".to_string(),
+            "gpt-5.5".to_string(),
+            "gpt-5.6-sol".to_string(),
+            "deepseek/deepseek-v4-pro".to_string(),
+        ];
+        app.remote_model_options = vec![
+            crate::provider::ModelRoute {
+                model: "claude-fable-5".to_string(),
+                provider: "Anthropic".to_string(),
+                api_method: "claude-oauth".to_string(),
+                available: true,
+                detail: String::new(),
+                usage: None,
+                cheapness: None,
+            },
+            crate::provider::ModelRoute {
+                model: "claude-opus-4-8".to_string(),
+                provider: crate::subscription_catalog::JCODE_PROVIDER_DISPLAY_NAME.to_string(),
+                api_method: crate::subscription_catalog::JCODE_ROUTE_API_METHOD.to_string(),
+                available: true,
+                detail: "managed subscription route".to_string(),
+                usage: None,
+                cheapness: None,
+            },
+            crate::provider::ModelRoute {
+                model: "gpt-5.5".to_string(),
+                provider: crate::subscription_catalog::JCODE_PROVIDER_DISPLAY_NAME.to_string(),
+                api_method: crate::subscription_catalog::JCODE_ROUTE_API_METHOD.to_string(),
+                available: true,
+                detail: "managed subscription route".to_string(),
+                usage: None,
+                cheapness: None,
+            },
+            crate::provider::ModelRoute {
+                model: "gpt-5.6-sol".to_string(),
+                provider: crate::subscription_catalog::JCODE_PROVIDER_DISPLAY_NAME.to_string(),
+                api_method: crate::subscription_catalog::JCODE_ROUTE_API_METHOD.to_string(),
+                available: true,
+                detail: "managed subscription route".to_string(),
+                usage: None,
+                cheapness: None,
+            },
+            crate::provider::ModelRoute {
+                model: "deepseek/deepseek-v4-pro".to_string(),
+                provider: "auto".to_string(),
+                api_method: "openrouter".to_string(),
+                available: true,
+                detail: String::new(),
+                usage: None,
+                cheapness: None,
+            },
+        ];
 
-    app.open_model_picker();
+        app.open_model_picker();
 
-    assert_eq!(app.remote_model_options.len(), 5);
-    let jcode_routes = app
-        .remote_model_options
-        .iter()
-        .filter(|route| {
-            route.provider == crate::subscription_catalog::JCODE_PROVIDER_DISPLAY_NAME
-                && route.api_method == crate::subscription_catalog::JCODE_ROUTE_API_METHOD
-        })
-        .collect::<Vec<_>>();
-    assert_eq!(jcode_routes.len(), 3);
-    assert_eq!(
-        jcode_routes
+        assert_eq!(app.remote_model_options.len(), 5);
+        let jcode_routes = app
+            .remote_model_options
             .iter()
-            .map(|route| route.model.as_str())
-            .collect::<std::collections::BTreeSet<_>>(),
-        std::collections::BTreeSet::from(["claude-opus-4-8", "gpt-5.5", "gpt-5.6-sol",])
-    );
-    assert!(app.remote_model_options.iter().any(|route| {
-        route.model == "claude-fable-5"
-            && route.provider == "Anthropic"
-            && route.api_method == "claude-oauth"
-    }));
-    assert!(app.remote_model_options.iter().any(|route| {
-        route.model == "deepseek/deepseek-v4-pro"
-            && route.provider == "auto"
-            && route.api_method == "openrouter"
-    }));
-    assert!(app.remote_model_options.iter().all(|route| {
-        route.provider != crate::subscription_catalog::JCODE_PROVIDER_DISPLAY_NAME
-            || matches!(
-                route.model.as_str(),
-                "claude-opus-4-8" | "gpt-5.5" | "gpt-5.6-sol"
-            )
-    }));
+            .filter(|route| {
+                route.provider == crate::subscription_catalog::JCODE_PROVIDER_DISPLAY_NAME
+                    && route.api_method == crate::subscription_catalog::JCODE_ROUTE_API_METHOD
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(jcode_routes.len(), 3);
+        assert_eq!(
+            jcode_routes
+                .iter()
+                .map(|route| route.model.as_str())
+                .collect::<std::collections::BTreeSet<_>>(),
+            std::collections::BTreeSet::from(["claude-opus-4-8", "gpt-5.5", "gpt-5.6-sol",])
+        );
+        assert!(app.remote_model_options.iter().any(|route| {
+            route.model == "claude-fable-5"
+                && route.provider == "Anthropic"
+                && route.api_method == "claude-oauth"
+        }));
+        assert!(app.remote_model_options.iter().any(|route| {
+            route.model == "deepseek/deepseek-v4-pro"
+                && route.provider == "auto"
+                && route.api_method == "openrouter"
+        }));
+        assert!(app.remote_model_options.iter().all(|route| {
+            route.provider != crate::subscription_catalog::JCODE_PROVIDER_DISPLAY_NAME
+                || matches!(
+                    route.model.as_str(),
+                    "claude-opus-4-8" | "gpt-5.5" | "gpt-5.6-sol"
+                )
+        }));
     });
 }
 
@@ -1147,7 +1147,8 @@ fn test_typing_undo_preserves_space_and_cursor_edit_boundaries() {
     app.handle_key(KeyCode::Char('z'), KeyModifiers::SUPER)
         .unwrap();
     assert_eq!(app.input(), "가나");
-    app.handle_key(KeyCode::Left, KeyModifiers::empty()).unwrap();
+    app.handle_key(KeyCode::Left, KeyModifiers::empty())
+        .unwrap();
     app.handle_key(KeyCode::Char('다'), KeyModifiers::empty())
         .unwrap();
     app.handle_key(KeyCode::Char('z'), KeyModifiers::SUPER)
@@ -1179,11 +1180,14 @@ fn test_typing_undo_does_not_merge_paste_or_later_burst() {
 fn test_picker_swallowed_space_starts_new_typing_undo_step() {
     let mut app = create_test_app();
     for c in "/model".chars() {
-        app.handle_key(KeyCode::Char(c), KeyModifiers::empty()).unwrap();
+        app.handle_key(KeyCode::Char(c), KeyModifiers::empty())
+            .unwrap();
     }
     assert_eq!(app.input(), "/model ");
-    app.handle_key(KeyCode::Char(' '), KeyModifiers::empty()).unwrap();
-    app.handle_key(KeyCode::Char('g'), KeyModifiers::empty()).unwrap();
+    app.handle_key(KeyCode::Char(' '), KeyModifiers::empty())
+        .unwrap();
+    app.handle_key(KeyCode::Char('g'), KeyModifiers::empty())
+        .unwrap();
     assert_eq!(app.input(), "/model g");
     app.undo_input_change();
     assert_eq!(app.input(), "/model ");
@@ -2055,7 +2059,10 @@ fn test_interleave_submission_preserves_pending_images() {
 
     assert!(input::handle_enter(&mut app));
 
-    assert_eq!(app.interleave_message.as_deref(), Some("[image 1] describe this"));
+    assert_eq!(
+        app.interleave_message.as_deref(),
+        Some("[image 1] describe this")
+    );
     assert_eq!(app.interleave_images, images);
     assert!(app.pending_images.is_empty());
 }

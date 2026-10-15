@@ -230,9 +230,11 @@ fn append_cursor_acp_routes_appends_when_slot_is_populated() {
     let mut routes = Vec::new();
     append_cursor_acp_routes(&provider, &mut routes);
     assert!(!routes.is_empty(), "cursor-acp routes should be appended");
-    assert!(routes.iter().all(|r| {
-        r.provider == "Cursor ACP" && r.api_method == "cursor-acp" && r.available
-    }));
+    assert!(
+        routes
+            .iter()
+            .all(|r| { r.provider == "Cursor ACP" && r.api_method == "cursor-acp" && r.available })
+    );
     // The stub advertises two models.
     assert_eq!(routes.len(), 2);
 }
