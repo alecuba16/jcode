@@ -30,7 +30,7 @@ pub fn stderr_supports_ansi() -> bool {
 }
 
 #[cfg(all(test, not(windows)))]
-mod tests {
+mod ansi_tests {
     use std::io::IsTerminal;
 
     #[test]
