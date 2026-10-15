@@ -1326,6 +1326,7 @@ fn multi_provider_with_openrouter_stub(stub: Arc<dyn Provider>) -> MultiProvider
         startup_notices: RwLock::new(Vec::new()),
         initial_provider: None,
         routes_memo: std::sync::Mutex::new(None),
+        catalog_scope: next_catalog_scope(),
         post_auth_refreshes_pending: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
     }
 }
@@ -1377,7 +1378,7 @@ fn multi_provider_effective_reasoning_effort_none_without_slot() {
             effective: None,
         });
         // Active provider has no OpenRouter slot: delegation returns None.
-        let mut provider = multi_provider_with_openrouter_stub(stub);
+        let provider = multi_provider_with_openrouter_stub(stub);
         *provider.active.write().unwrap() = ActiveProvider::OpenAI;
 
         assert_eq!(provider.effective_reasoning_effort(), None);

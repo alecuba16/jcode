@@ -97,7 +97,6 @@ pub(super) fn command_suggestion_lines(
     lines
 }
 
-
 /// Build spans for a suggestion command, recoloring the characters that the
 /// fuzzy matcher aligned with the typed query. Falls back to a single
 /// unhighlighted span when there is nothing (useful) to highlight.

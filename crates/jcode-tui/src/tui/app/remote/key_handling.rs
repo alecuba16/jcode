@@ -1392,7 +1392,7 @@ pub(in crate::tui::app) async fn submit_remote_enter_input(
             let list: Vec<String> = efforts
                 .iter()
                 .map(|e| {
-                    if current.as_deref() == Some(e.as_str()) {
+                    if current == Some(e.as_str()) {
                         format!("{} <- current", app_mod::effort_display_label(e))
                     } else {
                         app_mod::effort_display_label(e).to_string()

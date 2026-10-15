@@ -140,8 +140,7 @@ async fn test_agent(
     let provider = Arc::new(TestEffortProvider::default());
     let provider_dyn: Arc<dyn Provider> = provider.clone();
     let registry = crate::tool::Registry::new(Arc::clone(&provider_dyn)).await;
-    let mut session =
-        crate::session::Session::create_with_id(session_id.to_string(), None, None);
+    let mut session = crate::session::Session::create_with_id(session_id.to_string(), None, None);
     session.model = Some(provider.model());
     let agent = Arc::new(Mutex::new(Agent::new_with_session(
         Arc::clone(&provider_dyn),
@@ -251,9 +250,7 @@ async fn automatic_failover_source_respects_current_api_pool_membership() {
         fn name(&self) -> &str {
             "OpenAI"
         }
-        fn active_resolved_credential(
-            &self,
-        ) -> Option<jcode_provider_core::ResolvedCredential> {
+        fn active_resolved_credential(&self) -> Option<jcode_provider_core::ResolvedCredential> {
             Some(jcode_provider_core::ResolvedCredential::ApiKey)
         }
         fn fork(&self) -> Arc<dyn Provider> {
@@ -283,7 +280,7 @@ async fn cycle_model_pushes_the_new_effective_reasoning_effort_to_clients() {
     let _guard = crate::storage::lock_test_env();
     let _runtime = IsolatedRuntimeDir::new();
 
-    let (provider, agent, client_event_tx, mut client_event_rx) =
+    let (_provider, agent, client_event_tx, mut client_event_rx) =
         test_agent("session_cycle_model_effort_push").await;
 
     agent
