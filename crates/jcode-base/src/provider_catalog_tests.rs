@@ -1028,7 +1028,23 @@ fn matrix_openai_compatible_localhost_override_allows_no_auth() {
         "JCODE_OPENAI_COMPAT_API_KEY_NAME",
         "JCODE_OPENAI_COMPAT_ENV_FILE",
         "JCODE_OPENAI_COMPAT_LOCAL_ENABLED",
+        "JCODE_NAMED_PROVIDER_PROFILE",
+        "JCODE_PROVIDER_PROFILE_ACTIVE",
+        "JCODE_PROVIDER_PROFILE_NAME",
+        "JCODE_OPENROUTER_ALLOW_NO_AUTH",
     ]);
+
+    // A named-profile shell holds the profile lock, and
+    // active_named_provider_profile_credential_source then shortcuts
+    // openai_compatible_profile_is_configured to the shell's credentials,
+    // skipping the localhost branch under test. Scrub the lock (and the
+    // allow-no-auth override, which makes any active profile count as
+    // configured) so the test exercises the localhost path. EnvGuard restores
+    // on drop.
+    crate::env::remove_var("JCODE_NAMED_PROVIDER_PROFILE");
+    crate::env::remove_var("JCODE_PROVIDER_PROFILE_ACTIVE");
+    crate::env::remove_var("JCODE_PROVIDER_PROFILE_NAME");
+    crate::env::remove_var("JCODE_OPENROUTER_ALLOW_NO_AUTH");
 
     crate::env::set_var("JCODE_OPENAI_COMPAT_API_BASE", "http://localhost:11434/v1");
     crate::env::remove_var("JCODE_OPENAI_COMPAT_API_KEY_NAME");
