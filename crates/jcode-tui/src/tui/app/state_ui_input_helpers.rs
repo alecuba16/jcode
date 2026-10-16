@@ -123,6 +123,10 @@ const REGISTERED_COMMANDS: &[RegisteredCommand] = &[
         "Show/toggle dimmed technical details on tool rows with an intent",
     ),
     RegisteredCommand::public(
+        "/latex",
+        "Show/change LaTeX math rendering (none/unicode/image)",
+    ),
+    RegisteredCommand::public(
         "/thinking-display",
         "Show/hide the model's thinking text (off/full/current)",
     ),
@@ -2030,6 +2034,7 @@ impl App {
                 | "/compact"
                 | "/compact mode"
                 | "/alignment"
+                | "/latex"
                 | "/compact-notifications"
                 | "/show-agentgrep-output"
                 | "/reasoning"

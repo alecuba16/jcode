@@ -874,38 +874,51 @@ fn deferred_render_sender() -> &'static mpsc::Sender<DeferredRenderTask> {
 }
 
 fn deferred_render_worker(rx: mpsc::Receiver<DeferredRenderTask>) {
-    for task in rx {
-        let register_active = match PENDING_RENDER_REQUESTS.lock() {
-            Ok(pending) => pending
-                .get(&task.render_key)
-                .map(|request| request.register_active),
-            Err(poisoned) => poisoned
-                .into_inner()
-                .get(&task.render_key)
-                .map(|request| request.register_active),
+    loop {
+        let Ok(task) = rx.recv() else {
+            return;
         };
-
-        let Some(register_active) = register_active else {
-            if let Ok(mut state) = MERMAID_DEBUG.lock() {
-                state.stats.deferred_worker_skips += 1;
-            }
-            continue;
-        };
-
-        if let Ok(mut state) = MERMAID_DEBUG.lock() {
-            state.stats.deferred_worker_renders += 1;
-        }
-
-        let profile = task.render_key.2;
-        let _ = with_preferred_aspect_ratio(profile.preferred_aspect_ratio(), || {
-            render_mermaid_sized_internal(&task.content, task.terminal_width, register_active)
-        });
-
-        if let Ok(mut pending) = PENDING_RENDER_REQUESTS.lock() {
-            pending.remove(&task.render_key);
+        render_deferred_task(task);
+        // Drain tasks queued while this one rendered before bumping the epoch:
+        // each bump invalidates prepared-body caches, so a burst of diagrams
+        // must not force one full transcript rebuild per diagram.
+        for next in rx.try_iter() {
+            render_deferred_task(next);
         }
         bump_deferred_render_epoch();
         crate::notify_render_completed();
+    }
+}
+
+fn render_deferred_task(task: DeferredRenderTask) {
+    let register_active = match PENDING_RENDER_REQUESTS.lock() {
+        Ok(pending) => pending
+            .get(&task.render_key)
+            .map(|request| request.register_active),
+        Err(poisoned) => poisoned
+            .into_inner()
+            .get(&task.render_key)
+            .map(|request| request.register_active),
+    };
+
+    let Some(register_active) = register_active else {
+        if let Ok(mut state) = MERMAID_DEBUG.lock() {
+            state.stats.deferred_worker_skips += 1;
+        }
+        return;
+    };
+
+    if let Ok(mut state) = MERMAID_DEBUG.lock() {
+        state.stats.deferred_worker_renders += 1;
+    }
+
+    let profile = task.render_key.2;
+    let _ = with_preferred_aspect_ratio(profile.preferred_aspect_ratio(), || {
+        render_mermaid_sized_internal(&task.content, task.terminal_width, register_active)
+    });
+
+    if let Ok(mut pending) = PENDING_RENDER_REQUESTS.lock() {
+        pending.remove(&task.render_key);
     }
 }
 
