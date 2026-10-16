@@ -764,6 +764,7 @@ async fn tool_parameter_descriptions_stay_under_token_cap() {
     // applet placement lists every shorthand so the model can pick a surface
     // without a round trip. desktop_selfdev action carries a safety warning:
     // killing the harness bridge by hand strands the calling session.
+    // macos_computer_use action/element document its live-machine safety surface.
     const EXEMPT: &[(&str, &str)] = &[
         (
             "todo",
@@ -771,6 +772,8 @@ async fn tool_parameter_descriptions_stay_under_token_cap() {
         ),
         ("applet", "$.properties.placement"),
         ("desktop_selfdev", "$.properties.action"),
+        ("macos_computer_use", "$.properties.action"),
+        ("macos_computer_use", "$.properties.element"),
     ];
 
     let provider: Arc<dyn Provider> = Arc::new(MockProvider);
