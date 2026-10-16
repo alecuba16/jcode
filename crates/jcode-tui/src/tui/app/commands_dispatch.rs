@@ -361,6 +361,7 @@ mod tests {
             "/rebuild",
             "/fast default on",
             "/agents",
+            "/latex unicode",
             "/subagent-model",
             "/transcript path",
             "!cat ~/.ssh/config",
