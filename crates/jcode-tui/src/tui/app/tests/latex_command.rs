@@ -41,7 +41,7 @@ fn latex_command_status_shows_current_mode_and_usage_hint() {
 }
 
 #[test]
-fn latex_command_switches_mode_persists_and_invalidates_caches() {
+fn latex_command_switches_mode_and_persists_it() {
     let _guard = crate::storage::lock_test_env();
     let temp = tempfile::tempdir().expect("tempdir");
     let prev_home = std::env::var_os("JCODE_HOME");

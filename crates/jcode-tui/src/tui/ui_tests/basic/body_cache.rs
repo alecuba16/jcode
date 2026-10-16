@@ -69,6 +69,35 @@ fn test_body_cache_state_keeps_multiple_width_entries() {
 }
 
 #[test]
+fn test_body_cache_state_does_not_reuse_a_different_latex_rendering_mode() {
+    let key = BodyCacheKey {
+        width: 80,
+        diff_mode: crate::config::DiffDisplayMode::Off,
+        messages_version: 1,
+        diagram_mode: crate::config::DiagramDisplayMode::None,
+        centered: false,
+        mermaid_aspect_bucket: None,
+        pin_images: true,
+        inline_images_visible: true,
+        images_signature: (0, 0),
+        expanded_images_version: 0,
+        swarm_members_signature: 0,
+        latex_rendering: crate::config::LatexRenderingMode::Image,
+    };
+    let resized_key = BodyCacheKey {
+        latex_rendering: crate::config::LatexRenderingMode::Unicode,
+        ..key.clone()
+    };
+    let prepared = make_prepared_messages_with_content_bytes(128, "latex-mode-");
+
+    let mut cache = BodyCacheState::default();
+    cache.insert(key, prepared, 1, 0);
+
+    assert!(cache.get_exact(&resized_key).is_none());
+    assert!(cache.best_incremental_base(&resized_key, 2).is_none());
+}
+
+#[test]
 fn test_body_cache_state_does_not_reuse_a_different_mermaid_aspect_profile() {
     let key = BodyCacheKey {
         width: 80,

@@ -878,19 +878,26 @@ fn deferred_render_worker(rx: mpsc::Receiver<DeferredRenderTask>) {
         let Ok(task) = rx.recv() else {
             return;
         };
-        render_deferred_task(task);
+        let mut rendered_any = render_deferred_task(task);
         // Drain tasks queued while this one rendered before bumping the epoch:
         // each bump invalidates prepared-body caches, so a burst of diagrams
         // must not force one full transcript rebuild per diagram.
         for next in rx.try_iter() {
-            render_deferred_task(next);
+            rendered_any |= render_deferred_task(next);
         }
-        bump_deferred_render_epoch();
-        crate::notify_render_completed();
+        // Skip tasks (pending request already gone) never changed render
+        // output, so an all-skipped batch must not invalidate anything.
+        if rendered_any {
+            bump_deferred_render_epoch();
+            crate::notify_render_completed();
+        }
     }
 }
 
-fn render_deferred_task(task: DeferredRenderTask) {
+/// Render one deferred task. Returns false when the task was skipped because
+/// its pending request is gone (stale geometry the UI already abandoned);
+/// a skipped task must not count as a completed render for wakeup purposes.
+fn render_deferred_task(task: DeferredRenderTask) -> bool {
     let register_active = match PENDING_RENDER_REQUESTS.lock() {
         Ok(pending) => pending
             .get(&task.render_key)
@@ -905,7 +912,7 @@ fn render_deferred_task(task: DeferredRenderTask) {
         if let Ok(mut state) = MERMAID_DEBUG.lock() {
             state.stats.deferred_worker_skips += 1;
         }
-        return;
+        return false;
     };
 
     if let Ok(mut state) = MERMAID_DEBUG.lock() {
@@ -920,6 +927,7 @@ fn render_deferred_task(task: DeferredRenderTask) {
     if let Ok(mut pending) = PENDING_RENDER_REQUESTS.lock() {
         pending.remove(&task.render_key);
     }
+    true
 }
 
 pub(crate) fn is_likely_stream_update(previous: &str, next: &str) -> bool {
