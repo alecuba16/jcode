@@ -35,6 +35,7 @@ pub(super) fn ssh_unsupported_command(input: &str) -> bool {
             | "/keys"
             | "/keybindings"
             | "/alignment"
+            | "/latex"
             | "/reasoning"
             | "/thinking"
             | "/thinking-display"
@@ -287,7 +288,14 @@ mod tests {
         use crate::tui::app::{input, tests::create_test_app};
         let mut app = create_test_app();
         app.is_remote = true;
-        for command in ["/config init", "/logout", "/save test", "/reload", "/git"] {
+        for command in [
+            "/config init",
+            "/logout",
+            "/save test",
+            "/reload",
+            "/git",
+            "/latex unicode",
+        ] {
             assert!(super::dispatch_local_command(&mut app, command));
             assert!(
                 app.display_messages

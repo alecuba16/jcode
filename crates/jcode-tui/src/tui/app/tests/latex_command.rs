@@ -187,3 +187,28 @@ fn latex_command_save_is_shadowed_by_env_override() {
     }
     crate::config::Config::invalidate_cache();
 }
+
+/// `/help latex` must show the detailed topic, not the unknown-command error.
+/// Registered commands are expected to carry a help entry.
+#[test]
+fn latex_help_topic_shows_command_details() {
+    let mut app = create_test_app();
+    app.input = "/help latex".to_string();
+    app.submit_input();
+
+    let msg = app
+        .display_messages()
+        .last()
+        .expect("missing help response");
+    assert_eq!(msg.role, "system");
+    assert!(
+        msg.content.contains("/latex none|unicode|image"),
+        "help topic must list the modes, got: {}",
+        msg.content
+    );
+    assert!(
+        msg.content.contains("JCODE_LATEX_RENDERING"),
+        "help topic must mention the env override, got: {}",
+        msg.content
+    );
+}
