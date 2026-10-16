@@ -385,7 +385,15 @@ fn auth_issue_runtime_display_name_tracks_direct_compatible_profiles() {
         "JCODE_RUNTIME_PROVIDER",
         "JCODE_NAMED_PROVIDER_PROFILE",
         "JCODE_PROVIDER_PROFILE_ACTIVE",
+        "JCODE_PROVIDER_PROFILE_NAME",
     ]);
+    // A named-profile shell exports the profile lock, and
+    // apply_openai_compatible_profile_env skips env rewrites while it is held;
+    // without this scrub the test asserts against the shell's profile instead
+    // of the one applied below. EnvGuard restores on drop.
+    crate::env::remove_var("JCODE_NAMED_PROVIDER_PROFILE");
+    crate::env::remove_var("JCODE_PROVIDER_PROFILE_ACTIVE");
+    crate::env::remove_var("JCODE_PROVIDER_PROFILE_NAME");
 
     crate::env::set_var("JCODE_RUNTIME_PROVIDER", "azure-openai");
     assert_eq!(runtime_provider_display_name("openrouter"), "Azure OpenAI");
