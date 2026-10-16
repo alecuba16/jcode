@@ -212,3 +212,67 @@ fn latex_help_topic_shows_command_details() {
         msg.content
     );
 }
+
+/// A failed save must not claim the session picked up the new mode: the live
+/// config only changes after a successful write, so the error must name the
+/// unchanged mode and no status notice may fire.
+#[test]
+fn latex_command_save_failure_keeps_mode_and_reports_it() {
+    #[cfg(unix)]
+    {
+        let _guard = crate::storage::lock_test_env();
+        let temp = tempfile::tempdir().expect("tempdir");
+        let prev_home = std::env::var_os("JCODE_HOME");
+        let prev_latex_env = std::env::var_os("JCODE_LATEX_RENDERING");
+        crate::env::set_var("JCODE_HOME", temp.path());
+        crate::env::remove_var("JCODE_LATEX_RENDERING");
+        crate::config::Config::invalidate_cache();
+
+        // Pre-create config.toml as a directory: fs::write inside save() then
+        // fails with EISDIR without touching the real home.
+        let config_path = crate::config::Config::path().expect("config path");
+        std::fs::create_dir_all(&config_path).expect("block config.toml with a directory");
+
+        let mut app = create_test_app();
+        app.input = "/latex none".to_string();
+        app.submit_input();
+
+        let msg = app
+            .display_messages()
+            .last()
+            .expect("missing error message");
+        assert_eq!(msg.role, "error");
+        assert!(
+            msg.content.contains("Failed to set LaTeX rendering to none"),
+            "error must name the rejected mode, got: {}",
+            msg.content
+        );
+        assert!(
+            msg.content.contains("keeps image"),
+            "error must state the unchanged mode, got: {}",
+            msg.content
+        );
+        assert_eq!(
+            crate::config::config().display.latex_rendering,
+            crate::config::LatexRenderingMode::Image,
+            "a failed save must leave the live config unchanged"
+        );
+        assert_ne!(
+            app.status_notice(),
+            Some("LaTeX rendering: none".to_string()),
+            "no success notice may fire when the save failed"
+        );
+
+        if let Some(prev_home) = prev_home {
+            crate::env::set_var("JCODE_HOME", prev_home);
+        } else {
+            crate::env::remove_var("JCODE_HOME");
+        }
+        if let Some(prev_latex) = prev_latex_env {
+            crate::env::set_var("JCODE_LATEX_RENDERING", prev_latex);
+        } else {
+            crate::env::remove_var("JCODE_LATEX_RENDERING");
+        }
+        crate::config::Config::invalidate_cache();
+    }
+}

@@ -3045,16 +3045,19 @@ pub(super) fn handle_latex_command(app: &mut App, trimmed: &str) -> bool {
         return true;
     };
 
-    app.set_status_notice(format!("LaTeX rendering: {}", mode.as_str()));
     match crate::config::Config::set_latex_rendering(mode) {
-        Ok(()) => app.push_display_message(DisplayMessage::system(format!(
-            "Saved LaTeX rendering: {}. New messages render with it immediately; older ones pick it up on the next re-render.",
-            mode.as_str()
-        ))),
+        Ok(()) => {
+            app.set_status_notice(format!("LaTeX rendering: {}", mode.as_str()));
+            app.push_display_message(DisplayMessage::system(format!(
+                "Saved LaTeX rendering: {}. New messages render with it immediately; older ones pick it up on the next re-render.",
+                mode.as_str()
+            )))
+        }
         Err(error) => app.push_display_message(DisplayMessage::error(format!(
-            "Applied LaTeX rendering {} for this session, but failed to save it as the default: {}",
+            "Failed to set LaTeX rendering to {}: {}. Nothing changed; the session keeps {}.",
             mode.as_str(),
-            error
+            error,
+            crate::config::config().display.latex_rendering.as_str()
         ))),
     }
     true
