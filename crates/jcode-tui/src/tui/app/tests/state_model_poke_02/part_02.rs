@@ -399,6 +399,23 @@ fn test_model_command_provider_suggestions_include_auto_for_normalized_bare_open
 #[test]
 fn test_remote_fallback_provider_suggestions_normalize_bare_openai_openrouter_routes() {
     with_temp_jcode_home(|| {
+        // The suggestion pipeline distinguishes "genuine openrouter" (provider
+        // routes like @OpenAI/@auto) from "openai-compatible gateway" (local
+        // @direct routes) by these runtime env vars. A developer shell running
+        // jcode with a named provider profile exports them, and inheriting that
+        // profile turns the expected openrouter suggestions into gateway
+        // routes, failing this test only for profile users. Clear them for the
+        // duration of the test and restore them afterwards.
+        let _profile_env = {
+            let guard = EnvRestoreGuard::capture([
+                "JCODE_OPENROUTER_API_BASE",
+                "JCODE_OPENROUTER_PROVIDER_FEATURES",
+            ]);
+            crate::env::remove_var("JCODE_OPENROUTER_API_BASE");
+            crate::env::remove_var("JCODE_OPENROUTER_PROVIDER_FEATURES");
+            crate::auth::AuthStatus::invalidate_cache();
+            guard
+        };
         let prev_api_key = std::env::var_os("OPENROUTER_API_KEY");
         crate::env::set_var("OPENROUTER_API_KEY", "test-openrouter-key");
         crate::auth::AuthStatus::invalidate_cache();
@@ -415,6 +432,8 @@ fn test_remote_fallback_provider_suggestions_normalize_bare_openai_openrouter_ro
         assert!(commands.contains(&"/model openai/gpt-5.4@auto"));
         assert!(commands.contains(&"/model openai/gpt-5.4@OpenAI"));
 
+        drop(_profile_env);
+        crate::auth::AuthStatus::invalidate_cache();
         if let Some(prev_api_key) = prev_api_key {
             crate::env::set_var("OPENROUTER_API_KEY", prev_api_key);
         } else {
