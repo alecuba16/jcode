@@ -2515,16 +2515,18 @@ fn streaming_guard_creates_visible_macos_sleep_assertion() {
             .collect::<Vec<_>>()
             .join("\n")
     };
-
-    {
-        let _streaming = StreamingGuard::new("session_power");
-
+    let pmset_assertions = || {
         let output = std::process::Command::new("pmset")
             .args(["-g", "assertions"])
             .output()
             .expect("pmset -g assertions should run on macOS");
         assert!(output.status.success(), "pmset should succeed");
-        let stdout = String::from_utf8_lossy(&output.stdout);
+        String::from_utf8_lossy(&output.stdout).into_owned()
+    };
+
+    {
+        let _streaming = StreamingGuard::new("session_power");
+        let stdout = pmset_assertions();
         assert!(
             own_lines(&stdout).contains(reason),
             "pmset output should show this process holding the streaming assertion; own lines were:\n{}",
@@ -2532,11 +2534,7 @@ fn streaming_guard_creates_visible_macos_sleep_assertion() {
         );
     }
 
-    let output = std::process::Command::new("pmset")
-        .args(["-g", "assertions"])
-        .output()
-        .expect("pmset -g assertions should run on macOS");
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stdout = pmset_assertions();
     assert!(
         !own_lines(&stdout).contains(reason),
         "streaming assertion should be released after guard drop; own lines were:\n{}",
