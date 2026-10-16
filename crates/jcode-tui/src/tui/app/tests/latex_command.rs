@@ -1,7 +1,8 @@
 // `/latex` status, mode switching, and persistence. The command must show the
 // current mode, accept aliases (raw/off for none, text/terminal for unicode),
 // reject junk with usage, and persist the choice to config.toml so the next
-// session keeps it. Env overrides must win over the persisted file value.
+// session keeps it. JCODE_LATEX_RENDERING overrides the file value, so every
+// test clears it (or pins it) to stay deterministic.
 
 #[test]
 fn latex_command_status_shows_current_mode_and_usage_hint() {
@@ -9,7 +10,7 @@ fn latex_command_status_shows_current_mode_and_usage_hint() {
     let temp = tempfile::tempdir().expect("tempdir");
     let prev_home = std::env::var_os("JCODE_HOME");
     crate::env::set_var("JCODE_HOME", temp.path());
-    crate::env::remove_var("JCODE_DISPLAY_LATEX");
+    crate::env::remove_var("JCODE_LATEX_RENDERING");
     crate::config::Config::invalidate_cache();
 
     let mut app = create_test_app();
@@ -45,9 +46,9 @@ fn latex_command_switches_mode_and_persists_it() {
     let _guard = crate::storage::lock_test_env();
     let temp = tempfile::tempdir().expect("tempdir");
     let prev_home = std::env::var_os("JCODE_HOME");
-    let prev_latex_env = std::env::var_os("JCODE_DISPLAY_LATEX");
+    let prev_latex_env = std::env::var_os("JCODE_LATEX_RENDERING");
     crate::env::set_var("JCODE_HOME", temp.path());
-    crate::env::remove_var("JCODE_DISPLAY_LATEX");
+    crate::env::remove_var("JCODE_LATEX_RENDERING");
     crate::config::Config::invalidate_cache();
 
     let mut app = create_test_app();
@@ -93,9 +94,9 @@ fn latex_command_switches_mode_and_persists_it() {
         crate::env::remove_var("JCODE_HOME");
     }
     if let Some(prev_latex) = prev_latex_env {
-        crate::env::set_var("JCODE_DISPLAY_LATEX", prev_latex);
+        crate::env::set_var("JCODE_LATEX_RENDERING", prev_latex);
     } else {
-        crate::env::remove_var("JCODE_DISPLAY_LATEX");
+        crate::env::remove_var("JCODE_LATEX_RENDERING");
     }
     crate::config::Config::invalidate_cache();
 }
@@ -105,9 +106,9 @@ fn latex_command_rejects_unknown_mode_with_usage() {
     let _guard = crate::storage::lock_test_env();
     let temp = tempfile::tempdir().expect("tempdir");
     let prev_home = std::env::var_os("JCODE_HOME");
-    let prev_latex_env = std::env::var_os("JCODE_DISPLAY_LATEX");
+    let prev_latex_env = std::env::var_os("JCODE_LATEX_RENDERING");
     crate::env::set_var("JCODE_HOME", temp.path());
-    crate::env::remove_var("JCODE_DISPLAY_LATEX");
+    crate::env::remove_var("JCODE_LATEX_RENDERING");
     crate::config::Config::invalidate_cache();
 
     let mut app = create_test_app();
@@ -136,9 +137,53 @@ fn latex_command_rejects_unknown_mode_with_usage() {
         crate::env::remove_var("JCODE_HOME");
     }
     if let Some(prev_latex) = prev_latex_env {
-        crate::env::set_var("JCODE_DISPLAY_LATEX", prev_latex);
+        crate::env::set_var("JCODE_LATEX_RENDERING", prev_latex);
     } else {
-        crate::env::remove_var("JCODE_DISPLAY_LATEX");
+        crate::env::remove_var("JCODE_LATEX_RENDERING");
+    }
+    crate::config::Config::invalidate_cache();
+}
+/// The env override wins over the persisted file value: the save still writes
+/// the file, but the live config keeps serving the env mode.
+#[test]
+fn latex_command_save_is_shadowed_by_env_override() {
+    let _guard = crate::storage::lock_test_env();
+    let temp = tempfile::tempdir().expect("tempdir");
+    let prev_home = std::env::var_os("JCODE_HOME");
+    let prev_latex_env = std::env::var_os("JCODE_LATEX_RENDERING");
+    crate::env::set_var("JCODE_HOME", temp.path());
+    crate::env::set_var("JCODE_LATEX_RENDERING", "unicode");
+    crate::config::Config::invalidate_cache();
+
+    let mut app = create_test_app();
+    app.input = "/latex none".to_string();
+    app.submit_input();
+
+    // The file must record what the user asked for, even though the env var
+    // keeps shadowing the live config.
+    let config_path = crate::config::Config::path().expect("config path");
+    let raw = std::fs::read_to_string(&config_path).expect("read config back");
+    assert!(
+        raw.contains("latex_rendering = \"none\""),
+        "save must write the requested mode to config.toml, got: {}",
+        raw
+    );
+    // The live config still serves the env override, not the saved value.
+    assert_eq!(
+        crate::config::config().display.latex_rendering,
+        crate::config::LatexRenderingMode::Unicode,
+        "JCODE_LATEX_RENDERING must keep winning over the saved file value"
+    );
+
+    if let Some(prev_home) = prev_home {
+        crate::env::set_var("JCODE_HOME", prev_home);
+    } else {
+        crate::env::remove_var("JCODE_HOME");
+    }
+    if let Some(prev_latex) = prev_latex_env {
+        crate::env::set_var("JCODE_LATEX_RENDERING", prev_latex);
+    } else {
+        crate::env::remove_var("JCODE_LATEX_RENDERING");
     }
     crate::config::Config::invalidate_cache();
 }
