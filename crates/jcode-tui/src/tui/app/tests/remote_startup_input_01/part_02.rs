@@ -405,7 +405,9 @@ fn test_model_picker_copilot_models_have_copilot_route() {
     // named-profile runtime vars, which make every built-in profile look
     // configured when a `--provider-profile` session env leaks in. App
     // construction can re-apply the config's default provider profile, so
-    // scrub again right before opening the picker.
+    // scrub again right before opening the picker. `with_temp_jcode_home`
+    // already holds the shared env lock for the whole closure; the mutex is
+    // not reentrant, so no outer lock here.
     let _named_profile_guard = NamedProfileEnvGuard::new();
     with_temp_jcode_home(|| {
         let mut app = create_test_app();
@@ -437,7 +439,8 @@ fn test_model_picker_copilot_models_have_copilot_route() {
 
 #[test]
 fn test_model_picker_remote_comtegra_model_uses_comtegra_route_not_copilot() {
-    let prev_key = std::env::var("COMTEGRA_API_KEY").ok();
+    let _env_guard = crate::storage::lock_test_env();
+    let _restore = EnvRestoreGuard::capture(["COMTEGRA_API_KEY"]);
     crate::env::set_var("COMTEGRA_API_KEY", "test-key");
 
     let mut app = create_test_app();
@@ -445,11 +448,6 @@ fn test_model_picker_remote_comtegra_model_uses_comtegra_route_not_copilot() {
     app.remote_available_entries = vec!["glm-51-nvfp4".to_string()];
 
     app.open_model_picker();
-
-    match prev_key {
-        Some(value) => crate::env::set_var("COMTEGRA_API_KEY", value),
-        None => crate::env::remove_var("COMTEGRA_API_KEY"),
-    }
 
     let picker = app
         .inline_interactive_state

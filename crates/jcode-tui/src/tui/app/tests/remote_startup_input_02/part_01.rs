@@ -7,7 +7,9 @@ fn test_model_picker_copilot_selection_prefixes_model() {
     // named-profile runtime vars, which make every built-in profile look
     // configured when a `--provider-profile` session env leaks in. App
     // construction can re-apply the config's default provider profile, so
-    // scrub again right before opening the picker.
+    // scrub again right before opening the picker. `with_temp_jcode_home`
+    // already holds the shared env lock for the whole closure; the mutex is
+    // not reentrant, so no outer lock here.
     let _named_profile_guard = NamedProfileEnvGuard::new();
     with_temp_jcode_home(|| {
         let mut app = create_test_app();
