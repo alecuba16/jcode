@@ -70,7 +70,8 @@ fn spawn_detached_creates_new_session() {
         "child session should be readable before it exits"
     );
     assert_eq!(
-        child_sid as u32, child.id(),
+        child_sid as u32,
+        child.id(),
         "detached child should lead its own session"
     );
     assert_ne!(
