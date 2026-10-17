@@ -366,7 +366,6 @@ fn test_init_provider_jcode_delegates_runtime_profile_to_wrapper() {
         crate::subscription_catalog::JCODE_PROVIDER_DISPLAY_NAME
     );
 
-    assert_eq!(provider.name(), "Jcode Subscription");
     assert!(crate::subscription_catalog::is_runtime_mode_enabled());
     assert_eq!(
         std::env::var("JCODE_OPENROUTER_MODEL").ok().as_deref(),
