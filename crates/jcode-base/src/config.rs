@@ -706,6 +706,7 @@ impl Default for Config {
             sponsors: SponsorsConfig::default(),
             launch_hotkeys: LaunchHotkeysConfig::default(),
             desktop: None,
+            file_mention: FileMentionConfig::default(),
         }
     }
 }
