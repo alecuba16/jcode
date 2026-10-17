@@ -1241,9 +1241,12 @@ impl Provider for CursorAcpProvider {
         let mut guard = self.session.lock().await;
         let result = async {
             // Drop any existing Cursor ACP process so a refresh re-queries
-            // Cursor's live model catalog via a fresh `initialize` + `session/new`.
-            // Conversation context is owned by jcode and replayed in full on the
-            // next `complete()`, so dropping the Cursor-side session is safe.
+            // Cursor's live model catalog via a fresh `initialize` +
+            // `session/new`. The bootstrap guard only serializes concurrent
+            // prefetches, so each new trigger re-runs this teardown.
+            // Conversation context is owned by jcode and replayed in full on
+            // the next `complete()`, so dropping the Cursor-side session is
+            // safe.
             if let Some(mut process) = guard.take() {
                 process.shutdown().await;
             }

@@ -2300,14 +2300,12 @@ impl Provider for MultiProvider {
                 );
             };
             cursor_acp.set_model(&selection.model)?;
-            // Only mark the external provider active and trigger a catalog
-            // refresh (which re-spawns the ACP subprocess) when switching *to*
-            // cursor-acp from a different provider. When already on cursor-acp
-            // the model change is handled by set_model above and the running
-            // subprocess must not be restarted — restarting drops the
-            // Cursor-side session and forces a full re-initialize on the next
-            // prompt, which is unnecessary and disruptive when only the model
-            // changed.
+            // Only mark the provider active and trigger the catalog refresh
+            // (which re-spawns the ACP subprocess) when switching *to*
+            // cursor-acp; a same-provider model switch skips it here. That
+            // does not pin the subprocess: the next prompt's `complete`
+            // re-triggers the prefetch, which drops the Cursor-side session
+            // and re-runs the handshake.
             if self.active_external_provider().as_deref() != Some("cursor-acp") {
                 self.set_active_provider_external("cursor-acp");
                 self.invalidate_routes_memo();

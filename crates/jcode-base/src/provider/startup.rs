@@ -459,12 +459,12 @@ impl MultiProvider {
     /// discovery (or never, when the active provider already has cached
     /// models and the attach-time prefetch is skipped).
     ///
-    /// An in-flight guard prevents multiple concurrent prefetches: without it,
-    /// every call to `set_model`/`set_route_selection`/`complete` would spawn a
-    /// new prefetch that drops the running ACP subprocess and re-spawns it,
-    /// even when the provider is already cursor-acp. The guard is reset when
-    /// the spawned task completes (success or failure) so a later refresh can
-    /// proceed.
+    /// An in-flight guard prevents concurrent prefetches only: without it,
+    /// every call to `set_model`/`set_route_selection`/`complete` would spawn
+    /// an overlapping prefetch. It does not dedupe after completion — the
+    /// guard resets when the spawned task finishes, so the next trigger (the
+    /// next prompt's `complete`) drops the running ACP subprocess and re-runs
+    /// the full `initialize` + `session/new` handshake.
     pub(super) fn spawn_cursor_acp_catalog_refresh_if_needed(&self) {
         let Some(cursor_acp) = self.cursor_acp_provider() else {
             return;
