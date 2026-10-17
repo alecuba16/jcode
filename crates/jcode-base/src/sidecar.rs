@@ -208,8 +208,19 @@ impl Sidecar {
     }
 
     pub fn for_session(session: &crate::session::Session) -> Self {
-        let model = session
-            .effective_agent_model("memory", crate::config::Config::load().agents.memory_model);
+        // The Alt+M session marker wins over the `/agents memory` override and
+        // the config default; an empty marker means "nothing marked here" and
+        // falls through to the override chain unchanged.
+        let marked = session
+            .memory_model
+            .as_deref()
+            .and_then(|model| (!model.trim().is_empty()).then(|| model.to_string()));
+        let model = marked.or_else(|| {
+            session.effective_agent_model(
+                "memory",
+                crate::config::Config::load().agents.memory_model,
+            )
+        });
         let inherit = model.as_deref() == Some("inherit");
         let model = if inherit {
             session.model.clone()
@@ -1815,6 +1826,48 @@ mod tests {
         assert_eq!(
             Sidecar::for_session(&session).model_name(),
             "global-memory-model"
+        );
+    }
+    /// Alt+M writes `session.memory_model`; on the extraction path it must
+    /// outrank both the `/agents memory` override and the config default.
+    /// A missing or empty marker keeps the override chain unchanged.
+    #[test]
+    fn session_sidecar_memory_marker_beats_override_and_config() {
+        let _guard = crate::storage::lock_test_env();
+        let temp = tempfile::TempDir::new().expect("create temp jcode home");
+        let _home = EnvVarGuard::set_path("JCODE_HOME", temp.path());
+        std::fs::write(
+            temp.path().join("config.toml"),
+            "[agents]\nmemory_model = \"global-memory-model\"\n",
+        )
+        .unwrap();
+        crate::config::invalidate_config_cache();
+        crate::provider::set_active_provider(std::sync::Arc::new(SwitchableProvider(
+            std::sync::Mutex::new("coordinator-model".into()),
+        )));
+        let mut session =
+            crate::session::Session::create_with_id("sidecar_memory_marker".into(), None, None);
+        session.save_prepared().unwrap();
+        session
+            .set_agent_model_override("memory", Some("override-memory-model".into()))
+            .unwrap();
+
+        session.memory_model = Some("marker-memory-model".into());
+        assert_eq!(
+            Sidecar::for_session(&session).model_name(),
+            "marker-memory-model"
+        );
+
+        session.memory_model = Some(String::new());
+        assert_eq!(
+            Sidecar::for_session(&session).model_name(),
+            "override-memory-model"
+        );
+
+        session.memory_model = None;
+        assert_eq!(
+            Sidecar::for_session(&session).model_name(),
+            "override-memory-model"
         );
     }
     /// With NO OpenAI/Claude credentials, the sidecar must select the live
