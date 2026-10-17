@@ -45,6 +45,10 @@ const ACP_READ_TIMEOUT: Duration = Duration::from_secs(120);
 /// failures. Only the tail is kept so memory stays bounded even if the
 /// subprocess writes a large volume of diagnostic output.
 const STDERR_TAIL_BYTES: usize = 8192;
+/// Grace period for the subprocess to exit after SIGTERM before we escalate
+/// to SIGKILL. Small on purpose: only needs to cover Cursor flushing its
+/// session state, not a model round-trip (compare ACP_HANDSHAKE_TIMEOUT).
+const ACP_SHUTDOWN_GRACE: Duration = Duration::from_secs(3);
 
 /// Process-wide shared model catalog for Cursor ACP. Every provider instance
 /// (original, forks, new sessions) shares this Arc so a prefetch on any one
@@ -423,7 +427,10 @@ struct AcpProcess {
 
 impl Drop for AcpProcess {
     fn drop(&mut self) {
+        // Backstop: shutdown() does graceful teardown; the try_wait here
+        // collects the zombie start_kill would otherwise leave behind.
         let _ = self.child.start_kill();
+        let _ = self.child.try_wait();
     }
 }
 
@@ -435,6 +442,7 @@ impl AcpProcess {
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
+            .kill_on_drop(true)
             .spawn()
             .with_context(|| {
                 format!(
@@ -513,6 +521,38 @@ impl AcpProcess {
             }
         })?;
         Ok(process)
+    }
+
+    /// SIGTERM, bounded wait, then SIGKILL; reaps on both paths so no
+    /// zombie outlives the provider. Prefer over Drop where an async ctx exists.
+    async fn shutdown(&mut self) {
+        if self.child.try_wait().ok().flatten().is_some() {
+            return; // already exited and reaped
+        }
+        // Close stdin first so a well-behaved ACP server sees EOF and can
+        // exit on its own without any signal.
+        let _ = self.stdin.shutdown().await;
+        #[cfg(unix)]
+        if let Some(pid) = self.child.id() {
+            // libc kill is the workspace-wide way to send SIGTERM (see
+            // jcode-base background.rs); start_kill is SIGKILL-only.
+            unsafe {
+                libc::kill(pid as libc::pid_t, libc::SIGTERM);
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            // Windows has no SIGTERM; tokio's kill (TerminateProcess) is the
+            // closest available graceful signal.
+            let _ = self.child.start_kill();
+        }
+        if timeout(ACP_SHUTDOWN_GRACE, self.child.wait())
+            .await
+            .is_err()
+        {
+            let _ = self.child.start_kill();
+            let _ = self.child.wait().await;
+        }
     }
 
     /// Return the captured stderr tail for inclusion in error messages.
@@ -1065,8 +1105,10 @@ impl CursorAcpProvider {
             Ok::<(), anyhow::Error>(())
         }
         .await;
-        if result.is_err() {
-            guard.take();
+        if result.is_err()
+            && let Some(mut process) = guard.take()
+        {
+            process.shutdown().await;
         }
         result
     }
@@ -1202,15 +1244,19 @@ impl Provider for CursorAcpProvider {
             // Cursor's live model catalog via a fresh `initialize` + `session/new`.
             // Conversation context is owned by jcode and replayed in full on the
             // next `complete()`, so dropping the Cursor-side session is safe.
-            guard.take();
+            if let Some(mut process) = guard.take() {
+                process.shutdown().await;
+            }
             let process = self.ensure_process(&mut guard).await?;
             self.configure_process(process).await?;
             self.with_state(process);
             Ok::<(), anyhow::Error>(())
         }
         .await;
-        if result.is_err() {
-            guard.take();
+        if result.is_err()
+            && let Some(mut process) = guard.take()
+        {
+            process.shutdown().await;
         }
         result
     }
@@ -2396,5 +2442,59 @@ mod tests {
         assert_eq!(string_value(Some(&Value::Null)), None);
         // None → None.
         assert_eq!(string_value(None), None);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn shutdown_reaps_fake_acp_child_without_leaving_a_zombie() {
+        with_shared_state_lock_async(async {
+            // The fake ACP parks after stdin EOF and flushes a marker from its
+            // SIGTERM trap: the marker proves the grace path ran (SIGKILL
+            // alone leaves none), and the second prefetch completing proves
+            // the child was reaped. No direct waitpid check: the pid never
+            // leaves AcpProcess.
+            let marker = std::env::temp_dir().join(format!(
+                "jcode-cursor-acp-shutdown-test-{}.txt",
+                std::process::id()
+            ));
+            let _ = std::fs::remove_file(&marker);
+            let marker_arg = marker.to_string_lossy().into_owned();
+            let script = r#"
+    marker="$1"
+    trap 'printf flushed > "$marker"; exit 0' TERM
+    while IFS= read -r line; do
+      id=$(printf '%s\n' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+      case "$line" in
+        *'"method":"initialize"'*)
+          printf '{"jsonrpc":"2.0","id":%s,"result":{"agentCapabilities":{"promptCapabilities":{"image":false}}}}\n' "$id"
+          ;;
+        *'"method":"session/new"'*)
+          printf '%s\n' '{"jsonrpc":"2.0","id":'"$id"',"result":{"sessionId":"reap-sess","models":{"currentModelId":"gpt-5.3-codex","availableModels":["gpt-5.3-codex"]},"configOptions":[{"id":"model","category":"model","currentValue":"gpt-5.3-codex","options":[{"value":"gpt-5.3-codex"}]}]}}'
+          ;;
+      esac
+    done
+    # stdin EOF: park so only the SIGTERM trap can exit the process.
+    while :; do sleep 1; done
+"#;
+            let provider = CursorAcpProvider::with_command(CursorAcpCommand::new(
+                "sh",
+                ["-c", script, "sh", &marker_arg],
+            ));
+            provider.prefetch_models().await.unwrap();
+
+            // Refresh drops the live process through the graceful path.
+            provider.prefetch_models().await.unwrap();
+
+            // Grace path ran: the child saw SIGTERM and flushed its marker
+            // before exiting (SIGKILL would have left no marker).
+            assert_eq!(
+                std::fs::read_to_string(&marker).unwrap_or_default(),
+                "flushed",
+                "SIGTERM grace path must run before any escalation"
+            );
+            let _ = std::fs::remove_file(&marker);
+
+        })
+        .await;
     }
 }

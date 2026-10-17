@@ -16,3 +16,7 @@ jcode-provider-core = { path = "../jcode-provider-core" }
 serde_json = "1"
 tokio = { version = "1", features = ["io-util", "macros", "process", "sync"] }
 tokio-stream = "0.1"
+
+[target.'cfg(unix)'.dependencies]
+# SIGTERM for the graceful subprocess shutdown path; start_kill is SIGKILL-only.
+libc = "0.2"

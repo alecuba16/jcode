@@ -4011,6 +4011,7 @@ dependencies = [
  "async-trait",
  "jcode-message-types",
  "jcode-provider-core",
+ "libc",
  "serde_json",
  "tokio",
  "tokio-stream",
