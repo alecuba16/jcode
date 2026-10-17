@@ -20,6 +20,9 @@ use tokio::sync::RwLock;
 use super::manager::McpManager;
 use super::protocol::{McpConfig, McpServerConfig};
 
+#[cfg(unix)]
+use std::os::fd::AsRawFd;
+
 /// Sink for the tool proxies a toggle adds or removes. Implemented by the
 /// app-core registry; keeping the trait here lets the shared toggle flow live
 /// in `jcode-base`.
@@ -58,39 +61,94 @@ impl TogglePersistence {
     }
 }
 
+/// Cross-process exclusive lock for the `mcp.json` read-modify-write in
+/// [`persist_toggle`]: the agent tool and a TUI window can be two separate
+/// processes, so an in-process mutex cannot serialize them.
+///
+/// `flock` on a sidecar lock file matches how the repo locks elsewhere
+/// (selfdev build lock, harness API bridge). The lock must not sit on
+/// `mcp.json` itself: `save_to_file` reopens the json path, so an fd locked
+/// on the old inode would stop guarding the live file. `LOCK_EX` blocks
+/// rather than skips because the write is fast and rare, and a dropped
+/// toggle would be worse than a millisecond wait.
+#[derive(Debug)]
+pub(crate) struct McpConfigLock {
+    #[cfg(unix)]
+    /// Held for its flock; dropping it closes the fd and releases the lock.
+    #[allow(dead_code)]
+    file: std::fs::File,
+}
+
+impl McpConfigLock {
+    #[cfg(unix)]
+    fn acquire(jcode_dir: &std::path::Path) -> anyhow::Result<Self> {
+        let lock_path = jcode_dir.join("mcp.json.lock");
+        std::fs::create_dir_all(jcode_dir)?;
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(false)
+            .open(&lock_path)?;
+        // SAFETY: flock on a valid fd; the kernel releases it on close, so a
+        // crashed holder never wedges the config.
+        let ret = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) };
+        if ret != 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        Ok(McpConfigLock { file })
+    }
+
+    #[cfg(not(unix))]
+    fn acquire(_jcode_dir: &std::path::Path) -> anyhow::Result<Self> {
+        // No advisory file locking here; the write stays unsynchronized, as
+        // it was before this lock existed.
+        Ok(McpConfigLock {})
+    }
+}
+
 /// Flip a server's enabled flag and persist the new config to
 /// `~/.jcode/mcp.json`. Sync and lock-free so both the async tool path and the
 /// sync TUI command can call it before doing their async work. The caller
 /// decides whether a save failure is fatal; the event log gets a
 /// `toggle_save_failed` warn entry either way.
+///
+/// The write is serialized across processes with [`McpConfigLock`], and the
+/// file is re-read *inside* the lock: a snapshot taken before acquiring could
+/// clobber a toggle another process persisted in between. The caller's
+/// in-memory config is untouched, matching its pre-lock behavior.
 pub fn persist_toggle(
     config: &McpConfig,
     server_name: &str,
     enable: bool,
 ) -> anyhow::Result<(McpServerConfig, TogglePersistence)> {
-    let mut server_config = config
-        .servers
-        .get(server_name)
-        .cloned()
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "Server '{}' not found in MCP config. Add it to ~/.jcode/mcp.json first.",
-                server_name
-            )
-        })?;
+    let mut server_config = config.servers.get(server_name).cloned().ok_or_else(|| {
+        anyhow::anyhow!(
+            "Server '{}' not found in MCP config. Add it to ~/.jcode/mcp.json first.",
+            server_name
+        )
+    })?;
 
     server_config.disabled = Some(!enable);
     server_config.enabled = Some(enable);
 
-    let mut saved_config = config.clone();
-    saved_config
-        .servers
-        .insert(server_name.to_string(), server_config.clone());
-
     let persistence = match crate::storage::jcode_dir() {
         Ok(jcode_dir) => {
             let mcp_path = jcode_dir.join("mcp.json");
-            match saved_config.save_to_file(&mcp_path) {
+            let mut saved_config = config.clone();
+            let lock_result = McpConfigLock::acquire(&jcode_dir)
+                .and_then(|_lock| {
+                    // Merge on top of the freshest on-disk state: `config`
+                    // may be older than what a concurrent process just wrote.
+                    if let Ok(disk) = McpConfig::load_from_file(&mcp_path) {
+                        saved_config = disk;
+                    }
+                    saved_config
+                        .servers
+                        .insert(server_name.to_string(), server_config.clone());
+                    saved_config.save_to_file(&mcp_path)
+                })
+                .map_err(|e: anyhow::Error| e.to_string());
+            match lock_result {
                 Ok(()) => TogglePersistence {
                     path: Some(mcp_path),
                     save_ok: true,
@@ -102,13 +160,13 @@ pub fn persist_toggle(
                         vec![
                             ("phase", "toggle_save_failed".to_string()),
                             ("server", server_name.to_string()),
-                            ("error", e.to_string()),
+                            ("error", e.clone()),
                         ],
                     );
                     TogglePersistence {
                         path: Some(mcp_path),
                         save_ok: false,
-                        save_error: Some(e.to_string()),
+                        save_error: Some(e),
                     }
                 }
             }
@@ -149,6 +207,10 @@ pub async fn connect_and_register(
 
     (tool_count, None)
 }
+
+#[cfg(test)]
+#[path = "mcp_toggle_tests.rs"]
+mod mcp_toggle_tests;
 
 /// Disconnect the (just disabled) server and unregister its tool proxies from
 /// the optional registrar. Connection errors are logged, not returned: the
