@@ -678,6 +678,7 @@ pub struct ServerConfig {
 impl Default for Config {
     fn default() -> Self {
         Self {
+            session: SessionConfig::default(),
             server: ServerConfig::default(),
             terminal_status_osc9: true,
             keybindings: KeybindingsConfig::default(),
