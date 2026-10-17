@@ -1990,6 +1990,12 @@ GPT:
 
 #[test]
 fn test_login_smoke_model_picker_renders_unstacked_provider_rows() {
+    // The picker's provider rows encode auth/config state read from the
+    // process-global environment; hold the env lock for the whole test so a
+    // sibling swapping JCODE_HOME or auth env cannot repaint rows mid-test.
+    // The render lock is taken per render inside, after this env lock, keeping
+    // the env-before-render order used across the suite.
+    let _env_guard = crate::storage::lock_test_env();
     let mut app = create_login_smoke_model_app();
     app.display_messages = vec![DisplayMessage::system("seed render state")];
     app.bump_display_messages_version();
