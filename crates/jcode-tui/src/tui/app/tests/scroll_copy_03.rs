@@ -1036,8 +1036,14 @@ fn repro_wheel_up_from_bottom_always_moves_viewport() {
                     failures.push(format!(
                         "h={height} pad={padding} streaming={streaming}: \
                          wheel-up did not move the viewport (max_scroll={max_scroll}, \
-                         offset={}, paused={})",
-                        app.scroll_offset, app.auto_scroll_paused
+                         offset={}, paused={}, resolved={}, vh={}, total={}, \
+                         notify={})",
+                        app.scroll_offset,
+                        app.auto_scroll_paused,
+                        crate::tui::ui::last_resolved_chat_scroll(),
+                        crate::tui::ui::last_chat_viewport_height(),
+                        crate::tui::ui::last_total_wrapped_lines(),
+                        crate::tui::TuiState::has_notification(&app)
                     ));
                 }
             }
