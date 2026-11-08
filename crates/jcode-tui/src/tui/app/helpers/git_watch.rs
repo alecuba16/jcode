@@ -52,6 +52,7 @@ pub(super) fn git_dir_event_relevant(name: &str) -> bool {
     !(name.ends_with(".lock") || name.starts_with("tmp_") || name == "ORIG_HEAD.lock")
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 /// Directories never worth watching even if not gitignored.
 #[cfg(target_os = "linux")]
 pub(super) fn skip_dir(name: &str) -> bool {

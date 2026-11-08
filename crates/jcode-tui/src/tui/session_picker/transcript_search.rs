@@ -663,6 +663,270 @@ fn search_workers(candidates: usize) -> usize {
     (cores / 2).clamp(1, 8).min(candidates.div_ceil(16).max(1))
 }
 
+/// Rank one shard of candidates, cheapest evidence first.
+fn search_shard(
+    candidates: Vec<Candidate>,
+    query: &str,
+    tokens: &[String],
+    idf: &[u32],
+    cancel: &AtomicBool,
+    sender: mpsc::Sender<(String, SearchRank)>,
+) {
+    // Finish the in-memory fuzzy pass before opening any large
+    // transcripts. Neither DP matching nor disk scans belong
+    // on the keystroke/render thread.
+    let mut scores = WordScores::default();
+    let mut fuzzy_candidates = Vec::new();
+    // Metadata matches whose words may have come from a user
+    // prompt rather than a sampled tool dump or reasoning.
+    let mut classify = Vec::new();
+    let phrase = PhraseQuery::new(query);
+    // Sessions whose later user prompts may contain the query
+    // as a retyped phrase, checked after cheaper evidence.
+    let mut phrase_jobs = Vec::new();
+    for (mut candidate, priority) in
+        prioritize_candidates(candidates, &phrase, &tokens, &idf, &cancel)
+    {
+        if cancel.load(Ordering::Relaxed) {
+            return;
+        }
+        if phrase.is_some() && !candidate.paths.is_empty() {
+            phrase_jobs.push((candidate.id.clone(), candidate.paths.clone(), priority));
+        }
+        if priority.opening_prompt > 0 {
+            let mut rank =
+                fuzzy_metadata_rank_with_scores(&candidate.search_index, &tokens, &mut scores);
+            rank.opening_prompt = priority.opening_prompt;
+            rank.intent_terms = priority.intent_terms;
+            rank.source_weight = priority.source_weight;
+            if sender.send((candidate.id.clone(), rank)).is_err() {
+                return;
+            }
+        }
+        candidate
+            .missing_tokens
+            .retain(|token| !candidate.search_index.contains(token.as_str()));
+        if candidate.missing_tokens.is_empty() {
+            let mut rank = literal_metadata_rank(&candidate.search_index, &tokens)
+                .with_exact_field(candidate.exact_field)
+                .with_source_weight(priority.source_weight);
+            rank.opening_prompt = priority.opening_prompt;
+            rank.intent_terms = priority.intent_terms;
+            if sender.send((candidate.id.clone(), rank)).is_err() {
+                return;
+            }
+            if !candidate.paths.is_empty()
+                && candidate
+                    .prior
+                    .iter()
+                    .any(|source| *source != Some(Source::User))
+            {
+                classify.push((candidate, rank));
+            }
+            continue;
+        }
+        fuzzy_candidates.push((candidate, priority));
+    }
+    let mut transcripts = Vec::new();
+    for (mut candidate, priority) in fuzzy_candidates {
+        if cancel.load(Ordering::Relaxed) {
+            return;
+        }
+        let mut fuzzy_missing = candidate.missing_tokens.clone();
+        let mut rank =
+            fuzzy_metadata_rank_with_scores(&candidate.search_index, &tokens, &mut scores)
+                .with_exact_field(candidate.exact_field);
+        rank.opening_prompt = priority.opening_prompt;
+        rank.intent_terms = priority.intent_terms;
+        rank.source_weight = priority.source_weight;
+        fuzzy_missing.retain(|token| !scores.matches_text(token, &candidate.search_index));
+        candidate.search_index = String::new();
+        if fuzzy_missing.is_empty() && sender.send((candidate.id.clone(), rank)).is_err() {
+            return;
+        }
+        if !candidate.paths.is_empty() {
+            transcripts.push((candidate, fuzzy_missing, rank));
+        }
+    }
+    // Fuzzy scoring adds evidence unavailable to the cheap
+    // pass. Use it to schedule disk reads, too.
+    transcripts.sort_by_key(|(_, _, rank)| std::cmp::Reverse(*rank));
+    let mut cold_transcripts = Vec::new();
+    let mut warm_fuzzy = Vec::new();
+    // Reuse resident token evidence before waiting for a typing
+    // pause. Never narrow fuzzy candidates using literal results.
+    for (candidate, fuzzy_missing, rank) in transcripts {
+        if cancel.load(Ordering::Relaxed) {
+            return;
+        }
+        match cached_paths_scan_with_scores(
+            &candidate.paths,
+            &tokens,
+            &candidate.prior,
+            &cancel,
+            false,
+            &mut scores,
+        ) {
+            Some(Some(evidence)) => {
+                if sender
+                    .send((
+                        candidate.id,
+                        SearchRank {
+                            literal: true,
+                            source_weight: source::weighted_source_weight(&evidence.sources, &idf),
+                            ..rank
+                        },
+                    ))
+                    .is_err()
+                {
+                    return;
+                }
+            }
+            Some(None) if fuzzy_missing.is_empty() => {}
+            Some(None) => warm_fuzzy.push((candidate, fuzzy_missing, rank)),
+            None => cold_transcripts.push((candidate, fuzzy_missing, rank)),
+        }
+    }
+    for (candidate, missing, rank) in warm_fuzzy {
+        let prior = fuzzy_prior(&tokens, &candidate.prior, &missing);
+        match cached_paths_scan_with_scores(
+            &candidate.paths,
+            &tokens,
+            &prior,
+            &cancel,
+            true,
+            &mut scores,
+        ) {
+            Some(Some(evidence)) => {
+                if sender
+                    .send((
+                        candidate.id,
+                        SearchRank {
+                            score: rank.score + evidence.score,
+                            source_weight: source::weighted_source_weight(&evidence.sources, &idf),
+                            ..rank
+                        },
+                    ))
+                    .is_err()
+                {
+                    return;
+                }
+            }
+            Some(None) => {}
+            None => cold_transcripts.push((candidate, missing, rank)),
+        }
+    }
+    let mut fuzzy_transcripts = Vec::new();
+    for (candidate, fuzzy_missing, rank) in cold_transcripts {
+        if cancel.load(Ordering::Relaxed) {
+            return;
+        }
+        if let Some(evidence) = scan_paths_with_scores(
+            &candidate.paths,
+            &tokens,
+            &candidate.prior,
+            &cancel,
+            ScanMode::Literal,
+            &mut scores,
+        ) {
+            if sender
+                .send((
+                    candidate.id,
+                    SearchRank {
+                        literal: true,
+                        source_weight: source::weighted_source_weight(&evidence.sources, &idf),
+                        ..rank
+                    },
+                ))
+                .is_err()
+            {
+                return;
+            }
+        } else if !fuzzy_missing.is_empty() {
+            fuzzy_transcripts.push((candidate, fuzzy_missing, rank));
+        }
+    }
+    // Read where metadata matches came from before slower
+    // typo-tolerant scans, so a session whose words the user
+    // typed rises above one where they only appear in tool output.
+    for (candidate, rank) in classify {
+        if cancel.load(Ordering::Relaxed) {
+            return;
+        }
+        if let Some(evidence) = scan_paths_with_scores(
+            &candidate.paths,
+            &tokens,
+            &candidate.prior,
+            &cancel,
+            ScanMode::Classify,
+            &mut scores,
+        ) {
+            let weight = source::weighted_source_weight(&evidence.sources, &idf);
+            if weight > rank.source_weight
+                && sender
+                    .send((candidate.id, rank.with_source_weight(weight)))
+                    .is_err()
+            {
+                return;
+            }
+        }
+    }
+    // Exact transcript hits must not wait behind typo-tolerant
+    // scans of unrelated, potentially very large sessions.
+    for (candidate, missing, rank) in fuzzy_transcripts {
+        if cancel.load(Ordering::Relaxed) {
+            return;
+        }
+        let prior = fuzzy_prior(&tokens, &candidate.prior, &missing);
+        if let Some(evidence) = scan_paths_with_scores(
+            &candidate.paths,
+            &tokens,
+            &prior,
+            &cancel,
+            ScanMode::Fuzzy,
+            &mut scores,
+        ) {
+            let rank = SearchRank {
+                score: rank.score + evidence.score,
+                source_weight: source::weighted_source_weight(&evidence.sources, &idf),
+                ..rank
+            };
+            if sender.send((candidate.id, rank)).is_err() {
+                return;
+            }
+        }
+    }
+    // A follow-up prompt the user retyped outranks scattered
+    // word hits, the same as a retyped opening prompt.
+    if let Some(phrase) = &phrase {
+        for (id, paths, priority) in phrase_jobs {
+            if cancel.load(Ordering::Relaxed) {
+                return;
+            }
+            let matched = user_prompt_phrase_rank(&paths, phrase, &cancel);
+            if matched > priority.opening_prompt
+                && sender
+                    .send((
+                        id,
+                        SearchRank {
+                            opening_prompt: matched,
+                            source_weight: priority.source_weight.max(
+                                source::weighted_source_weight(
+                                    &vec![Some(Source::User); tokens.len()],
+                                    &idf,
+                                ),
+                            ),
+                            ..priority
+                        },
+                    ))
+                    .is_err()
+            {
+                return;
+            }
+        }
+    }
+}
+
 /// Sessions decoded ahead of the first query, most recent first. Bounded so
 /// prefetch stays well inside the text cache's entry and byte budgets.
 const PREFETCH_SESSIONS: usize = 96;
