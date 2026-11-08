@@ -1187,10 +1187,11 @@ fn accepted_reload_recovery_continuation_marks_intent_delivered() -> anyhow::Res
             event_count
         );
         assert!(processing_done_rx.try_recv().is_err());
-        assert!(matches!(
-            client_event_rx.try_recv(),
-            Ok(ServerEvent::Done { id: 78 })
-        ));
+        let received = client_event_rx.try_recv();
+        assert!(
+            matches!(received, Ok(ServerEvent::Error { id: 78, .. })),
+            "invalid skill on a content-carrying send must terminal-error, got {received:?}"
+        );
         assert!(client_event_rx.try_recv().is_err());
 
         // Unrelated reminders and ordinary prompts (even the exact body) are

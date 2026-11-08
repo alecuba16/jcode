@@ -2384,6 +2384,17 @@ fn streaming_guard_creates_visible_macos_sleep_assertion() {
     let temp = tempfile::tempdir().expect("tempdir");
     let _home = EnvVarGuard::set("JCODE_HOME", temp.path());
 
+    // Other jcode processes on the same host legitimately hold streaming
+    // assertions. Scope every check to this process so ambient daemons do
+    // not fail the release phase.
+    let pid_line = format!("pid {}(", std::process::id());
+    let own_assertions = |stdout: &str| {
+        stdout
+            .lines()
+            .filter(|line| line.contains(&pid_line))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
     let reason = "Jcode streaming model response";
     {
         let _streaming = StreamingGuard::new("session_power");
@@ -2395,8 +2406,8 @@ fn streaming_guard_creates_visible_macos_sleep_assertion() {
         assert!(output.status.success(), "pmset should succeed");
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert!(
-            stdout.contains(reason),
-            "pmset output should show the streaming assertion; output was:\n{stdout}"
+            own_assertions(&stdout).contains(reason),
+            "pmset output should show this process's streaming assertion; output was:\n{stdout}"
         );
     }
 
@@ -2406,7 +2417,7 @@ fn streaming_guard_creates_visible_macos_sleep_assertion() {
         .expect("pmset -g assertions should run on macOS");
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        !stdout.contains(reason),
+        !own_assertions(&stdout).contains(reason),
         "streaming assertion should be released after guard drop; output was:\n{stdout}"
     );
 }
