@@ -52,6 +52,11 @@ struct ColorReports {
     held: Vec<Event>,
     body: String,
     started: Option<Instant>,
+    /// When the last report byte was held. Fragmented replies over ssh or a
+    /// slow pty can stretch the whole introducer far past the stray-input
+    /// timeout, so expiry measures inactivity, not total duration; a genuine
+    /// lone Escape with no follow-up byte still replays on the short clock.
+    last_held: Option<Instant>,
     ready: VecDeque<Event>,
     mode: Option<ThemeMode>,
     expecting_until: Option<Instant>,
@@ -71,6 +76,7 @@ impl ColorReports {
         }
         self.body.clear();
         self.started = None;
+        self.last_held = None;
         self.split_escape = false;
     }
 
@@ -81,7 +87,7 @@ impl ColorReports {
         } else {
             PREFIX_TIMEOUT
         };
-        self.started.map(|started| started + timeout)
+        self.last_held.map(|last| last + timeout)
     }
 
     fn expire(&mut self, now: Instant) {
@@ -112,6 +118,7 @@ impl ColorReports {
             if self.body.is_empty() && key.code == KeyCode::Char(']') && plain {
                 self.split_escape = false;
                 self.held.push(event);
+                self.last_held = Some(now);
                 return;
             }
             if self.recognized() && key.code == KeyCode::Char('\\') && plain {
@@ -139,12 +146,14 @@ impl ColorReports {
             self.started.get_or_insert(now);
             self.split_escape = true;
             self.held.push(event);
+            self.last_held = Some(now);
             return;
         }
         if key.code == KeyCode::Char(']') && key.modifiers == KeyModifiers::ALT {
             self.reset(!self.recognized());
             self.started = Some(now);
             self.held.push(event);
+            self.last_held = Some(now);
             return;
         }
         if self.started.is_none() {
@@ -165,6 +174,7 @@ impl ColorReports {
         {
             self.body.push(ch);
             self.held.push(event);
+            self.last_held = Some(now);
             let prefix = "11;rgb:".starts_with(&self.body) || "11;rgba:".starts_with(&self.body);
             if self.body.len() > MAX_REPORT_LEN || (!prefix && !self.recognized()) {
                 self.reset(!self.recognized());
