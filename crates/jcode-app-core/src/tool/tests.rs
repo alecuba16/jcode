@@ -717,6 +717,8 @@ async fn tool_descriptions_stay_under_token_cap() {
     // applet carries the whole view-node vocabulary inline, since the model has
     // no other way to learn which node types and props the host renders.
     // codemode documents its sandbox API.
+    // macos_computer_use carries the full desktop action catalog plus the
+    // live-machine safety preamble; discover loads the rest on demand.
     const EXEMPT: &[&str] = &[
         "integration_tools",
         "swarm",
@@ -725,6 +727,7 @@ async fn tool_descriptions_stay_under_token_cap() {
         "todo",
         "applet",
         "codemode",
+        "macos_computer_use",
     ];
 
     let provider: Arc<dyn Provider> = Arc::new(MockProvider);
@@ -807,6 +810,25 @@ async fn tool_parameter_descriptions_stay_under_token_cap() {
         ("todo", "$.properties.phases"),
         ("applet", "$.properties.placement"),
         ("desktop_selfdev", "$.properties.action"),
+        // macos_computer_use must enumerate its common actions inline: the
+        // model has no other way to know which verbs exist before discover.
+        ("macos_computer_use", "$.properties.action"),
+        ("macos_computer_use", "$.properties.element"),
+        // session_search include_tools governs log-noise defaults, pinned by
+        // session-picker tests.
+        ("session_search", "$.properties.include_tools"),
+        // todo waiting_on/owner spell the blocking semantics inline because
+        // misuse directly breaks the todo plan contract.
+        ("todo", "$.properties.add.items.properties.waiting_on"),
+        (
+            "todo",
+            "$.properties.phases.items.properties.lanes.items.properties.items.items.properties.waiting_on",
+        ),
+        (
+            "todo",
+            "$.properties.phases.items.properties.lanes.items.properties.owner",
+        ),
+        ("todo", "$.properties.update.items.properties.waiting_on"),
     ];
 
     let provider: Arc<dyn Provider> = Arc::new(MockProvider);
