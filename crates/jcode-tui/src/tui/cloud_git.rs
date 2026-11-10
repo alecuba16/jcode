@@ -374,6 +374,9 @@ fn probe_wake() -> &'static tokio::sync::Notify {
 /// Each probe spawns a shell and git (plus ssh for the cloud side). A
 /// backgrounded window shows nothing, so it only needs a slow safety refresh;
 /// regaining focus or a repo-mutating tool wakes the workers immediately.
+// The production probe loop is cfg(not(test)); under the test build nothing
+// reaches this helper, so silence dead-code there only.
+#[cfg_attr(test, allow(dead_code))]
 fn probe_period() -> Duration {
     // Seed once from the state carried across a client re-exec, so a window
     // that was already in the background keeps the slow period.
@@ -404,6 +407,7 @@ pub(crate) fn refresh_soon() {
 
 /// Sleep until the next SSH probe is due: the focus-dependent period, or an
 /// earlier wake from focus regain or a repo-mutating tool.
+#[cfg_attr(test, allow(dead_code))]
 pub(crate) async fn wait_for_next_probe() {
     let _ = tokio::time::timeout(probe_period(), probe_wake().notified()).await;
 }
