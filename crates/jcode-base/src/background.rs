@@ -146,16 +146,9 @@ impl BackgroundTaskManager {
         serde_json::from_str(&content).ok()
     }
 
-    /// Atomic temp-file + rename status write: a torn read of the status file
-    /// maps to "task does not exist" in `status()`/`wait()` callers.
-    async fn persist_status_file_atomically(path: &std::path::Path, status: &TaskStatusFile) {
+    async fn write_status_file(&self, path: &std::path::Path, status: &TaskStatusFile) {
         if let Ok(json) = serde_json::to_string_pretty(status) {
-            let tmp_path = path.with_extension("status.json.tmp");
-            if fs::write(&tmp_path, &json).await.is_ok()
-                && fs::rename(&tmp_path, path).await.is_err()
-            {
-                let _ = fs::remove_file(&tmp_path).await;
-            }
+            let _ = fs::write(path, json).await;
         }
     }
 
@@ -208,7 +201,7 @@ impl BackgroundTaskManager {
             terminal_event_record(final_status.clone(), exit_code, final_error.as_deref()),
         );
 
-        Self::persist_status_file_atomically(status_path, &status).await;
+        self.write_status_file(status_path, &status).await;
 
         let output_preview = if output.len() > 500 {
             format!("{}...", crate::util::truncate_str(&output, 500))
@@ -301,7 +294,7 @@ impl BackgroundTaskManager {
             &mut status,
             terminal_event_record(BackgroundTaskStatus::Failed, None, Some(&error)),
         );
-        Self::persist_status_file_atomically(status_path, &status).await;
+        self.write_status_file(status_path, &status).await;
 
         let output_path = self.output_path_for(&status.task_id);
         let output = fs::read_to_string(&output_path).await.unwrap_or_default();
@@ -412,7 +405,7 @@ impl BackgroundTaskManager {
             event_history: Vec::new(),
             stall_wake_seconds: None,
         };
-        Self::persist_status_file_atomically(&info.status_file, &status).await;
+        self.write_status_file(&info.status_file, &status).await;
         Self::publish_task_started_activity(
             &info.task_id,
             tool_name,
@@ -567,7 +560,9 @@ impl BackgroundTaskManager {
                 &mut final_status,
                 terminal_event_record(status.clone(), exit_code, error.as_deref()),
             );
-            Self::persist_status_file_atomically(&status_path_clone, &final_status).await;
+            if let Ok(json) = serde_json::to_string_pretty(&final_status) {
+                let _ = tokio::fs::write(&status_path_clone, json).await;
+            }
 
             // Drop this task from the live map now that its terminal status is
             // persisted. Order matters: pruning only after the status-file
@@ -791,7 +786,9 @@ impl BackgroundTaskManager {
                 &mut final_status,
                 terminal_event_record(status.clone(), exit_code, error.as_deref()),
             );
-            Self::persist_status_file_atomically(&status_path_clone, &final_status).await;
+            if let Ok(json) = serde_json::to_string_pretty(&final_status) {
+                let _ = tokio::fs::write(&status_path_clone, json).await;
+            }
 
             // Prune the live-map entry only after the terminal status file is
             // persisted (and after registration below, so instant completions
@@ -1185,7 +1182,7 @@ impl BackgroundTaskManager {
             &mut status,
             progress_event_record(event_kind, progress.clone()),
         );
-        Self::persist_status_file_atomically(&status_path, &status).await;
+        self.write_status_file(&status_path, &status).await;
 
         Bus::global().publish(BusEvent::BackgroundTaskProgress(
             BackgroundTaskProgressEvent {
@@ -1225,7 +1222,7 @@ impl BackgroundTaskManager {
             return None;
         }
         status.stall_wake_seconds = Some(stall_wake_seconds);
-        Self::persist_status_file_atomically(&status_path, &status).await;
+        self.write_status_file(&status_path, &status).await;
         drop(status_guard);
 
         let task_id_owned = task_id.to_string();
@@ -1354,7 +1351,7 @@ impl BackgroundTaskManager {
             && status.stall_wake_seconds.is_some()
         {
             status.stall_wake_seconds = None;
-            Self::persist_status_file_atomically(&status_path, &status).await;
+            self.write_status_file(&status_path, &status).await;
             return true;
         }
         disarmed
@@ -1391,7 +1388,7 @@ impl BackgroundTaskManager {
                 progress: event_progress,
             },
         );
-        Self::persist_status_file_atomically(&status_path, &status).await;
+        self.write_status_file(&status_path, &status).await;
 
         if let Some(task) = self.tasks.read().await.get(task_id) {
             let _ = task.delivery_flags.send((notify, wake));
@@ -1451,7 +1448,9 @@ impl BackgroundTaskManager {
                 &mut final_status,
                 terminal_event_record(event_status, event_exit_code, event_error.as_deref()),
             );
-            Self::persist_status_file_atomically(&task.status_path, &final_status).await;
+            if let Ok(json) = serde_json::to_string_pretty(&final_status) {
+                let _ = fs::write(&task.status_path, json).await;
+            }
 
             Ok(true)
         } else {
@@ -1498,7 +1497,7 @@ impl BackgroundTaskManager {
                 &mut status,
                 terminal_event_record(event_status, event_exit_code, event_error.as_deref()),
             );
-            Self::persist_status_file_atomically(&status_path, &status).await;
+            self.write_status_file(&status_path, &status).await;
             Ok(true)
         }
     }
@@ -1571,7 +1570,8 @@ impl BackgroundTaskManager {
                 &mut final_status,
                 terminal_event_record(BackgroundTaskStatus::Failed, None, Some(&error)),
             );
-            Self::persist_status_file_atomically(&task.status_path, &final_status).await;
+            self.write_status_file(&task.status_path, &final_status)
+                .await;
             finalized += 1;
         }
 
