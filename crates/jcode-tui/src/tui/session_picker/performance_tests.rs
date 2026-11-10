@@ -601,6 +601,15 @@ fn virtualized_session_list_matches_full_ratatui_list() {
     let sessions: Vec<_> = (0..18)
         .map(|id| {
             let mut item = session(id, 1);
+            // The age label renders in per-second buckets ("32s ago"), so a
+            // wall-clock tick between the virtualized render and the full render
+            // can flip rows byte-for-byte. Pin the clock-derived fields 90
+            // minutes into the past: the "1h ago" bucket spans 60-119 minutes,
+            // leaving 30 minutes of slack on each side of the bucket boundary.
+            let stale = chrono::Utc::now() - chrono::Duration::minutes(90);
+            item.created_at = stale;
+            item.last_message_time = stale;
+            item.last_active_at = Some(stale);
             if id % 3 == 0 {
                 item.first_user_prompt = None;
             }
