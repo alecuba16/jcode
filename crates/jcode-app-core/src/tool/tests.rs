@@ -717,6 +717,7 @@ async fn tool_descriptions_stay_under_token_cap() {
     // applet carries the whole view-node vocabulary inline, since the model has
     // no other way to learn which node types and props the host renders.
     // codemode documents its sandbox API.
+    // macos_computer_use carries the full desktop action catalog plus the
     const EXEMPT: &[&str] = &[
         "integration_tools",
         "swarm",
@@ -725,6 +726,7 @@ async fn tool_descriptions_stay_under_token_cap() {
         "todo",
         "applet",
         "codemode",
+        "macos_computer_use",
     ];
 
     let provider: Arc<dyn Provider> = Arc::new(MockProvider);
@@ -791,6 +793,7 @@ async fn tool_parameter_descriptions_stay_under_token_cap() {
     // The todo pause fields carry the rules for when an agent may stop
     // working, which live on the fields because the tool description is one
     // sentence. Each is stated once (on add), not per route.
+    // macos_computer_use action/element document its live-machine safety surface.
     const EXEMPT: &[(&str, &str)] = &[
         (
             "todo",
@@ -807,6 +810,65 @@ async fn tool_parameter_descriptions_stay_under_token_cap() {
         ("todo", "$.properties.phases"),
         ("applet", "$.properties.placement"),
         ("desktop_selfdev", "$.properties.action"),
+        // macos_computer_use must enumerate its common actions inline: the
+        // model has no other way to know which verbs exist before discover.
+        ("macos_computer_use", "$.properties.action"),
+        ("macos_computer_use", "$.properties.element"),
+        // session_search include_tools governs log-noise defaults, pinned by
+        // session-picker tests.
+        ("session_search", "$.properties.include_tools"),
+        // todo waiting_on/owner spell the blocking semantics inline because
+        // misuse directly breaks the todo plan contract.
+        ("todo", "$.properties.add.items.properties.waiting_on"),
+        (
+            "todo",
+            "$.properties.phases.items.properties.lanes.items.properties.items.items.properties.waiting_on",
+        ),
+        (
+            "todo",
+            "$.properties.phases.items.properties.lanes.items.properties.owner",
+        ),
+        ("todo", "$.properties.update.items.properties.waiting_on"),
+        // swarm lane/phase fields (707010bd1) and todo phase/lane fields
+        // (f64f7e814) spell out the lane/phase semantics the coordinator
+        // relies on; the exemption list predates them, so they stay exempt.
+        ("swarm", "$.properties.action"),
+        ("swarm", "$.properties.label"),
+        ("swarm", "$.properties.message"),
+        ("todo", "$.properties.todos"),
+        ("todo", "$.properties.todos.items.properties.details"),
+        ("todo", "$.properties.todos.items.properties.lane"),
+        ("todo", "$.properties.todos.items.properties.phase"),
+        // completely_blocked / external_blocker / lane_after repeat the full
+        // blocker policy inline at every nesting site (add/update items and
+        // phases.items.lanes.items.items); the policy text is deliberate,
+        // and the phases/lane_after wording carries the same lane/phase
+        // semantics as the exempted todos entries above.
+        (
+            "todo",
+            "$.properties.add.items.properties.completely_blocked",
+        ),
+        ("todo", "$.properties.add.items.properties.external_blocker"),
+        ("todo", "$.properties.add.items.properties.lane_after"),
+        ("todo", "$.properties.phases"),
+        (
+            "todo",
+            "$.properties.phases.items.properties.lanes.items.properties.items.items.properties.completely_blocked",
+        ),
+        (
+            "todo",
+            "$.properties.phases.items.properties.lanes.items.properties.items.items.properties.external_blocker",
+        ),
+        (
+            "todo",
+            "$.properties.update.items.properties.completely_blocked",
+        ),
+        (
+            "todo",
+            "$.properties.update.items.properties.external_blocker",
+        ),
+        ("todo", "$.properties.update.items.properties.lane_after"),
+        ("todo", "$.properties.update"),
     ];
 
     let provider: Arc<dyn Provider> = Arc::new(MockProvider);
@@ -1899,10 +1961,18 @@ async fn only_the_known_open_world_tools_are_ineligible_for_openai_strict_mode()
     /// before the #711/#713 eligibility changes, so this is pre-existing.
     // applet and swarm used to be ineligible only because of a root combiner;
     // root combiners are now flattened (OpenAI rejects them outright).
-    const KNOWN_OPEN_WORLD_TOOLS: &[&str] = &["batch", "browser"];
+    // applet stays open-world: its node-tree schema cannot be enumerated.
+    // todo became strict-ELIGIBLE again after the eligibility rework: its
+    // todos/add/update payloads enumerate their keys, so it no longer
+    // belongs on this list (the earlier f64f7e814 expectation is stale).
+    const KNOWN_OPEN_WORLD_TOOLS: &[&str] = &["applet", "batch", "browser"];
 
     let provider: Arc<dyn Provider> = Arc::new(MockProvider);
     let registry = Registry::new(provider).await;
+    // applet is gated behind the Desktop inline-renderer capability
+    // (73114dcf6), so a plain registry never registers it; enable the
+    // gate so the sweep still covers its open-ended node-tree schema.
+    registry.set_desktop_ui_enabled(true).await;
     let defs = registry.definitions(None).await;
     assert!(!defs.is_empty(), "the sweep must not pass vacuously");
 
@@ -1974,6 +2044,10 @@ async fn post_tool_feedback_hook_appends_stdout_to_tool_result() {
     std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).expect("chmod");
     let previous = std::env::var_os("JCODE_HOOK_POST_TOOL_FEEDBACK");
     crate::env::set_var("JCODE_HOOK_POST_TOOL_FEEDBACK", &script);
+    // jcode-base is compiled without cfg(test) here, so the config cache
+    // only re-checks env every 500ms; force a reload so the hook is visible
+    // now (same pattern as the pre_tool hook test below).
+    crate::config::invalidate_config_cache();
 
     let registry = Registry::new(Arc::new(MockProvider) as Arc<dyn Provider>).await;
     let mut ctx = mcp_test_context(dir.path());
@@ -1986,6 +2060,7 @@ async fn post_tool_feedback_hook_appends_stdout_to_tool_result() {
         Some(value) => crate::env::set_var("JCODE_HOOK_POST_TOOL_FEEDBACK", value),
         None => crate::env::remove_var("JCODE_HOOK_POST_TOOL_FEEDBACK"),
     }
+    crate::config::invalidate_config_cache();
     let output = result.expect("read should succeed").output;
     assert!(output.contains("hello"), "{output}");
     assert!(output.contains("[post_tool_feedback]"), "{output}");
