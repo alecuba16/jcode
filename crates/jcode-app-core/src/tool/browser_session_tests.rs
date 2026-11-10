@@ -4,7 +4,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::time::{Duration, Instant};
 
 struct BrowserFixture {
-    _env_guard: std::sync::MutexGuard<'static, ()>,
+    _env_guard: crate::storage::TestEnvGuard,
     temp: tempfile::TempDir,
     previous_home: Option<std::ffi::OsString>,
     previous_session: Option<std::ffi::OsString>,
@@ -16,7 +16,7 @@ impl BrowserFixture {
         Self::with_temp(guard, tempfile::tempdir().unwrap())
     }
 
-    fn with_temp(guard: std::sync::MutexGuard<'static, ()>, temp: tempfile::TempDir) -> Self {
+    fn with_temp(guard: crate::storage::TestEnvGuard, temp: tempfile::TempDir) -> Self {
         let previous_home = std::env::var_os("JCODE_HOME");
         let previous_session = std::env::var_os("BROWSER_SESSION");
         // macOS temp paths can start with /var, a symlink to /private/var.
@@ -209,7 +209,7 @@ async fn browser_session_stalled_startup_keeps_healthy_calls_and_workers_respons
         let _ = release_rx.recv_timeout(Duration::from_secs(3));
         std::fs::write(release_path, "ready").unwrap();
     });
-    let started = Instant::now();
+    let _startup_spawn = Instant::now();
     let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(5));
     let mut browser_calls = Vec::new();
     let mut bash_calls = Vec::new();
@@ -234,10 +234,14 @@ async fn browser_session_stalled_startup_keeps_healthy_calls_and_workers_respons
         .starts()
         .iter()
         .any(|(name, _)| name.contains("blocked"))
-        && started.elapsed() < Duration::from_secs(2)
+        && _startup_spawn.elapsed() < Duration::from_secs(2)
     {
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
+    // Responsiveness is measured from the moment a stalled startup is
+    // confirmed: daemon process spawn cost on a loaded host must not count
+    // against the healthy-call budget.
+    let started = Instant::now();
     let healthy = tokio::spawn(async move {
         firefox_run_bridge_command("getActiveTab", json!({}), Some("chrome"), &healthy_ctx).await
     });
