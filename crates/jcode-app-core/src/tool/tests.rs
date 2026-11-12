@@ -793,6 +793,7 @@ async fn tool_parameter_descriptions_stay_under_token_cap() {
     // The todo pause fields carry the rules for when an agent may stop
     // working, which live on the fields because the tool description is one
     // sentence. Each is stated once (on add), not per route.
+    // macos_computer_use action/element document its live-machine safety surface.
     const EXEMPT: &[(&str, &str)] = &[
         (
             "todo",
@@ -1995,6 +1996,12 @@ async fn post_tool_feedback_hook_appends_stdout_to_tool_result() {
     std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).expect("chmod");
     let previous = std::env::var_os("JCODE_HOOK_POST_TOOL_FEEDBACK");
     crate::env::set_var("JCODE_HOOK_POST_TOOL_FEEDBACK", &script);
+    // jcode-base is compiled without cfg(test) here, so the config cache only
+    // re-checks env every 500ms; force a reload so the hook is visible now
+    // (same trap the pre_tool hook test documents). Without this a sibling
+    // refreshing the cache inside the window leaves post_tool_feedback unset
+    // and the tool result without the hook suffix under parallel load.
+    crate::config::invalidate_config_cache();
 
     let registry = Registry::new(Arc::new(MockProvider) as Arc<dyn Provider>).await;
     let mut ctx = mcp_test_context(dir.path());
@@ -2007,6 +2014,7 @@ async fn post_tool_feedback_hook_appends_stdout_to_tool_result() {
         Some(value) => crate::env::set_var("JCODE_HOOK_POST_TOOL_FEEDBACK", value),
         None => crate::env::remove_var("JCODE_HOOK_POST_TOOL_FEEDBACK"),
     }
+    crate::config::invalidate_config_cache();
     let output = result.expect("read should succeed").output;
     assert!(output.contains("hello"), "{output}");
     assert!(output.contains("[post_tool_feedback]"), "{output}");

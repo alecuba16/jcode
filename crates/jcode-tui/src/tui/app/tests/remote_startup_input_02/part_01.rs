@@ -1,13 +1,20 @@
 #[test]
 fn test_model_picker_copilot_selection_prefixes_model() {
-    // Same ambient-profile hazard as
-    // test_model_picker_copilot_models_have_copilot_route: the firmware
-    // static catalog claims grok-code-fast-1 under an active named profile,
-    // so selection would produce a firmware: prefix instead of copilot:.
-    // Clearing the envs without the env lock races concurrent guard drops,
-    // so hold the lock via with_temp_jcode_home for the whole body.
+    // Temp home: route building consults configured OpenAI-compatible
+    // profiles (key env vars and env files under the shared test home), so
+    // without isolation the firmware static model list can claim
+    // grok-code-fast-1 and the copilot route disappears. The env guard scrubs
+    // named-profile runtime vars, which make every built-in profile look
+    // configured when a `--provider-profile` session env leaks in. App
+    // construction can re-apply the config's default provider profile, so
+    // scrub again right before opening the picker. Clearing the envs without
+    // the env lock races concurrent guard drops, and the mutex is not
+    // reentrant, so hold the lock for the whole body via
+    // `with_temp_jcode_home` and use no outer lock.
+    let _named_profile_guard = NamedProfileEnvGuard::new();
     with_temp_jcode_home(|| {
         let mut app = create_test_app();
+        let _inner_scrub = NamedProfileEnvGuard::new();
         configure_test_remote_models_with_copilot(&mut app);
 
         app.open_model_picker();

@@ -399,16 +399,21 @@ fn test_remote_catalog_activity_notification_upserts_compact_row() {
 
 #[test]
 fn test_model_picker_copilot_models_have_copilot_route() {
-    // An ambient named provider profile (a session started with a corporate
-    // OpenAI-compatible gateway) makes the picker include the built-in
-    // openai-compatible static catalogs, so firmware claims grok-code-fast-1
-    // and the expected copilot route never appears. Clearing the env vars
-    // without the test env lock is not enough: a concurrent locked test's
-    // guard drop restores the ambient profile mid-window, so run the whole
-    // body under with_temp_jcode_home, which holds the lock and clears the
-    // profile envs for the duration.
+    // Temp home: route building consults configured OpenAI-compatible
+    // profiles (key env vars and env files under the shared test home), so
+    // without isolation the firmware static model list can claim
+    // grok-code-fast-1 and the copilot route disappears. The env guard scrubs
+    // named-profile runtime vars, which make every built-in profile look
+    // configured when a `--provider-profile` session env leaks in. App
+    // construction can re-apply the config's default provider profile, so
+    // scrub again right before opening the picker. Clearing the envs without
+    // the env lock races concurrent guard drops, and the mutex is not
+    // reentrant, so hold the lock for the whole body via
+    // `with_temp_jcode_home` and use no outer lock.
+    let _named_profile_guard = NamedProfileEnvGuard::new();
     with_temp_jcode_home(|| {
         let mut app = create_test_app();
+        let _inner_scrub = NamedProfileEnvGuard::new();
         configure_test_remote_models_with_copilot(&mut app);
 
         app.open_model_picker();
@@ -436,49 +441,49 @@ fn test_model_picker_copilot_models_have_copilot_route() {
 
 #[test]
 fn test_model_picker_remote_comtegra_model_uses_comtegra_route_not_copilot() {
-    // Same ambient-profile hazard as the copilot picker tests, plus the same
-    // guard-drop race: the profile envs must stay cleared for the whole
-    // picker build, so hold the test env lock via with_temp_jcode_home.
-    with_temp_jcode_home(|| {
-        let prev_key = std::env::var("COMTEGRA_API_KEY").ok();
-        crate::env::set_var("COMTEGRA_API_KEY", "test-key");
+    let _lock = crate::storage::lock_test_env();
+    let _provider_env = ProviderEnvGuard::clear();
+    let _restore = EnvRestoreGuard::capture([
+        "COMTEGRA_API_KEY",
+        "JCODE_NAMED_PROVIDER_PROFILE",
+        "JCODE_PROVIDER_PROFILE_ACTIVE",
+        "JCODE_PROVIDER_PROFILE_NAME",
+    ]);
+    crate::env::remove_var("JCODE_NAMED_PROVIDER_PROFILE");
+    crate::env::remove_var("JCODE_PROVIDER_PROFILE_ACTIVE");
+    crate::env::remove_var("JCODE_PROVIDER_PROFILE_NAME");
+    crate::env::set_var("COMTEGRA_API_KEY", "test-key");
 
-        let mut app = create_test_app();
-        app.is_remote = true;
-        app.remote_available_entries = vec!["glm-51-nvfp4".to_string()];
+    let mut app = create_test_app();
+    app.is_remote = true;
+    app.remote_available_entries = vec!["glm-51-nvfp4".to_string()];
 
-        app.open_model_picker();
+    app.open_model_picker();
 
-        match prev_key {
-            Some(value) => crate::env::set_var("COMTEGRA_API_KEY", value),
-            None => crate::env::remove_var("COMTEGRA_API_KEY"),
-        }
+    let picker = app
+        .inline_interactive_state
+        .as_ref()
+        .expect("model picker should be open");
+    let glm_entry = picker
+        .entries
+        .iter()
+        .find(|m| m.name == "glm-51-nvfp4")
+        .expect("glm-51-nvfp4 should be in picker");
 
-        let picker = app
-            .inline_interactive_state
-            .as_ref()
-            .expect("model picker should be open");
-        let glm_entry = picker
-            .entries
-            .iter()
-            .find(|m| m.name == "glm-51-nvfp4")
-            .expect("glm-51-nvfp4 should be in picker");
-
-        assert!(
-            glm_entry.options.iter().any(|r| {
-                r.provider == "Comtegra GPU Cloud"
-                    && r.api_method == "openai-compatible:comtegra"
-                    && r.available
-            }),
-            "glm route should be Comtegra/api key, got: {:?}",
-            glm_entry.options
-        );
-        assert!(
-            !glm_entry.options.iter().any(|r| r.api_method == "copilot"),
-            "glm route should not fall back to Copilot, got: {:?}",
-            glm_entry.options
-        );
-    });
+    assert!(
+        glm_entry.options.iter().any(|r| {
+            r.provider == "Comtegra GPU Cloud"
+                && r.api_method == "openai-compatible:comtegra"
+                && r.available
+        }),
+        "glm route should be Comtegra/api key, got: {:?}",
+        glm_entry.options
+    );
+    assert!(
+        !glm_entry.options.iter().any(|r| r.api_method == "copilot"),
+        "glm route should not fall back to Copilot, got: {:?}",
+        glm_entry.options
+    );
 }
 
 #[test]
