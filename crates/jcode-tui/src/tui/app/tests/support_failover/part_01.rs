@@ -424,7 +424,7 @@ fn clear_persisted_test_ui_state() {
         // per-run state, so drop it alongside the other ambient files. No
         // test hydrates across app instances from this home.
         let _ = std::fs::remove_file(
-            shared_test_jcode_home()
+            crate::storage::shared_test_jcode_home()
                 .join("config")
                 .join("jcode")
                 .join("remote_model_catalog_cache.json"),

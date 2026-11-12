@@ -484,7 +484,7 @@ mod settings_risk_gate {
     use crate::tui::app::commands_dispatch::dispatch_local_command;
     use crate::tui::app::tests::create_test_app;
 
-    fn lock_shared_state() -> std::sync::MutexGuard<'static, ()> {
+    fn lock_shared_state() -> crate::storage::TestEnvGuard {
         crate::storage::lock_test_env()
     }
 
@@ -624,7 +624,7 @@ mod settings_decisions {
     use crate::tui::app::commands_dispatch::dispatch_local_command;
     use crate::tui::app::tests::create_test_app;
 
-    fn lock_shared_state() -> std::sync::MutexGuard<'static, ()> {
+    fn lock_shared_state() -> crate::storage::TestEnvGuard {
         crate::storage::lock_test_env()
     }
 
