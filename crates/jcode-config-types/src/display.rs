@@ -158,6 +158,10 @@ pub struct DisplayConfig {
     /// float in the transcript margins like the other info widgets.
     #[serde(default = "default_true")]
     pub overview_pinned: bool,
+    /// Show the streaming tokens/sec row in the info panel and status line
+    /// (default: true). Set false to hide live throughput everywhere.
+    #[serde(default = "default_true")]
+    pub show_tps: bool,
 }
 
 /// Resume behavior for a session another local client window already shows.
@@ -263,6 +267,7 @@ impl Default for DisplayConfig {
             usage_display: "left".to_string(),
             single_overview: true,
             overview_pinned: true,
+            show_tps: true,
         }
     }
 }

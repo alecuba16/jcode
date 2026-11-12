@@ -206,6 +206,10 @@ usage_display = "left"
 # Env override: JCODE_SINGLE_OVERVIEW.
 single_overview = true
 
+# Show the streaming tokens/sec row in the info panel and status line
+# (default: true). Set false to hide live throughput everywhere.
+show_tps = true
+
 # Show thinking/reasoning content (default: true)
 show_thinking = true
 
