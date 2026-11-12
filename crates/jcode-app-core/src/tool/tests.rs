@@ -80,6 +80,7 @@ fn mcp_test_context(working_dir: &std::path::Path) -> ToolContext {
         tool_call_id: "mcp-call".to_string(),
         working_dir: Some(working_dir.to_path_buf()),
         stdin_request_tx: None,
+        decision_request_tx: None,
         graceful_shutdown_signal: None,
         execution_mode: ToolExecutionMode::Direct,
     }
@@ -475,6 +476,7 @@ async fn test_batch_resolves_function_namespaced_tools() {
         tool_call_id: "test".to_string(),
         working_dir: Some(std::env::temp_dir()),
         stdin_request_tx: None,
+        decision_request_tx: None,
         graceful_shutdown_signal: None,
         execution_mode: ToolExecutionMode::Direct,
     };
@@ -510,6 +512,7 @@ async fn test_batch_rejects_function_namespaced_batch_recursion() {
         tool_call_id: "test".to_string(),
         working_dir: Some(std::env::temp_dir()),
         stdin_request_tx: None,
+        decision_request_tx: None,
         graceful_shutdown_signal: None,
         execution_mode: ToolExecutionMode::Direct,
     };
@@ -540,6 +543,7 @@ async fn test_batch_resolves_oauth_names() {
         tool_call_id: "test".to_string(),
         working_dir: Some(temp_dir),
         stdin_request_tx: None,
+        decision_request_tx: None,
         graceful_shutdown_signal: None,
         execution_mode: ToolExecutionMode::Direct,
     };
@@ -564,6 +568,7 @@ async fn registry_execute_enforces_session_tool_policy_after_alias_resolution() 
         tool_call_id: "test".to_string(),
         working_dir: Some(temp_dir.clone()),
         stdin_request_tx: None,
+        decision_request_tx: None,
         graceful_shutdown_signal: None,
         execution_mode: ToolExecutionMode::Direct,
     };
@@ -614,6 +619,7 @@ async fn registry_execute_pre_tool_hook_blocks_and_allows() {
         tool_call_id: "test".to_string(),
         working_dir: Some(std::env::temp_dir()),
         stdin_request_tx: None,
+        decision_request_tx: None,
         graceful_shutdown_signal: None,
         execution_mode: ToolExecutionMode::Direct,
     };
@@ -717,6 +723,7 @@ async fn tool_descriptions_stay_under_token_cap() {
     // applet carries the whole view-node vocabulary inline, since the model has
     // no other way to learn which node types and props the host renders.
     // codemode documents its sandbox API.
+    // macos_computer_use carries the full desktop action catalog plus the
     const EXEMPT: &[&str] = &[
         "integration_tools",
         "swarm",
@@ -725,6 +732,7 @@ async fn tool_descriptions_stay_under_token_cap() {
         "todo",
         "applet",
         "codemode",
+        "macos_computer_use",
     ];
 
     let provider: Arc<dyn Provider> = Arc::new(MockProvider);
@@ -807,6 +815,25 @@ async fn tool_parameter_descriptions_stay_under_token_cap() {
         ("todo", "$.properties.phases"),
         ("applet", "$.properties.placement"),
         ("desktop_selfdev", "$.properties.action"),
+        // macos_computer_use must enumerate its common actions inline: the
+        // model has no other way to know which verbs exist before discover.
+        ("macos_computer_use", "$.properties.action"),
+        ("macos_computer_use", "$.properties.element"),
+        // session_search include_tools governs log-noise defaults, pinned by
+        // session-picker tests.
+        ("session_search", "$.properties.include_tools"),
+        // todo waiting_on/owner spell the blocking semantics inline because
+        // misuse directly breaks the todo plan contract.
+        ("todo", "$.properties.add.items.properties.waiting_on"),
+        (
+            "todo",
+            "$.properties.phases.items.properties.lanes.items.properties.items.items.properties.waiting_on",
+        ),
+        (
+            "todo",
+            "$.properties.phases.items.properties.lanes.items.properties.owner",
+        ),
+        ("todo", "$.properties.update.items.properties.waiting_on"),
     ];
 
     let provider: Arc<dyn Provider> = Arc::new(MockProvider);
@@ -1243,6 +1270,7 @@ async fn unknown_tool_error_lists_available_tools_and_suggestions() {
         tool_call_id: "test".to_string(),
         working_dir: None,
         stdin_request_tx: None,
+        decision_request_tx: None,
         graceful_shutdown_signal: None,
         execution_mode: ToolExecutionMode::Direct,
     };
@@ -1484,6 +1512,7 @@ async fn execute_big_output_in(session_id: &str, input: Value) -> String {
         tool_call_id: "test".to_string(),
         working_dir: Some(std::env::temp_dir()),
         stdin_request_tx: None,
+        decision_request_tx: None,
         graceful_shutdown_signal: None,
         execution_mode: ToolExecutionMode::Direct,
     };
@@ -1640,6 +1669,7 @@ async fn test_batch_guards_both_its_subcalls_and_its_own_aggregate() {
         tool_call_id: "test".to_string(),
         working_dir: Some(std::env::temp_dir()),
         stdin_request_tx: None,
+        decision_request_tx: None,
         graceful_shutdown_signal: None,
         execution_mode: ToolExecutionMode::Direct,
     };
