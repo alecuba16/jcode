@@ -1554,5 +1554,4 @@ fn recorded_rejection_overrides_supports_image_input() {
         );
     });
 }
-=======
 include!("tests/catalog_cursor_acp.rs");

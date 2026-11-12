@@ -531,4 +531,3 @@ fn test_alt_m_without_picker_still_toggles_side_panel() {
         );
     });
 }
-}
