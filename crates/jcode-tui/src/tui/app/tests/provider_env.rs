@@ -12,10 +12,29 @@ impl ProviderEnvGuard {
             "JCODE_OPENAI_COMPAT_DEFAULT_MODEL",
             "JCODE_OPENAI_COMPAT_LOCAL_ENABLED",
             "OPENAI_COMPAT_API_KEY",
+            "JCODE_PROVIDER_PROFILE_ACTIVE",
+            "JCODE_PROVIDER_PROFILE_NAME",
+            "JCODE_API_BASE",
+            "JCODE_API_KEY",
         ];
         for profile in crate::provider_catalog::openai_compatible_profiles() {
             if !keys.contains(&profile.api_key_env) {
                 keys.push(profile.api_key_env);
+            }
+        }
+        for key in [
+            "JCODE_OPENROUTER_API_BASE",
+            "JCODE_OPENROUTER_API_KEY_NAME",
+            "JCODE_OPENROUTER_ENV_FILE",
+            "JCODE_OPENROUTER_CACHE_NAMESPACE",
+            "JCODE_OPENROUTER_PROVIDER_FEATURES",
+            "JCODE_OPENROUTER_TRANSPORT_STATE",
+            "JCODE_OPENROUTER_ALLOW_NO_AUTH",
+            "JCODE_OPENROUTER_PROVIDER",
+            "JCODE_OPENROUTER_NO_FALLBACK",
+        ] {
+            if !keys.contains(&key) {
+                keys.push(key);
             }
         }
         let guard = Self(
