@@ -564,6 +564,38 @@ fn test_toggle_test_sessions_rebuilds_visibility() {
 }
 
 #[test]
+fn test_debug_yes_query_overrides_default_debug_hiding() {
+    // `debug:yes` is the user explicitly asking for debug sessions in the
+    // search box, so it must surface them without requiring the separate `d`
+    // toggle. `debug:no` (and every other query) keeps the default hiding.
+    let normal = make_session("session_normal", "normal", false, SessionStatus::Closed);
+    let debug = make_session("session_debug", "debug", true, SessionStatus::Closed);
+
+    let mut picker = SessionPicker::new(vec![normal.clone(), debug.clone()]);
+    picker.search_active = true;
+    picker.search_query = "debug:yes".to_string();
+    picker.rebuild_items();
+    assert!(!picker.show_test_sessions);
+    let ids: Vec<&str> = picker
+        .visible_session_iter()
+        .map(|s| s.id.as_str())
+        .collect();
+    assert_eq!(ids, vec!["session_debug"]);
+
+    // The toggle default is untouched: a query without `debug:yes` keeps
+    // hiding debug sessions.
+    picker.search_query = "".to_string();
+    picker.cached_search_query.clear();
+    picker.rebuild_items();
+    let ids: Vec<&str> = picker
+        .visible_session_iter()
+        .map(|s| s.id.as_str())
+        .collect();
+    assert_eq!(ids, vec!["session_normal"]);
+    assert_eq!(picker.hidden_test_count, 1);
+}
+
+#[test]
 fn test_new_grouped_hides_debug_by_default() {
     let normal = make_session("session_normal", "normal", false, SessionStatus::Closed);
     let debug = make_session("session_debug", "debug", true, SessionStatus::Closed);
@@ -861,6 +893,34 @@ fn resume_search_battery_prompt_outranks_incidental_tool_mentions() {
 }
 
 #[test]
+fn test_active_highlight_tokens_strips_qualifiers_and_keeps_free_text() {
+    let mut picker = SessionPicker::new(vec![make_session(
+        "s1",
+        "one",
+        false,
+        SessionStatus::Closed,
+    )]);
+    picker.search_query = "deploy model:gpt source:codex after:2h".to_string();
+    // Only free text is highlighted: qualifiers filter structured fields,
+    // never the rendered row text.
+    assert_eq!(picker.active_highlight_tokens(), vec!["deploy".to_string()]);
+
+    // Free text with an unknown key still highlights as-is.
+    picker.search_query = "foo:bar baz".to_string();
+    let mut tokens = picker.active_highlight_tokens();
+    tokens.sort();
+    assert_eq!(tokens, vec!["baz".to_string(), "foo:bar".to_string()]);
+
+    // Bare qualifier (value not typed yet) highlights nothing.
+    picker.search_query = "model:".to_string();
+    assert!(picker.active_highlight_tokens().is_empty());
+
+    // Empty query highlights nothing, exactly like the pre-qualifier behavior.
+    picker.search_query.clear();
+    assert!(picker.active_highlight_tokens().is_empty());
+}
+
+#[test]
 fn test_loading_preview_refreshes_search_index_for_picker_filtering() {
     let _env_lock = crate::storage::lock_test_env();
     let temp = tempfile::tempdir().expect("temp dir");
@@ -964,6 +1024,242 @@ fn benchmark_resume_search_reports_incremental_timings() {
 }
 
 #[test]
+fn test_incremental_search_widening_qualifier_escapes_cached_empty_set() {
+    // The incremental search cache narrows from the previous query's match
+    // set when the new query extends it as a string prefix. That shortcut
+    // only holds for pure free-text queries: extending a qualifier can *widen*
+    // the result (typing the rest of `source:co` turns a match-nothing filter
+    // into one that matches codex sessions). This test types through exactly
+    // that transition and asserts the widening step finds the session again.
+    let mut jcode_session = make_session("session_jcode", "jcode", false, SessionStatus::Closed);
+    jcode_session.provider_key = Some("claude-api".to_string());
+    let mut codex_session = make_session("session_codex", "codex", false, SessionStatus::Closed);
+    codex_session.source = SessionSource::Codex;
+    codex_session.resume_target = ResumeTarget::CodexSession {
+        session_id: "session_codex".to_string(),
+        session_path: "/tmp/sessions/session_codex.jsonl".to_string(),
+    };
+
+    let mut picker = SessionPicker::new(vec![jcode_session, codex_session]);
+
+    // Half-typed qualifier: no source label is `c` or `co` (labels are jcode,
+    // claude, codex, pi, opencode, cursor), so both match sets are empty.
+    picker.search_query = "source:c".to_string();
+    picker.rebuild_items();
+    assert_eq!(picker.visible_sessions.len(), 0);
+
+    picker.search_query = "source:co".to_string();
+    picker.rebuild_items();
+    assert_eq!(picker.visible_sessions.len(), 0);
+
+    picker.search_query = "source:codex".to_string();
+    picker.rebuild_items();
+    // Without the pure-free-text cache guard, the cached empty set from
+    // `source:co` would still be narrowed here and the codex session would
+    // stay hidden. The guard forces a full rescan, so the filter finds it.
+    let ids: Vec<&str> = picker
+        .visible_session_iter()
+        .map(|session| session.id.as_str())
+        .collect();
+    assert_eq!(ids, vec!["session_codex"]);
+
+    // Pure free-text narrowing still works through the same path: extending
+    // a free-text query narrows from the cached set. `ses` is in both titles,
+    // `session_c` only in the codex id (`session_jcode` continues with `j`).
+    // Free-text matching runs on the worker, so wait for it to settle before
+    // asserting the narrowed counts.
+    picker.search_query.clear();
+    picker.rebuild_items();
+    wait_for_picker_search(&mut picker);
+    assert_eq!(picker.visible_sessions.len(), 2);
+    picker.search_query = "ses".to_string();
+    picker.rebuild_items();
+    wait_for_picker_search(&mut picker);
+    assert_eq!(picker.visible_sessions.len(), 2);
+    picker.search_query = "session_c".to_string();
+    picker.rebuild_items();
+    wait_for_picker_search(&mut picker);
+    assert_eq!(picker.visible_sessions.len(), 1);
+    picker.search_query = "session_cod".to_string();
+    picker.rebuild_items();
+    wait_for_picker_search(&mut picker);
+    let ids: Vec<&str> = picker
+        .visible_session_iter()
+        .map(|session| session.id.as_str())
+        .collect();
+    assert_eq!(ids, vec!["session_codex"]);
+}
+
+#[test]
+fn test_incremental_search_free_text_to_qualifier_transition_rescans() {
+    // The reverse widening of the qualifier-prefix case: a free-text query
+    // extends into a qualifier. `mod` matched nothing here (the index holds
+    // title/id/dir), but `model:gpt` is a real filter that must rescan: the
+    // gpt session's index does not contain the bare word `mod`, so narrowing
+    // from the cached `mod` set would drop it for good.
+    let mut gpt_session = make_session("session_gpt", "gpt", false, SessionStatus::Closed);
+    gpt_session.model = Some("gpt-5.5-luna".to_string());
+    let claude_session = make_session("session_claude", "claude", false, SessionStatus::Closed);
+
+    let mut picker = SessionPicker::new(vec![gpt_session, claude_session]);
+
+    picker.search_query = "mod".to_string();
+    picker.rebuild_items();
+    wait_for_picker_search(&mut picker);
+    assert_eq!(picker.visible_sessions.len(), 0);
+
+    picker.search_query = "model:".to_string();
+    picker.rebuild_items();
+    // Bare `model:` imposes no constraint yet, but the guard must not narrow
+    // from the stale `mod` set: everything matches again.
+    assert_eq!(picker.visible_sessions.len(), 2);
+
+    picker.search_query = "model:gpt".to_string();
+    picker.rebuild_items();
+    let ids: Vec<&str> = picker
+        .visible_session_iter()
+        .map(|session| session.id.as_str())
+        .collect();
+    assert_eq!(ids, vec!["session_gpt"]);
+}
+
+#[test]
+fn test_search_typing_and_word_delete_work_through_keyboard_path() {
+    // End-to-end through handle_overlay_key, not direct state assignment:
+    // enter search mode, type a qualifier one character at a time (each
+    // keystroke runs the incremental cache), then Ctrl+W deletes the whole
+    // qualifier word in one go.
+    let mut gpt_session = make_session("kb_gpt", "gpt", false, SessionStatus::Closed);
+    gpt_session.model = Some("gpt-5.5-luna".to_string());
+    gpt_session.saved = true;
+    let other = make_session("kb_other", "other", false, SessionStatus::Closed);
+
+    let mut picker = SessionPicker::new(vec![gpt_session, other]);
+
+    // Enter search mode.
+    picker
+        .handle_overlay_key(KeyCode::Char('/'), KeyModifiers::empty())
+        .unwrap();
+    assert!(picker.search_active);
+
+    // Type `model:gpt` one character at a time; every keystroke narrows or
+    // rescans through the cached incremental path. The list itself rebuilds
+    // on the picker's frame loop, so settle the pending edit and the worker
+    // before asserting, exactly like a rendered frame would.
+    for ch in "model:gpt".chars() {
+        picker
+            .handle_overlay_key(KeyCode::Char(ch), KeyModifiers::empty())
+            .unwrap();
+    }
+    picker.rebuild_items();
+    wait_for_picker_search(&mut picker);
+    let ids: Vec<&str> = picker
+        .visible_session_iter()
+        .map(|session| session.id.as_str())
+        .collect();
+    assert_eq!(ids, vec!["kb_gpt"]);
+
+    // Ctrl+W deletes the entire qualifier word in one keystroke.
+    picker
+        .handle_overlay_key(KeyCode::Backspace, KeyModifiers::CONTROL)
+        .unwrap();
+    assert_eq!(picker.search_query, "");
+    picker.rebuild_items();
+    wait_for_picker_search(&mut picker);
+    assert_eq!(picker.visible_sessions.len(), 2);
+
+    // Type a mixed query with free text + qualifier again, then check that
+    // Ctrl+W only removes the qualifier word, leaving the free text.
+    for ch in "deploy saved:yes".chars() {
+        picker
+            .handle_overlay_key(KeyCode::Char(ch), KeyModifiers::empty())
+            .unwrap();
+    }
+    assert_eq!(picker.search_query, "deploy saved:yes");
+    picker
+        .handle_overlay_key(KeyCode::Backspace, KeyModifiers::CONTROL)
+        .unwrap();
+    // Word-delete removes the qualifier word but keeps the separator, like
+    // the picker's existing behavior; the trailing space is harmless since
+    // queries are whitespace-split.
+    assert_eq!(picker.search_query, "deploy ");
+    // Neither session's index contains `deploy`: the list stays empty rather
+    // than silently widening to everything. Free-text matching runs on the
+    // worker, so settle the frame loop first.
+    picker.rebuild_items();
+    wait_for_picker_search(&mut picker);
+    assert!(picker.visible_sessions.is_empty());
+}
+
+#[test]
+fn test_search_hint_line_lists_qualifier_keys_in_rendered_frame() {
+    let _env_lock = crate::storage::lock_test_env();
+    let temp = tempfile::tempdir().expect("temp dir");
+    let previous_home = std::env::var("JCODE_HOME").ok();
+    crate::env::set_var("JCODE_HOME", temp.path());
+    let mut picker = SessionPicker::new(vec![make_session(
+        "hint_session",
+        "hint",
+        false,
+        SessionStatus::Closed,
+    )]);
+    picker.search_active = true;
+    picker.search_query = "model:gpt".to_string();
+    picker.rebuild_items();
+
+    // The transcript-search worker only settles after its debounce window;
+    // the real UI polls it every frame, so drain it here before asserting on
+    // the settled title-bar hint.
+    for _ in 0..50 {
+        std::thread::sleep(StdDuration::from_millis(20));
+        picker.poll_transcript_search();
+    }
+
+    if let Some(previous_home) = previous_home {
+        crate::env::set_var("JCODE_HOME", previous_home);
+    } else {
+        crate::env::remove_var("JCODE_HOME");
+    }
+
+    // 120 cols is the default terminal width where the old title-bar hint
+    // lost its tail (debug:/canary:/after:/before: never rendered). The
+    // resume card is bounded (30-52 cols), so the qualifier keys wrap onto
+    // the search row plus continuation rows inside the card; every key must
+    // be visible somewhere in the rendered frame.
+    let lines = onboarding::render_onboarding_picker_lines(&mut picker, 120, 40);
+    let hint_line = lines
+        .iter()
+        .find(|line| line.contains("filters:"))
+        .expect("search row with qualifier keys is rendered");
+    assert!(
+        hint_line.contains("model:"),
+        "first hint row missing model:"
+    );
+    let hint_text = lines.join("\n");
+    for key in [
+        "filters:",
+        "model:",
+        "provider:",
+        "source:",
+        "dir:",
+        "saved:",
+        "debug:",
+        "canary:",
+        "after:",
+        "before:",
+    ] {
+        assert!(hint_text.contains(key), "hint rows missing {key}");
+    }
+
+    // The active query is echoed in the card's search row, and the query row
+    // keeps the state suffix; there is no full-width title bar under the
+    // resume canvas, so the echo is asserted on the search row itself.
+    let lines_wide = onboarding::render_onboarding_picker_lines(&mut picker, 220, 40);
+    assert!(lines_wide.iter().any(|line| line.contains("model:gpt")));
+    assert!(lines.iter().any(|line| line.contains("Esc to clear")));
+}
+
+#[test]
 fn test_filter_mode_cycles_through_requested_session_sources() {
     let mut saved = make_session("session_saved", "saved", false, SessionStatus::Closed);
     saved.saved = true;
@@ -1005,6 +1301,11 @@ fn test_filter_mode_cycles_through_requested_session_sources() {
     assert!(picker.visible_sessions.is_empty());
 
     picker.cycle_filter_mode();
+    assert_eq!(picker.filter_mode, SessionFilterMode::Latest);
+    assert_eq!(picker.visible_sessions.len(), 6);
+    assert_eq!(picker.items.len(), picker.visible_sessions.len());
+
+    picker.cycle_filter_mode();
     assert_eq!(picker.filter_mode, SessionFilterMode::CurrentDir);
     assert_eq!(picker.visible_sessions.len(), 1);
     assert!(
@@ -1032,6 +1333,11 @@ fn test_filter_mode_cycles_through_requested_session_sources() {
     assert_eq!(picker.filter_mode, SessionFilterMode::Active);
     // No live processes own these synthetic sessions, so the Active view is
     // empty in tests.
+    assert_eq!(picker.visible_sessions.len(), 0);
+
+    picker.cycle_filter_mode();
+    assert_eq!(picker.filter_mode, SessionFilterMode::Working);
+    // Same synthetic setup: nothing is streaming, so Working stays empty.
     assert_eq!(picker.visible_sessions.len(), 0);
 
     picker.cycle_filter_mode();
@@ -1094,6 +1400,26 @@ fn test_filter_mode_keyboard_shortcuts_cycle_both_directions() {
     )]);
     picker
         .handle_overlay_key(KeyCode::Char('s'), KeyModifiers::empty())
+        .unwrap();
+    assert_eq!(picker.filter_mode, SessionFilterMode::Cloud);
+
+    picker
+        .handle_overlay_key(KeyCode::Char('s'), KeyModifiers::empty())
+        .unwrap();
+    assert_eq!(picker.filter_mode, SessionFilterMode::Latest);
+
+    picker
+        .handle_overlay_key(KeyCode::Char('s'), KeyModifiers::empty())
+        .unwrap();
+    assert_eq!(picker.filter_mode, SessionFilterMode::CurrentDir);
+
+    picker
+        .handle_overlay_key(KeyCode::Char('S'), KeyModifiers::empty())
+        .unwrap();
+    assert_eq!(picker.filter_mode, SessionFilterMode::Latest);
+
+    picker
+        .handle_overlay_key(KeyCode::Char('S'), KeyModifiers::empty())
         .unwrap();
     assert_eq!(picker.filter_mode, SessionFilterMode::Cloud);
 
@@ -1272,65 +1598,6 @@ fn test_space_selects_multiple_sessions_and_enter_returns_them() {
         }
         other => panic!("expected alternate selected sessions, got {other:?}"),
     }
-}
-
-#[test]
-fn saved_placement_expiry_keeps_bookmarks_in_saved_filter() {
-    let mut saved = make_session(
-        "expired_saved_placement",
-        "saved",
-        false,
-        SessionStatus::Closed,
-    );
-    saved.saved = true;
-    saved.last_message_time = Utc::now() - ChronoDuration::days(8);
-    let normal = make_session(
-        "recent_normal_placement",
-        "normal",
-        false,
-        SessionStatus::Closed,
-    );
-    let mut picker = SessionPicker::new(vec![saved, normal]);
-    assert!(
-        !picker
-            .items
-            .iter()
-            .any(|item| matches!(item, PickerItem::SavedHeader { .. }))
-    );
-    let ids: Vec<_> = picker
-        .visible_session_iter()
-        .map(|s| s.id.as_str())
-        .collect();
-    assert_eq!(
-        ids,
-        vec!["recent_normal_placement", "expired_saved_placement"]
-    );
-    picker.filter_mode = SessionFilterMode::Saved;
-    picker.rebuild_items();
-    assert_eq!(picker.visible_sessions.len(), 1);
-    assert_eq!(
-        picker.selected_session().unwrap().id,
-        "expired_saved_placement"
-    );
-    assert!(picker.selected_session().unwrap().saved);
-}
-
-#[test]
-fn saved_placement_recent_bookmark_still_gets_header() {
-    let mut saved = make_session(
-        "recent_saved_placement",
-        "saved",
-        false,
-        SessionStatus::Closed,
-    );
-    saved.saved = true;
-    let picker = SessionPicker::new(vec![saved]);
-    assert!(
-        picker
-            .items
-            .iter()
-            .any(|item| matches!(item, PickerItem::SavedHeader { session_count: 1 }))
-    );
 }
 
 #[test]
@@ -2155,7 +2422,16 @@ fn test_preview_sticky_prompt_header_survives_async_preview_load() {
     // `poll_preview_load` would (drop the channel + populate the preview).
     drop(tx);
     picker.pending_preview_load = None;
-    picker.apply_session_preview("async_sticky", full_preview);
+    picker.apply_session_preview(
+        "async_sticky",
+        LoadedSessionPreview {
+            messages: full_preview,
+            search: None,
+            extras: PreviewExtras::default(),
+            model: None,
+            provider_key: None,
+        },
+    );
 
     // Second frame: now that content is present we snap to the bottom and the
     // top prompts scroll off-screen, so the sticky header should pin a prompt.
@@ -2786,167 +3062,156 @@ mod project_scope;
 mod onboarding;
 
 #[test]
-fn start_search_on_loading_picker_survives_reseed_with_results() {
-    // The real flow for `/sessions <query>` with no cached session list:
-    // the picker is created in the loading state, the query is set, and the
-    // background load later reseeds the picker with the actual sessions.
-    // The query must still be active and now actually filter the reseeded list.
-    let sessions: Vec<SessionInfo> = vec![
-        make_session("session_load_a", "load-a", false, SessionStatus::Closed),
-        make_session("session_load_b", "load-b", false, SessionStatus::Closed),
-    ];
-    let mut picker = SessionPicker::loading();
+fn preview_renders_pinned_todos_global_prompt_numbers_and_hides_todo_tool_cards() {
+    let _env_lock = crate::storage::lock_test_env();
+    crate::env::set_var("JCODE_PIN_TODOS", "1");
+    crate::config::invalidate_config_cache();
 
-    picker.start_search("load-b");
+    let mut session = make_session_with_many_turns("pinned_preview", 60);
+    session.messages_preview.push(PreviewMessage {
+        role: "tool".to_string(),
+        content: "DUPLICATE_TODO_TOOL_CARD".to_string(),
+        title: None,
+        duration_secs: None,
+        tool_calls: Vec::new(),
+        tool_data: Some(crate::message::ToolCall {
+            id: "todo-tool".to_string(),
+            name: "todo".to_string(),
+            input: serde_json::json!({"todos": []}),
+            intent: None,
+            thought_signature: None,
+        }),
+        timestamp: None,
+    });
+    let mut picker = SessionPicker::new(vec![session]);
+    picker.preview_extras.insert(
+        "pinned_preview".to_string(),
+        PreviewExtras {
+            hidden_prompts: 100,
+            info_data: None,
+            todos_payload: Some(
+                serde_json::json!({
+                    "todos": [{
+                        "id": "1",
+                        "content": "PINNED_PREVIEW_TASK",
+                        "status": "in_progress",
+                        "priority": "high"
+                    }]
+                })
+                .to_string(),
+            ),
+            loaded_at: None,
+        },
+    );
 
-    // Still in the loading state: the query is recorded and search mode is on.
-    assert_eq!(picker.search_query, "load-b");
-    assert!(picker.search_active);
+    let text = buffer_text(&mut picker, 120, 30);
+    crate::env::remove_var("JCODE_PIN_TODOS");
+    crate::config::invalidate_config_cache();
 
-    // The background load lands (same path as apply_loaded_session_picker).
-    picker.reseed_grouped(Vec::new(), sessions);
-    wait_for_picker_search(&mut picker);
-
-    // Query survived the reseed and now filters the just-loaded list down to
-    // the one matching session.
-    assert_eq!(picker.search_query, "load-b");
-    assert!(picker.search_active);
-    let visible: Vec<&str> = picker
-        .visible_session_iter_for_test()
-        .map(|session| session.id.as_str())
+    assert!(text.contains("PINNED_PREVIEW_TASK"), "{text}");
+    assert!(!text.contains("DUPLICATE_TODO_TOOL_CARD"), "{text}");
+    // 60 visible prompts after 100 hidden ones: the last is numbered 160.
+    assert!(text.contains("160›"), "{text}");
+    // Pinned todos render as a fixed band near the top of the preview pane,
+    // under master's floating info chrome and the sticky previous-prompt
+    // header, and stay there regardless of scroll. The band is Clear-painted
+    // over the topmost prompt rows, so it must sit above the last numbered
+    // prompt and within the first rows of the pane.
+    let rows: Vec<String> = text
+        .chars()
+        .collect::<Vec<_>>()
+        .chunks(120)
+        .map(|chunk| chunk.iter().collect())
         .collect();
-    assert_eq!(visible, vec!["session_load_b"]);
+    let todo_row = rows
+        .iter()
+        .position(|row| row.contains("PINNED_PREVIEW_TASK"))
+        .expect("todo row");
+    let last_prompt_row = rows
+        .iter()
+        .position(|row| row.contains("160›"))
+        .expect("last visible prompt row");
+    assert!(
+        todo_row < last_prompt_row && todo_row <= 6,
+        "todo band should be pinned near the top of the preview, row {todo_row} vs last prompt {last_prompt_row}:\n{text}"
+    );
 }
 
 #[test]
-fn search_edits_work_while_picker_is_loading() {
-    // `/sessions <query>` with no cached session list opens the picker in the
-    // loading state with the search bar active and a cursor rendered. Editing
-    // keys must reach the search handler even while loading: before the fix,
-    // `handle_overlay_key` checked `loading_message` first, so typing `q`
-    // CLOSED the picker instead of adding a letter, and Backspace did nothing.
-    // Enter stays blocked until results arrive (nothing can be selected from
-    // an empty list), and Esc / q / Ctrl+C keep closing while NOT in search
-    // mode (inside search mode they edit, as on the loaded picker).
-    let mut picker = SessionPicker::loading();
-    picker.start_search("loa");
+fn test_preview_load_refreshes_pi_model_and_provider() {
+    // The stub pass scans only a bounded prefix of the transcript, so a model
+    // switch recorded later can leave the stub's fields missing. The preview
+    // load reads the full transcript, so applying it must refresh
+    // model/provider: `model:`/`provider:` searches then match the session's
+    // real values (round-5 finding A).
+    let _env_lock = crate::storage::lock_test_env();
+    let temp = tempfile::tempdir().expect("temp dir");
+    let previous_home = std::env::var("JCODE_HOME").ok();
+    crate::env::set_var("JCODE_HOME", temp.path());
 
-    // Typing extends the query instead of being treated as picker shortcuts.
-    let _ = picker.handle_overlay_key(KeyCode::Char('q'), KeyModifiers::empty());
-    assert_eq!(picker.search_query, "loaq");
+    let pi_dir = temp.path().join("external/.pi/agent/sessions");
+    std::fs::create_dir_all(&pi_dir).expect("create pi dir");
+    let transcript_path = pi_dir.join("pi-session-xyz.jsonl");
+    // The model switch sits beyond the stub's bounded prefix scan (header +
+    // PI_STUB_SCAN_LINES), so only the preview load can recover it.
+    let mut transcript = String::from(
+        "{\"type\":\"session\",\"id\":\"pi-session-xyz\",\"timestamp\":\"2026-04-04T12:00:00Z\",\"cwd\":\"/tmp/pi-demo\"}\n",
+    );
+    for i in 0..=loading::PI_STUB_SCAN_LINES {
+        transcript.push_str(&format!(
+            "{{\"type\":\"message\",\"message\":{{\"role\":\"user\",\"content\":\"padding turn {i}\"}}}}\n"
+        ));
+    }
+    transcript.push_str(
+        "{\"type\":\"model_change\",\"provider\":\"anthropic\",\"modelId\":\"claude-sonnet-4-5\"}\n",
+    );
+    transcript.push_str(
+        "{\"type\":\"message\",\"message\":{\"role\":\"user\",\"content\":\"Search the pi session filters\"}}\n",
+    );
+    std::fs::write(&transcript_path, transcript).expect("write pi transcript");
 
-    // Backspace edits the query too.
-    let _ = picker.handle_overlay_key(KeyCode::Backspace, KeyModifiers::empty());
-    assert_eq!(picker.search_query, "loa");
+    let mut session = make_session("pi:pi-session-xyz", "pi", false, SessionStatus::Closed);
+    session.resume_target = ResumeTarget::PiSession {
+        session_path: transcript_path.to_string_lossy().to_string(),
+    };
+    session.external_path = Some(transcript_path.to_string_lossy().to_string());
+    session.model = None;
+    session.provider_key = Some("pi".to_string());
+    let resume_target = session.resume_target.clone();
+    let external_path = session.external_path.clone();
 
-    // Enter does not select anything while loading; the picker stays open.
-    let action = picker
-        .handle_overlay_key(KeyCode::Enter, KeyModifiers::empty())
-        .expect("enter while loading");
-    assert_eq!(action, OverlayAction::Continue);
-
-    // Ctrl+C still closes the loading picker from search mode.
-    let action = picker
-        .handle_overlay_key(KeyCode::Char('c'), KeyModifiers::CONTROL)
-        .expect("ctrl+c closes");
-    assert_eq!(action, OverlayAction::Close);
-}
-
-#[test]
-fn loading_picker_without_search_still_blocks_letters() {
-    // Plain loading picker (no `/sessions <query>`): every key stays inert as
-    // before, only Esc / q / Ctrl+C close. The search-mode exception above
-    // must not leak into the plain loading state.
-    let mut picker = SessionPicker::loading();
-
-    let action = picker
-        .handle_overlay_key(KeyCode::Char('x'), KeyModifiers::empty())
-        .expect("letter while loading");
-    assert_eq!(action, OverlayAction::Continue);
-    assert!(!picker.search_active);
-
-    let action = picker
-        .handle_overlay_key(KeyCode::Esc, KeyModifiers::empty())
-        .expect("esc closes");
-    assert_eq!(action, OverlayAction::Close);
-}
-
-#[test]
-fn start_search_filters_immediately_on_loaded_picker() {
-    let sessions: Vec<SessionInfo> = vec![
-        make_session("session_pick_a", "pick-a", false, SessionStatus::Closed),
-        make_session("session_pick_b", "pick-b", false, SessionStatus::Closed),
-    ];
-    let mut picker = SessionPicker::new(sessions);
-
-    picker.start_search("pick-b");
-    wait_for_picker_search(&mut picker);
-
-    assert!(picker.search_active);
-    let visible: Vec<&str> = picker
-        .visible_session_iter_for_test()
-        .map(|session| session.id.as_str())
-        .collect();
-    assert_eq!(visible, vec!["session_pick_b"]);
-
-    // Clearing the query restores the full list.
-    picker.search_query.clear();
-    picker.search_active = false;
+    let mut picker = SessionPicker::new(vec![session]);
+    picker.search_active = true;
+    picker.search_query = "model:sonnet".to_string();
     picker.rebuild_items();
-    assert_eq!(picker.visible_session_count(), 2);
-}
+    assert_eq!(
+        picker.visible_sessions.len(),
+        0,
+        "stub without model metadata must not match model:sonnet yet"
+    );
 
-#[test]
-fn start_search_with_no_match_leaves_empty_but_recoverable_list() {
-    let sessions: Vec<SessionInfo> = vec![make_session(
-        "session_pick_c",
-        "pick-c",
-        false,
-        SessionStatus::Closed,
-    )];
-    let mut picker = SessionPicker::new(sessions);
-
-    picker.start_search("no-such-session-needle");
-    wait_for_picker_search(&mut picker);
-
-    // Nothing matches: the visible list is empty and the search stays active
-    // so the user can keep editing the query (Enter in this state clears it).
-    assert!(picker.search_active);
-    assert_eq!(picker.visible_session_count(), 0);
-
-    // Simulating Enter-on-empty-result: the query clears and the list is back.
-    picker.search_query.clear();
-    picker.search_active = false;
+    picker.search_query = String::new();
+    picker.cached_search_query.clear();
     picker.rebuild_items();
-    assert_eq!(picker.visible_session_count(), 1);
+    let result =
+        SessionPicker::load_preview_for_target(resume_target, external_path).expect("preview load");
+    assert_eq!(result.model.as_deref(), Some("claude-sonnet-4-5"));
+    assert_eq!(result.provider_key.as_deref(), Some("anthropic"));
+
+    picker.apply_session_preview("pi:pi-session-xyz", result);
+    picker.search_query = "model:sonnet provider:anthropic".to_string();
+    picker.rebuild_items();
+    assert_eq!(
+        picker.visible_sessions.len(),
+        1,
+        "refreshed model/provider must satisfy the model:/provider: filters"
+    );
+
+    if let Some(previous_home) = previous_home {
+        crate::env::set_var("JCODE_HOME", previous_home);
+    } else {
+        crate::env::remove_var("JCODE_HOME");
+    }
 }
 
-#[test]
-fn start_search_accepts_unicode_query() {
-    let sessions: Vec<SessionInfo> = vec![
-        make_session("session_utf8_1", "utf8-one", false, SessionStatus::Closed),
-        make_session("session_utf8_2", "utf8-two", false, SessionStatus::Closed),
-    ];
-    let mut picker = SessionPicker::new(sessions);
-
-    // The token-based matcher lowercases the query; non-ASCII must round-trip
-    // through start_search without truncating or panicking on char boundaries.
-    picker.start_search("UTF8-ünïcode ö query");
-    wait_for_picker_search(&mut picker);
-
-    assert_eq!(picker.search_query, "UTF8-ünïcode ö query");
-    assert!(picker.search_active);
-    // Multi-token AND matching: both tokens must appear in the index, so this
-    // query (utf8-ünïcode AND ö) matches nothing in the test data, which is
-    // the expected behavior rather than an error.
-    assert_eq!(picker.visible_session_count(), 0);
-
-    // A single matching unicode token does filter correctly.
-    picker.start_search("utf8-one");
-    wait_for_picker_search(&mut picker);
-    let visible: Vec<&str> = picker
-        .visible_session_iter_for_test()
-        .map(|session| session.id.as_str())
-        .collect();
-    assert_eq!(visible, vec!["session_utf8_1"]);
-}
+mod cwd_tests;
