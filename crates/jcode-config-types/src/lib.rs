@@ -637,6 +637,10 @@ pub struct NamedProviderConfig {
     /// Extra HTTP headers sent with every request to this provider.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub headers: std::collections::BTreeMap<String, String>,
+    /// Override the `User-Agent` header for requests to this provider.
+    /// Takes precedence over the global `[provider].user_agent` value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_agent: Option<String>,
     pub api_key_env: Option<String>,
     pub api_key: Option<String>,
     pub env_file: Option<String>,
@@ -1560,6 +1564,13 @@ pub struct ProviderConfig {
     /// Default: 3. Overridable via `JCODE_AUTO_RETRY_MAX_ATTEMPTS`. Raise this
     /// for shared services that need more time to free up capacity.
     pub auto_retry_max_attempts: u8,
+    /// Global `User-Agent` override for provider HTTP requests. Provider
+    /// profiles that set their own `user_agent` take precedence over this.
+    pub user_agent: Option<String>,
+    /// Global extra HTTP headers applied to provider requests. Provider
+    /// profiles' own `headers` take precedence per header name.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub headers: std::collections::BTreeMap<String, String>,
 }
 
 impl Default for ProviderConfig {
@@ -1594,6 +1605,8 @@ impl Default for ProviderConfig {
             auto_retry_base_delay_secs: 2,
             auto_retry_enabled: true,
             auto_retry_max_attempts: 3,
+            user_agent: None,
+            headers: std::collections::BTreeMap::new(),
         }
     }
 }

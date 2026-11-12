@@ -1294,7 +1294,7 @@ fn make_endpoint(name: &str, throughput: f64, uptime: f64, cache: bool, cost: f6
     }
 }
 
-fn make_provider() -> OpenRouterProvider {
+pub(super) fn make_provider() -> OpenRouterProvider {
     OpenRouterProvider {
         client: jcode_provider_core::shared_http_client(),
         model: Arc::new(RwLock::new(DEFAULT_MODEL.to_string())),
@@ -1332,10 +1332,11 @@ fn make_provider() -> OpenRouterProvider {
         provider_routing: Arc::new(RwLock::new(ProviderRouting::default())),
         provider_pin: Arc::new(Mutex::new(None)),
         endpoints_cache: Arc::new(RwLock::new(HashMap::new())),
+        http_header_overrides: HeaderMap::new(),
     }
 }
 
-fn make_custom_compatible_provider() -> OpenRouterProvider {
+pub(super) fn make_custom_compatible_provider() -> OpenRouterProvider {
     OpenRouterProvider {
         client: jcode_provider_core::shared_http_client(),
         model: Arc::new(RwLock::new(DEFAULT_MODEL.to_string())),
@@ -1373,10 +1374,13 @@ fn make_custom_compatible_provider() -> OpenRouterProvider {
         provider_routing: Arc::new(RwLock::new(ProviderRouting::default())),
         provider_pin: Arc::new(Mutex::new(None)),
         endpoints_cache: Arc::new(RwLock::new(HashMap::new())),
+        http_header_overrides: HeaderMap::new(),
     }
 }
 
-fn spawn_single_response_models_server(body: &'static str) -> (String, mpsc::Receiver<String>) {
+pub(super) fn spawn_single_response_models_server(
+    body: &'static str,
+) -> (String, mpsc::Receiver<String>) {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind fake provider server");
     let addr = listener.local_addr().expect("fake provider addr");
     let (request_tx, request_rx) = mpsc::channel();
@@ -3470,6 +3474,7 @@ fn midstream_transport_fault_emits_retry_rollback_before_replay() {
                 label: "test".to_string(),
             },
             false,
+            HeaderMap::new(),
             new_conversation_id(),
             request,
             false,
@@ -3913,6 +3918,7 @@ fn venice_disables_venice_system_prompt_by_default_but_user_can_override() {
     );
     assert!(OpenRouterProvider::with_profile_default_extra_body(Some("cerebras"), None).is_none());
 }
+<<<<<<< HEAD
 
 #[path = "catalog_auth_tests.rs"]
 mod catalog_auth;
@@ -6140,3 +6146,9 @@ fn image_rejection_does_not_leak_across_case_distinct_endpoint_paths() {
         jcode_provider_core::image_capability::clear_image_input_overrides_for_provider(scope);
     }
 }
+||||||| ea7452f37
+
+#[path = "catalog_auth_tests.rs"]
+mod catalog_auth;
+=======
+>>>>>>> feat/provider-ua-headers

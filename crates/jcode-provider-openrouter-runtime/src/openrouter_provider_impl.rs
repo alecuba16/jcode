@@ -328,6 +328,7 @@ impl Provider for OpenRouterProvider {
         // same stripped form the lookups use.
         let model_for_stream = self.strip_session_profile_prefix(&model).to_string();
         let provider_pin = Arc::clone(&self.provider_pin);
+        let http_header_overrides = self.http_header_overrides.clone();
         // Same capability scope `supports_image_input` looks up under: the
         // stream records rejections under the identical key the lookup uses.
         let capability_scope_key = self.capability_scope_key();
@@ -347,6 +348,7 @@ impl Provider for OpenRouterProvider {
                 api_base,
                 auth,
                 send_openrouter_headers,
+                http_header_overrides,
                 conversation_id,
                 request_for_retries,
                 false,
@@ -982,6 +984,7 @@ impl Provider for OpenRouterProvider {
             )),
             endpoints_cache: Arc::clone(&self.endpoints_cache),
             endpoint_refresh: Arc::clone(&self.endpoint_refresh),
+            http_header_overrides: self.http_header_overrides.clone(),
         })
     }
 }
@@ -1047,6 +1050,7 @@ impl OpenRouterProvider {
         let api_base = self.api_base.clone();
         let conversation_id = self.conversation_id.clone();
         let provider_pin = Arc::clone(&self.provider_pin);
+        let http_header_overrides = self.http_header_overrides.clone();
         let capability_scope_key = self.capability_scope_key();
         tokio::spawn(async move {
             if tx
@@ -1063,6 +1067,7 @@ impl OpenRouterProvider {
                 api_base,
                 auth,
                 false,
+                http_header_overrides,
                 conversation_id,
                 request,
                 true,

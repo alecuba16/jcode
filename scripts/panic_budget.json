@@ -1,5 +1,5 @@
 {
-  "total": 149,
+  "total": 154,
   "tracked_files": {
     "crates/jcode-app-core/src/agent/provider.rs": 501,
     "crates/jcode-app-core/src/session_launch.rs": 876,
@@ -23,6 +23,7 @@
     "crates/jcode-provider-core/src/model_names.rs": 879,
     "crates/jcode-provider-cursor-runtime/src/wire.rs": 1431,
     "crates/jcode-provider-openai/src/stream.rs": 1069,
+    "crates/jcode-provider-openrouter-runtime/src/ollama_context.rs": 441,
     "crates/jcode-render-core/src/math.rs": 1235,
     "crates/jcode-render-core/src/preprocess.rs": 1052,
     "crates/jcode-render-core/src/reasoning.rs": 151,
@@ -43,10 +44,8 @@
     "crates/jcode-tui/src/tui/app/auth_remote/onboarding.rs": 347,
     "crates/jcode-tui/src/tui/app/auth_remote/picker.rs": 189,
     "crates/jcode-tui/src/tui/app/commands_cloud.rs": 1311,
-    "crates/jcode-tui/src/tui/app/state_ui_input_helpers.rs": 2271,
     "crates/jcode-tui/src/tui/app/usage_reset.rs": 883,
     "crates/jcode-tui/src/tui/ui_inline_interactive.rs": 1114,
-    "crates/jcode-tui/src/tui/ui_input.rs": 3237,
     "src/bin/memory_recall_bench.rs": 2667,
     "src/cli/acp.rs": 2157,
     "src/cli/cloud_managed.rs": 1078,
