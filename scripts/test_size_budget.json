@@ -31,7 +31,6 @@
     "crates/jcode-tui/src/tui/app/tests/onboarding_flow.rs": 1729,
     "crates/jcode-tui/src/tui/app/tests/remote_events_reload_01/part_01.rs": 1734,
     "crates/jcode-tui/src/tui/app/tests/remote_events_reload_04.rs": 2698,
-    "crates/jcode-tui/src/tui/app/tests/remote_startup_input_01/part_01.rs": 1201,
     "crates/jcode-tui/src/tui/app/tests/remote_startup_input_02/part_01.rs": 2351,
     "crates/jcode-tui/src/tui/app/tests/remote_startup_input_03/part_01.rs": 1354,
     "crates/jcode-tui/src/tui/app/tests/scroll_copy_01/part_01.rs": 1406,
@@ -50,8 +49,7 @@
     "crates/jcode-tui/src/tui/ui_tests/tools.rs": 1476,
     "crates/jcode-tui/src/tui/ui_todo_stages_tests.rs": 1230,
     "src/cli/args/tests.rs": 1225,
-    "src/cli/commands_tests.rs": 1765,
-    "src/cli/provider_init_tests.rs": 1227
+    "src/cli/commands_tests.rs": 1765
   },
   "version": 1
 }
