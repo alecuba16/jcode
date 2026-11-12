@@ -1,9 +1,9 @@
 {
-  "total": 3867,
+  "total": 3855,
   "totals_by_pattern": {
-    "dot_ok": 1531,
-    "let_underscore": 1401,
-    "unwrap_or_default": 935
+    "dot_ok": 1528,
+    "let_underscore": 1399,
+    "unwrap_or_default": 928
   },
   "tracked_files": {
     "crates/jcode-app-core/src/agent.rs": {
@@ -2222,9 +2222,9 @@
       "unwrap_or_default": 0
     },
     "crates/jcode-tui/src/tui/app/helpers.rs": {
-      "dot_ok": 18,
-      "let_underscore": 6,
-      "unwrap_or_default": 7
+      "dot_ok": 16,
+      "let_underscore": 5,
+      "unwrap_or_default": 4
     },
     "crates/jcode-tui/src/tui/app/helpers/clipboard_helper.rs": {
       "dot_ok": 0,
@@ -2417,9 +2417,9 @@
       "unwrap_or_default": 4
     },
     "crates/jcode-tui/src/tui/app/tui_state.rs": {
-      "dot_ok": 8,
+      "dot_ok": 7,
       "let_underscore": 0,
-      "unwrap_or_default": 9
+      "unwrap_or_default": 7
     },
     "crates/jcode-tui/src/tui/app/turn.rs": {
       "dot_ok": 0,
@@ -2468,8 +2468,8 @@
     },
     "crates/jcode-tui/src/tui/info_widget.rs": {
       "dot_ok": 0,
-      "let_underscore": 1,
-      "unwrap_or_default": 2
+      "let_underscore": 0,
+      "unwrap_or_default": 1
     },
     "crates/jcode-tui/src/tui/info_widget_cloud.rs": {
       "dot_ok": 0,
@@ -2479,7 +2479,7 @@
     "crates/jcode-tui/src/tui/info_widget_commits.rs": {
       "dot_ok": 0,
       "let_underscore": 0,
-      "unwrap_or_default": 2
+      "unwrap_or_default": 1
     },
     "crates/jcode-tui/src/tui/info_widget_frame.rs": {
       "dot_ok": 0,
