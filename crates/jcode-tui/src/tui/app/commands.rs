@@ -3671,8 +3671,34 @@ fn handle_settings_command(app: &mut App, trimmed: &str) -> bool {
             ));
         }
 
+        // Risk Gate status lives in the same /settings view so one command
+        // shows every toggle.
+        {
+            use crate::config::risk_gate;
+            let saved = crate::config::Config::load().provider.risk_gate_enabled;
+            let env_override = risk_gate::env_override_raw();
+            let effective = match &env_override {
+                Some(raw) => risk_gate::env_allows_gate(raw),
+                None => saved,
+            };
+            msg.push_str(&format!(
+                "\nRisk Gate ..... {}\n",
+                if effective { "enabled" } else { "disabled" }
+            ));
+            msg.push_str(&format!(
+                "Saved default: {}\n",
+                if saved { "enabled" } else { "disabled" }
+            ));
+            if let Some(env) = &env_override {
+                msg.push_str(&format!(
+                    "Env override (JCODE_RISK_GATE_ENABLED={}): active\n",
+                    env
+                ));
+            }
+        }
+
         msg.push_str(
-            "\nUse /settings decisions on|off and /settings decision-timeout <secs|0> for the chooser.",
+            "\nUse /settings decisions on|off, /settings decision-timeout <secs|0>, /settings risk-gate on|off to change them.",
         );
         app.push_display_message(DisplayMessage::system(msg));
         return true;
@@ -3749,32 +3775,6 @@ fn handle_settings_command(app: &mut App, trimmed: &str) -> bool {
         app.push_display_message(DisplayMessage::error(
             "Usage: /settings decision-timeout <secs> (0 = wait forever)".to_string(),
         ));
-        return true;
-    }
-
-        use crate::config::risk_gate;
-        let saved = crate::config::Config::load().provider.risk_gate_enabled;
-        let env_override = risk_gate::env_override_raw();
-        let effective = match &env_override {
-            Some(raw) => risk_gate::env_allows_gate(raw),
-            None => saved,
-        };
-        let mut msg = format!(
-            "Settings:\n\nRisk Gate ..... {}\n",
-            if effective { "enabled" } else { "disabled" }
-        );
-        msg.push_str(&format!(
-            "Saved default: {}\n",
-            if saved { "enabled" } else { "disabled" }
-        ));
-        if let Some(env) = &env_override {
-            msg.push_str(&format!(
-                "Env override (JCODE_RISK_GATE_ENABLED={}): active\n",
-                env
-            ));
-        }
-        msg.push_str("\nUse /settings risk-gate on or /settings risk-gate off to toggle.");
-        app.push_display_message(DisplayMessage::system(msg));
         return true;
     }
 
