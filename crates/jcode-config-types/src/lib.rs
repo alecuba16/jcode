@@ -1572,6 +1572,16 @@ pub struct ProviderConfig {
     /// profiles' own `headers` take precedence per header name.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub headers: std::collections::BTreeMap<String, String>,
+    /// Whether the destructive-command risk gate is enabled.
+    /// When enabled (default), the bash tool refuses catastrophic commands
+    /// and requires justification for risky ones. When disabled, all commands
+    /// run without the gate. Overridable via `JCODE_RISK_GATE_ENABLED`.
+    #[serde(default = "default_risk_gate_enabled")]
+    pub risk_gate_enabled: bool,
+}
+
+fn default_risk_gate_enabled() -> bool {
+    true
 }
 
 impl Default for ProviderConfig {
@@ -1608,6 +1618,7 @@ impl Default for ProviderConfig {
             auto_retry_max_attempts: 3,
             user_agent: None,
             headers: std::collections::BTreeMap::new(),
+            risk_gate_enabled: true,
         }
     }
 }
