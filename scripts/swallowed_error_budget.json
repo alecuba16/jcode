@@ -1,9 +1,9 @@
 {
-  "total": 3859,
+  "total": 3868,
   "totals_by_pattern": {
-    "dot_ok": 1529,
-    "let_underscore": 1401,
-    "unwrap_or_default": 929
+    "dot_ok": 1531,
+    "let_underscore": 1407,
+    "unwrap_or_default": 930
   },
   "tracked_files": {
     "crates/jcode-app-core/src/agent.rs": {
@@ -168,7 +168,7 @@
     },
     "crates/jcode-app-core/src/server/client_actions.rs": {
       "dot_ok": 2,
-      "let_underscore": 49,
+      "let_underscore": 51,
       "unwrap_or_default": 0
     },
     "crates/jcode-app-core/src/server/client_comm_channels.rs": {
@@ -193,7 +193,7 @@
     },
     "crates/jcode-app-core/src/server/client_lifecycle.rs": {
       "dot_ok": 0,
-      "let_underscore": 31,
+      "let_underscore": 34,
       "unwrap_or_default": 2
     },
     "crates/jcode-app-core/src/server/client_lifecycle_logging.rs": {
@@ -849,7 +849,7 @@
     "crates/jcode-base/src/config/config_file.rs": {
       "dot_ok": 4,
       "let_underscore": 4,
-      "unwrap_or_default": 3
+      "unwrap_or_default": 4
     },
     "crates/jcode-base/src/config/env_overrides.rs": {
       "dot_ok": 1,
@@ -967,9 +967,9 @@
       "unwrap_or_default": 0
     },
     "crates/jcode-base/src/memory.rs": {
-      "dot_ok": 2,
-      "let_underscore": 5,
-      "unwrap_or_default": 3
+      "dot_ok": 1,
+      "let_underscore": 3,
+      "unwrap_or_default": 2
     },
     "crates/jcode-base/src/memory/activity.rs": {
       "dot_ok": 1,
@@ -2142,9 +2142,9 @@
       "unwrap_or_default": 0
     },
     "crates/jcode-tui/src/tui/app/commands.rs": {
-      "dot_ok": 4,
+      "dot_ok": 7,
       "let_underscore": 14,
-      "unwrap_or_default": 20
+      "unwrap_or_default": 21
     },
     "crates/jcode-tui/src/tui/app/commands_cloud.rs": {
       "dot_ok": 0,
@@ -2209,6 +2209,11 @@
     "crates/jcode-tui/src/tui/app/debug_script.rs": {
       "dot_ok": 1,
       "let_underscore": 4,
+      "unwrap_or_default": 0
+    },
+    "crates/jcode-tui/src/tui/app/decision_osc9.rs": {
+      "dot_ok": 0,
+      "let_underscore": 2,
       "unwrap_or_default": 0
     },
     "crates/jcode-tui/src/tui/app/dictation.rs": {
@@ -2308,7 +2313,7 @@
     },
     "crates/jcode-tui/src/tui/app/remote/key_handling/key_events.rs": {
       "dot_ok": 0,
-      "let_underscore": 2,
+      "let_underscore": 3,
       "unwrap_or_default": 0
     },
     "crates/jcode-tui/src/tui/app/remote/reconnect.rs": {

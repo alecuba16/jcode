@@ -480,7 +480,7 @@ mod session_picker_query_parsing {
 /// Behavioral tests for `/settings risk-gate`, driven through the real `App`
 /// dispatch path to cover what a user types: show status, toggle on/off,
 /// persistence, and error handling.
-mod settings {
+mod settings_risk_gate {
     use crate::tui::app::commands_dispatch::dispatch_local_command;
     use crate::tui::app::tests::create_test_app;
 
@@ -589,6 +589,195 @@ mod settings {
             assert!(
                 output.contains("Usage"),
                 "bare '/settings risk-gate' should show usage, got: {output}"
+            );
+        });
+    }
+
+    #[test]
+    fn settings_unknown_subcommand_shows_usage() {
+        with_clean_config(|| {
+            let mut app = create_test_app();
+            assert!(dispatch_local_command(&mut app, "/settings frobnicate"));
+            let output = last_message(&app);
+            assert!(
+                output.contains("Usage"),
+                "unknown subcommand should show usage, got: {output}"
+            );
+        });
+    }
+
+    #[test]
+    fn non_settings_command_is_not_swallowed() {
+        with_clean_config(|| {
+            let mut app = create_test_app();
+            assert!(
+                !dispatch_local_command(&mut app, "/setting"),
+                "/setting must not be claimed by /settings"
+            );
+        });
+    }
+}
+
+/// Behavioral tests for `/settings decisions` and `/settings decision-timeout`,
+/// driven through the real `App` dispatch path to cover what a user types.
+mod settings_decisions {
+    use crate::tui::app::commands_dispatch::dispatch_local_command;
+    use crate::tui::app::tests::create_test_app;
+
+    fn lock_shared_state() -> std::sync::MutexGuard<'static, ()> {
+        crate::storage::lock_test_env()
+    }
+
+    /// Text of the last message the app pushed, whatever its role.
+    fn last_message(app: &crate::tui::app::App) -> String {
+        app.display_messages
+            .last()
+            .map(|message| message.content.clone())
+            .unwrap_or_default()
+    }
+
+    fn with_clean_config(body: impl FnOnce()) {
+        struct Restore;
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                let mut config = crate::config::Config::load();
+                config.features.decisions = true;
+                config.features.decision_timeout_secs = 0;
+                let _ = config.save();
+            }
+        }
+        let _lock = lock_shared_state();
+        // create_test_app installs the isolated JCODE_HOME first; loading or
+        // saving config before that would write the developer's real
+        // ~/.jcode/config.toml when the test runs alone with JCODE_HOME unset.
+        let _home = create_test_app();
+        let _restore = Restore;
+        {
+            let mut config = crate::config::Config::load();
+            config.features.decisions = true;
+            config.features.decision_timeout_secs = 0;
+            let _ = config.save();
+        }
+        body();
+    }
+
+    #[test]
+    fn settings_show_displays_decisions_status() {
+        with_clean_config(|| {
+            let mut app = create_test_app();
+            assert!(dispatch_local_command(&mut app, "/settings"));
+            let output = last_message(&app);
+            assert!(
+                output.contains("Decision Chooser ..... enabled"),
+                "/settings should show 'Decision Chooser ..... enabled', got: {output}"
+            );
+            assert!(
+                output.contains("Decision Timeout ..... wait forever"),
+                "default timeout should read 'wait forever', got: {output}"
+            );
+        });
+    }
+
+    #[test]
+    fn settings_decisions_off_persists_and_reports() {
+        with_clean_config(|| {
+            let mut app = create_test_app();
+            assert!(dispatch_local_command(&mut app, "/settings decisions off"));
+            let output = last_message(&app);
+            assert!(
+                output.contains("disabled"),
+                "toggling off should report 'disabled', got: {output}"
+            );
+            assert!(
+                !crate::config::Config::load().features.decisions,
+                "features.decisions should be false after /settings decisions off"
+            );
+        });
+    }
+
+    #[test]
+    fn settings_decisions_on_persists_and_reports() {
+        with_clean_config(|| {
+            let mut app = create_test_app();
+            assert!(dispatch_local_command(&mut app, "/settings decisions off"));
+            assert!(dispatch_local_command(&mut app, "/settings decisions on"));
+            let output = last_message(&app);
+            assert!(
+                output.contains("enabled"),
+                "toggling on should report 'enabled', got: {output}"
+            );
+            assert!(
+                crate::config::Config::load().features.decisions,
+                "features.decisions should be true after /settings decisions on"
+            );
+        });
+    }
+
+    #[test]
+    fn settings_decision_timeout_persists_and_reports() {
+        with_clean_config(|| {
+            let mut app = create_test_app();
+            assert!(dispatch_local_command(
+                &mut app,
+                "/settings decision-timeout 30"
+            ));
+            let output = last_message(&app);
+            assert!(
+                output.contains("30s"),
+                "setting timeout should report '30s', got: {output}"
+            );
+            assert_eq!(
+                crate::config::Config::load().features.decision_timeout_secs,
+                30,
+                "decision_timeout_secs should be 30 after /settings decision-timeout 30"
+            );
+
+            // 0 restores wait-forever.
+            assert!(dispatch_local_command(
+                &mut app,
+                "/settings decision-timeout 0"
+            ));
+            let output = last_message(&app);
+            assert!(
+                output.contains("wait forever"),
+                "zero timeout should report 'wait forever', got: {output}"
+            );
+            assert_eq!(
+                crate::config::Config::load().features.decision_timeout_secs,
+                0,
+                "decision_timeout_secs should be 0 after /settings decision-timeout 0"
+            );
+        });
+    }
+
+    #[test]
+    fn settings_decisions_invalid_value_shows_usage() {
+        with_clean_config(|| {
+            let mut app = create_test_app();
+            assert!(dispatch_local_command(
+                &mut app,
+                "/settings decisions maybe"
+            ));
+            let output = last_message(&app);
+            assert!(
+                output.contains("Usage"),
+                "invalid value should show usage, got: {output}"
+            );
+        });
+    }
+
+    #[test]
+    fn settings_decision_timeout_invalid_value_shows_usage() {
+        with_clean_config(|| {
+            let mut app = create_test_app();
+            assert!(dispatch_local_command(
+                &mut app,
+                "/settings decision-timeout soon"
+            ));
+            let output = last_message(&app);
+            assert!(
+                output.contains("Usage"),
+                "non-numeric timeout should show usage, got: {output}"
             );
         });
     }
