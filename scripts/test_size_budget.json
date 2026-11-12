@@ -14,7 +14,7 @@
     "crates/jcode-base/src/live_tests.rs": 3087,
     "crates/jcode-base/src/provider/tests.rs": 1276,
     "crates/jcode-base/src/provider/tests/model_resolution.rs": 2248,
-    "crates/jcode-base/src/provider_catalog_tests.rs": 1449,
+    "crates/jcode-base/src/provider_catalog_tests.rs": 1465,
     "crates/jcode-base/src/session_tests/cases.rs": 3309,
     "crates/jcode-base/src/usage/tests.rs": 1294,
     "crates/jcode-harness-api-server/src/translate_tests.rs": 4102,
@@ -49,7 +49,8 @@
     "crates/jcode-tui/src/tui/ui_tests/tools.rs": 1476,
     "crates/jcode-tui/src/tui/ui_todo_stages_tests.rs": 1230,
     "src/cli/args/tests.rs": 1225,
-    "src/cli/commands_tests.rs": 1765
+    "src/cli/commands_tests.rs": 1765,
+    "src/cli/provider_init_tests.rs": 1253
   },
   "version": 1
 }
