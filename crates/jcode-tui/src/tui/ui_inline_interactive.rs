@@ -83,7 +83,9 @@ fn picker_entry_display_name(entry: &crate::tui::PickerEntry) -> String {
         .options
         .iter()
         .any(|option| option.detail.contains("recently added"));
-    let suffix = if is_new && !entry.is_current {
+    let suffix = if entry.is_memory_model {
+        format!(" 🧠{}", default_marker)
+    } else if is_new && !entry.is_current {
         format!(" new{}", default_marker)
     } else if entry.is_favorite {
         format!(" ♥{}", default_marker)
