@@ -23,7 +23,7 @@ impl SharedEnvLock {
     /// process env state, so a panic in one test must not cascade into a
     /// flood of unrelated `PoisonError` failures across every other test
     /// that takes this lock.
-    pub(crate) fn lock(&self) -> std::sync::MutexGuard<'static, ()> {
+    pub(crate) fn lock(&self) -> jcode_base::storage::TestEnvGuard {
         jcode_base::storage::lock_test_env()
     }
 }
@@ -3477,6 +3477,7 @@ fn midstream_transport_fault_emits_retry_rollback_before_replay() {
             Arc::new(Mutex::new(None)),
             "test-model".to_string(),
             false,
+            "openrouter::test-scope".to_string(),
         )
         .await;
 
@@ -5450,7 +5451,6 @@ fn request_body_extra_body_effort_overrides_switchable_when_both_configured() {
     );
 }
 
-mod catalog_auth;
 // ============================================================================
 // Stream-level image-modality retry (text-only model behind optimistic endpoint)
 // ============================================================================

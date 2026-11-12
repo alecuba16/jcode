@@ -414,7 +414,7 @@ async fn cycle_model_pushes_the_new_effective_reasoning_effort_to_clients() {
         .expect("reasoning model accepts effort changes");
 
     // Cycle forward: test-model-a -> test-model-b (the plain stand-in).
-    handle_cycle_model(21, 1, &agent, &client_event_tx).await;
+    handle_cycle_model(21, 1, false, &agent, &client_event_tx).await;
 
     let model_event = timeout(Duration::from_secs(1), client_event_rx.recv())
         .await
@@ -439,7 +439,7 @@ async fn cycle_model_pushes_the_new_effective_reasoning_effort_to_clients() {
     );
 
     // Cycle forward again wraps back to the reasoning model.
-    handle_cycle_model(22, 1, &agent, &client_event_tx).await;
+    handle_cycle_model(22, 1, false, &agent, &client_event_tx).await;
     let model_event = timeout(Duration::from_secs(1), client_event_rx.recv())
         .await
         .expect("model change event should arrive");
@@ -481,7 +481,7 @@ async fn set_model_pushes_the_new_effective_reasoning_effort_to_clients() {
     assert_eq!(provider.reasoning_effort().as_deref(), Some("medium"));
 
     // Switch to the plain model: the provider clears the stored effort.
-    handle_set_model(11, "test-model-b".to_string(), &agent, &client_event_tx).await;
+    handle_set_model(11, "test-model-b".to_string(), false, &agent, &client_event_tx).await;
 
     let model_event = timeout(Duration::from_secs(1), client_event_rx.recv())
         .await
@@ -513,7 +513,7 @@ async fn set_model_pushes_the_new_effective_reasoning_effort_to_clients() {
     );
 
     // Switching back restores the reasoning model's effort and pushes it.
-    handle_set_model(12, "test-model-a".to_string(), &agent, &client_event_tx).await;
+    handle_set_model(12, "test-model-a".to_string(), false, &agent, &client_event_tx).await;
     let model_event = timeout(Duration::from_secs(1), client_event_rx.recv())
         .await
         .expect("model change event should arrive");
