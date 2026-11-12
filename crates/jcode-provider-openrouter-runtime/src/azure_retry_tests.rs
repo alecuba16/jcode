@@ -132,6 +132,7 @@ fn run_azure(base: String) -> Vec<Result<StreamEvent>> {
                 Arc::new(Mutex::new(None)),
                 "deployment".into(),
                 false,
+                "openrouter::test-scope".to_string(),
             ),
         )
         .await
