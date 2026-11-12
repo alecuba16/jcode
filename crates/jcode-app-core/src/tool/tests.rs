@@ -75,6 +75,7 @@ impl Provider for MockProvider {
 
 fn mcp_test_context(working_dir: &std::path::Path) -> ToolContext {
     ToolContext {
+        decision_request_tx: None,
         session_id: "mcp-registry-lifetime".to_string(),
         message_id: "message".to_string(),
         tool_call_id: "mcp-call".to_string(),
@@ -470,6 +471,7 @@ async fn test_batch_resolves_function_namespaced_tools() {
     let provider: Arc<dyn Provider> = Arc::new(MockProvider);
     let registry = Registry::new(provider).await;
     let ctx = ToolContext {
+        decision_request_tx: None,
         session_id: "test-batch-function-namespace".to_string(),
         message_id: "test".to_string(),
         tool_call_id: "test".to_string(),
@@ -505,6 +507,7 @@ async fn test_batch_rejects_function_namespaced_batch_recursion() {
     let provider: Arc<dyn Provider> = Arc::new(MockProvider);
     let registry = Registry::new(provider).await;
     let ctx = ToolContext {
+        decision_request_tx: None,
         session_id: "test-batch-function-namespace-recursion".to_string(),
         message_id: "test".to_string(),
         tool_call_id: "test".to_string(),
@@ -535,6 +538,7 @@ async fn test_batch_resolves_oauth_names() {
     let temp_dir = std::env::temp_dir();
 
     let ctx = ToolContext {
+        decision_request_tx: None,
         session_id: "test".to_string(),
         message_id: "test".to_string(),
         tool_call_id: "test".to_string(),
@@ -559,6 +563,7 @@ async fn registry_execute_enforces_session_tool_policy_after_alias_resolution() 
     set_session_tool_policy(session_id, None, HashSet::from(["bash".to_string()]));
 
     let ctx = ToolContext {
+        decision_request_tx: None,
         session_id: session_id.to_string(),
         message_id: "test".to_string(),
         tool_call_id: "test".to_string(),
@@ -609,6 +614,7 @@ async fn registry_execute_pre_tool_hook_blocks_and_allows() {
     crate::config::invalidate_config_cache();
 
     let ctx = || ToolContext {
+        decision_request_tx: None,
         session_id: "test-pre-tool-hook".to_string(),
         message_id: "test".to_string(),
         tool_call_id: "test".to_string(),
@@ -1300,6 +1306,7 @@ async fn unknown_tool_error_lists_available_tools_and_suggestions() {
     registry.register_ambient_tools().await;
 
     let ctx = ToolContext {
+        decision_request_tx: None,
         session_id: "test-unknown-tool".to_string(),
         message_id: "test".to_string(),
         tool_call_id: "test".to_string(),
@@ -1541,6 +1548,7 @@ async fn execute_big_output_in(session_id: &str, input: Value) -> String {
         .await;
 
     let ctx = ToolContext {
+        decision_request_tx: None,
         session_id: session_id.to_string(),
         message_id: "test".to_string(),
         tool_call_id: "test".to_string(),
@@ -1697,6 +1705,7 @@ async fn test_batch_guards_both_its_subcalls_and_its_own_aggregate() {
         .await;
 
     let ctx = |name: &str| ToolContext {
+        decision_request_tx: None,
         session_id: format!("test-batch-context-guard-{name}"),
         message_id: "test".to_string(),
         tool_call_id: "test".to_string(),

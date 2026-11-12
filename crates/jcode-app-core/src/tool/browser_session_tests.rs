@@ -82,6 +82,7 @@ else:
 
     fn context(&self, name: &str) -> ToolContext {
         ToolContext {
+            decision_request_tx: None,
             session_id: format!("brtest-{}-{name}", std::process::id()),
             message_id: "m".into(),
             tool_call_id: "t".into(),
