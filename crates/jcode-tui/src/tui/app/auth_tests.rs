@@ -7,19 +7,11 @@ fn with_temp_jcode_home<T>(f: impl FnOnce() -> T) -> T {
     let _env_guard = crate::storage::lock_test_env();
     let _provider_env = super::super::tests::ProviderEnvGuard::clear();
     let temp = tempfile::tempdir().expect("tempdir");
+    // The guard above clears the named-profile and openai-compat keys; these
+    // are the ambient runtime keys it does not own. Clear them so each test
+    // starts hermetic.
     let saved_env = [
         "JCODE_HOME",
-        "JCODE_OPENAI_COMPAT_API_BASE",
-        "JCODE_OPENAI_COMPAT_API_KEY_NAME",
-        "JCODE_OPENAI_COMPAT_ENV_FILE",
-        "JCODE_OPENAI_COMPAT_SETUP_URL",
-        "JCODE_OPENAI_COMPAT_DEFAULT_MODEL",
-        "JCODE_OPENAI_COMPAT_LOCAL_ENABLED",
-        "OPENAI_COMPAT_API_KEY",
-        // Ambient named-profile / OpenRouter runtime env leaks across tests
-        // and flips `openai_compatible_profile_is_configured` into the
-        // named-profile path; clear it so each test starts hermetic.
-        "JCODE_NAMED_PROVIDER_PROFILE",
         "JCODE_PROVIDER_PROFILE_ACTIVE",
         "JCODE_PROVIDER_PROFILE_NAME",
         "JCODE_OPENROUTER_API_BASE",

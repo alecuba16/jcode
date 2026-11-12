@@ -1069,29 +1069,24 @@ fn test_save_and_restore_reload_state_preserves_queued_messages() {
 
 #[test]
 fn test_new_for_remote_restored_queued_messages_stay_queued_until_remote_idle() {
-    // Runs under a temp jcode home with the env lock held, so a sibling
-    // swapping JCODE_HOME between save and restore cannot redirect the
-    // persisted reload state to another directory.
-    with_temp_jcode_home(|| {
-        let mut app = create_test_app();
-        let session_id = format!("test-remote-queued-restore-{}", std::process::id());
+    let mut app = create_test_app();
+    let session_id = format!("test-remote-queued-restore-{}", std::process::id());
 
-        app.queued_messages.push("queued one".to_string());
-        app.queued_messages.push("queued two".to_string());
-        app.hidden_queued_system_messages
-            .push("continue silently".to_string());
-        app.save_input_for_reload(&session_id);
+    app.queued_messages.push("queued one".to_string());
+    app.queued_messages.push("queued two".to_string());
+    app.hidden_queued_system_messages
+        .push("continue silently".to_string());
+    app.save_input_for_reload(&session_id);
 
-        let restored = App::new_for_remote(Some(session_id));
-        assert_eq!(restored.queued_messages(), &["queued one", "queued two"]);
-        assert_eq!(
-            restored.hidden_queued_system_messages,
-            vec!["continue silently"]
-        );
-        assert!(!restored.pending_queued_dispatch);
-        assert!(!restored.is_processing);
-        assert!(matches!(restored.status, ProcessingStatus::Idle));
-    });
+    let restored = App::new_for_remote(Some(session_id));
+    assert_eq!(restored.queued_messages(), &["queued one", "queued two"]);
+    assert_eq!(
+        restored.hidden_queued_system_messages,
+        vec!["continue silently"]
+    );
+    assert!(!restored.pending_queued_dispatch);
+    assert!(!restored.is_processing);
+    assert!(matches!(restored.status, ProcessingStatus::Idle));
 }
 
 #[test]
@@ -1273,21 +1268,20 @@ fn test_new_for_remote_restores_split_view_from_reload_state() {
 
 #[test]
 fn test_restore_reload_state_supports_legacy_input_format() {
-    // Uses a temp jcode home under the test-env lock like the neighboring
-    // reload-state tests, so a sibling swapping JCODE_HOME mid-run cannot
-    // redirect this read to another directory and fail the restore.
-    with_temp_jcode_home(|| {
-        let session_id = format!("test-reload-legacy-{}", std::process::id());
-        let jcode_dir = crate::storage::jcode_dir().unwrap();
-        let path = jcode_dir.join(format!("client-input-{}", session_id));
-        std::fs::write(&path, "2\nhello").unwrap();
+    // Reads and writes jcode_dir(), which follows JCODE_HOME: without the
+    // env lock a concurrent with_temp_jcode_home test can rotate the home
+    // between this test's write and read, failing the restore.
+    let _env_guard = crate::storage::lock_test_env();
+    let session_id = format!("test-reload-legacy-{}", std::process::id());
+    let jcode_dir = crate::storage::jcode_dir().unwrap();
+    let path = jcode_dir.join(format!("client-input-{}", session_id));
+    std::fs::write(&path, "2\nhello").unwrap();
 
-        let restored =
-            App::restore_input_for_reload(&session_id).expect("legacy reload state should restore");
-        assert_eq!(restored.input, "hello");
-        assert_eq!(restored.cursor, 2);
-        assert!(restored.queued_messages.is_empty());
-    });
+    let restored =
+        App::restore_input_for_reload(&session_id).expect("legacy reload state should restore");
+    assert_eq!(restored.input, "hello");
+    assert_eq!(restored.cursor, 2);
+    assert!(restored.queued_messages.is_empty());
 }
 
 #[test]

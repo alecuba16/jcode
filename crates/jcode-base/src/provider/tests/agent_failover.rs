@@ -377,9 +377,6 @@ fn agent_failover_media_only_catalog_and_countdown_targets_are_rejected() {
         let provider = agent_failover_fixture(&models);
         for model in models {
             agent_failover_set_default_model(&format!("openai-api:{model}")).unwrap();
-            // set_default_model saves config, which bumps the config-reload
-            // generation in the routes-memo scope key and drops the seeded
-            // fixture catalog. Re-seed so resolution sees only these routes.
             agent_failover_reseed(&provider, &models);
             assert!(!MultiProvider::is_failover_route_pool_approved(&format!(
                 "openai-api:{model}"
@@ -410,8 +407,6 @@ fn agent_failover_unranked_models_have_no_catalog_or_context_tiebreak_fallback()
                 None
             );
             agent_failover_set_default_model("openai-api:gpt-6.1-terra").unwrap();
-            // Same as the media-only test: the config save inside
-            // set_default_model invalidates the fixture catalog, so re-seed.
             agent_failover_reseed(&provider, &models);
             assert_eq!(
                 agent_failover_target(&provider, 128, "401 unauthorized"),

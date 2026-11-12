@@ -761,14 +761,14 @@ async fn remote_handshake_deadline_is_independent_of_long_tool_timeout() {
         open_stream(&mut socket, "text/event-stream").await.unwrap();
         started_tx.send(()).unwrap();
         // Never send a response. The client must close the socket on deadline.
-        // The client can close with unread SSE bytes still in flight, so the
-        // peer may send RST instead of FIN; both orderly EOF and reset are a
-        // valid close from the client's side.
+        // The deadline close can arrive while the server still holds unread
+        // request bytes; macOS then sends RST instead of FIN, surfacing as
+        // ConnectionReset on read_to_end. That is the client closing on
+        // deadline, not a fixture failure (same tolerance as the sdk auth
+        // callback tests).
         let mut bytes = Vec::new();
-        match socket.read_to_end(&mut bytes).await {
-            Ok(_) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::ConnectionReset => {}
-            Err(e) => panic!("server read failed: {e}"),
+        if let Err(error) = socket.read_to_end(&mut bytes).await {
+            assert_eq!(error.kind(), std::io::ErrorKind::ConnectionReset);
         }
     });
     let config: McpServerConfig = serde_json::from_value(json!({
