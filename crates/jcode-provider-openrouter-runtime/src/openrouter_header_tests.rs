@@ -73,6 +73,7 @@ fn config_header_overrides_apply_on_the_wire_and_replace_built_in_user_agent() {
             Arc::new(Mutex::new(None)),
             "m".to_string(),
             false,
+            "openrouter::header-test-scope".to_string(),
         )
         .await;
         while events.recv().await.is_some() {}
@@ -132,6 +133,7 @@ fn empty_config_header_overrides_keep_default_headers() {
             Arc::new(Mutex::new(None)),
             "m".to_string(),
             false,
+            "openrouter::header-test-scope".to_string(),
         )
         .await;
         while events.recv().await.is_some() {}

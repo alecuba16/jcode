@@ -377,7 +377,6 @@ fn test_agent_model_chord_shadows_user_remap_only_inside_model_picker() {
         crate::env::remove_var("JCODE_HOME");
     }
     crate::config::Config::invalidate_cache();
-    });
 }
 
 #[test]

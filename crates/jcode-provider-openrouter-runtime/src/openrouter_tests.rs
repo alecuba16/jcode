@@ -3918,7 +3918,6 @@ fn venice_disables_venice_system_prompt_by_default_but_user_can_override() {
     );
     assert!(OpenRouterProvider::with_profile_default_extra_body(Some("cerebras"), None).is_none());
 }
-<<<<<<< HEAD
 
 #[path = "catalog_auth_tests.rs"]
 mod catalog_auth;
@@ -6146,9 +6145,3 @@ fn image_rejection_does_not_leak_across_case_distinct_endpoint_paths() {
         jcode_provider_core::image_capability::clear_image_input_overrides_for_provider(scope);
     }
 }
-||||||| ea7452f37
-
-#[path = "catalog_auth_tests.rs"]
-mod catalog_auth;
-=======
->>>>>>> feat/provider-ua-headers

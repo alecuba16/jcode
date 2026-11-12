@@ -2061,8 +2061,6 @@ fn overview_pinned_setting_and_env_override_load() {
     restore_env_var("JCODE_HOME", prev_home);
     Config::invalidate_cache();
 }
-    }
-}
 
 #[test]
 fn provider_header_overrides_parse_from_toml() {
