@@ -706,6 +706,7 @@ impl Default for NamedProviderConfig {
             auth: NamedProviderAuth::Bearer,
             auth_header: None,
             headers: std::collections::BTreeMap::new(),
+            user_agent: None,
             api_key_env: None,
             api_key: None,
             env_file: None,
