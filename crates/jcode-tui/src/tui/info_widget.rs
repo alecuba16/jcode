@@ -69,7 +69,7 @@ pub(crate) use memory_utils::is_traceworthy_memory_event;
 use memory_utils::{memory_active_summary, memory_last_trace_summary, memory_state_detail};
 use model::{overview_runtime_height, render_model_info, render_model_widget, runtime_has_data};
 use swarm_background::{render_background_compact, render_background_widget, render_swarm_widget};
-use text::clip;
+use text::{clip, truncate_cells};
 pub(crate) use tips::occasional_status_tip;
 use tips::render_tips_widget;
 pub(crate) use usage_render::render_inline_limit_bar;
@@ -815,6 +815,8 @@ pub struct InfoWidgetData {
     pub swarm_summary: Option<SwarmSummary>,
     /// Background tasks status
     pub background_info: Option<BackgroundInfo>,
+    /// Connected MCP servers with their tool counts.
+    pub mcp_servers: Vec<(String, usize)>,
     /// Subscription usage info
     pub usage_info: Option<UsageInfo>,
     /// Show consumed rather than remaining percentages in usage limits.
@@ -881,6 +883,7 @@ impl InfoWidgetData {
             && self.memory_info.is_none()
             && self.swarm_info.is_none()
             && self.background_info.is_none()
+            && self.mcp_servers.is_empty()
             && self.diagrams.is_empty()
             && self.cloud_info.is_none()
             && self.workspace_rows.is_empty()
@@ -942,6 +945,9 @@ impl InfoWidgetData {
                     .map(|b| b.has_content())
                     .unwrap_or(false)
                 {
+                    sections += 1;
+                }
+                if !self.mcp_servers.is_empty() {
                     sections += 1;
                 }
                 if self.queue_mode.is_some() {
@@ -2245,6 +2251,10 @@ fn render_sections(data: &InfoWidgetData, inner: Rect, now: i64) -> Vec<Line<'st
     // only stored-count surface in the Overview.
     lines.extend(render_memory_counts_row(data, inner.width));
 
+    if !data.mcp_servers.is_empty() {
+        lines.extend(render_mcp_servers_line(&data.mcp_servers, inner.width));
+    }
+
     // Usage info (subscription limits)
     lines.extend(super::info_widget_overview::render_overview_usage(
         data,
@@ -2392,6 +2402,63 @@ fn render_memory_counts_row(data: &InfoWidgetData, width: u16) -> Vec<Line<'stat
             Style::default().fg(rgb(180, 180, 190)),
         ),
     ])]
+}
+
+fn render_mcp_servers_line(servers: &[(String, usize)], width: u16) -> Vec<Line<'static>> {
+    let w = width as usize;
+    let full_parts: Vec<String> = servers
+        .iter()
+        .map(|(name, count)| {
+            if *count > 0 {
+                format!("{} ({} tools)", name, count)
+            } else {
+                format!("{} (...)", name)
+            }
+        })
+        .collect();
+    let full = format!("mcp: {}", full_parts.join(", "));
+    if UnicodeWidthStr::width(full.as_str()) <= w {
+        return vec![Line::from(Span::styled(
+            full,
+            Style::default().fg(rgb(100, 180, 220)),
+        ))];
+    }
+    // Try compact single line
+    let short_parts: Vec<String> = servers
+        .iter()
+        .map(|(name, count)| {
+            if *count > 0 {
+                format!("{}({})", name, count)
+            } else {
+                format!("{}(…)", name)
+            }
+        })
+        .collect();
+    let short = format!("mcp: {}", short_parts.join(" "));
+    if UnicodeWidthStr::width(short.as_str()) <= w {
+        return vec![Line::from(Span::styled(
+            short,
+            Style::default().fg(rgb(100, 180, 220)),
+        ))];
+    }
+    // Multi-line: header + one server per line
+    let mut lines = vec![Line::from(Span::styled(
+        truncate_cells(&format!("mcp: {} servers", servers.len()), w),
+        Style::default().fg(rgb(100, 180, 220)),
+    ))];
+    for (name, count) in servers {
+        let entry = if *count > 0 {
+            format!("  {} ({} tools)", name, count)
+        } else {
+            format!("  {} (...)", name)
+        };
+        let entry = truncate_cells(&entry, w);
+        lines.push(Line::from(Span::styled(
+            entry,
+            Style::default().fg(rgb(100, 180, 220)),
+        )));
+    }
+    lines
 }
 
 // ---------------------------------------------------------------------------
