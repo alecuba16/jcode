@@ -2477,15 +2477,20 @@ fn overview_truncated_tail_keeps_fallbacks_and_strip() {
     };
 
     // Front sections: runtime rows (model) + background (1 header + 1 task
-    // row) + usage (label + primary + secondary) + compaction (1).
-    // Together they leave 1 free row of the 10-row pocket's 8 body rows,
-    // so only the tail (Commits) is truncated away.
+    // row) + memory counts (1) + usage (label + primary + secondary)
+    // + compaction (1). Together they fill all 8 body rows of the 10-row
+    // pocket, so the tail (Commits, a 1-row counts section) is truncated away.
     let data = super::InfoWidgetData {
         model: Some("gpt-test".to_string()),
         background_info: Some(super::BackgroundInfo {
             running_count: 1,
             running_tasks: vec!["bash".to_string()],
             ..Default::default()
+        }),
+        memory_counts: Some(super::MemoryCounts {
+            total_count: 3,
+            project_count: 2,
+            global_count: 1,
         }),
         usage_info: Some(super::UsageInfo {
             provider: super::UsageProvider::Anthropic,

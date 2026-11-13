@@ -1,7 +1,6 @@
 use super::info_widget::{
-    AuthMethod, InfoWidgetData, MemoryCounts, OVERVIEW_COMMITS_MAX_ROWS, SwarmSummary,
-    TodosSummary, changes_section_height, commit_row_lines, commits_has_data_at,
-    compact_usage_rows, model_info_height, now_secs,
+    AuthMethod, InfoWidgetData, MemoryCounts, SwarmSummary, TodosSummary, changes_section_height,
+    commits_has_data_at, compact_usage_rows, model_info_height, now_secs,
 };
 use ratatui::layout::Rect;
 
@@ -44,6 +43,8 @@ pub(crate) struct SectionVisibility {
     pub background: bool,
     /// The Memory counts row fits fully in the rect.
     pub memory_counts: bool,
+    /// The MCP servers section fits fully in the rect.
+    pub mcp: bool,
     /// The Usage section fits fully in the rect.
     pub usage: bool,
     /// The Compaction section fits fully in the rect.
@@ -72,6 +73,7 @@ pub(crate) fn section_visibility(data: &InfoWidgetData, rect: Rect) -> SectionVi
     let swarm_h = compact_swarm_summary_height(&overview);
     let background_h = compact_background_height(&overview);
     let memory_counts_h = compact_memory_counts_height(&overview);
+    let mcp_h = compact_mcp_height(&overview, rect.width);
     let usage_h = compact_usage_height(&overview);
     let compaction_h = compact_compaction_height(&overview);
     let changes_h = changes_section_height(&overview, rect.width);
@@ -92,11 +94,12 @@ pub(crate) fn section_visibility(data: &InfoWidgetData, rect: Rect) -> SectionVi
         (swarm_h, swarm_h > 0),
         (background_h, background_h > 0),
         (memory_counts_h, memory_counts_h > 0),
+        (mcp_h, mcp_h > 0),
         (usage_h, usage_h > 0),
         (compaction_h, compaction_h > 0),
     ];
     let mut front = 0u16;
-    let mut flags = [false; 7];
+    let mut flags = [false; 8];
     for (idx, (height, present)) in sections.iter().enumerate() {
         flags[idx] = *present
             && front
@@ -110,6 +113,7 @@ pub(crate) fn section_visibility(data: &InfoWidgetData, rect: Rect) -> SectionVi
         swarm,
         background,
         memory_counts,
+        mcp,
         usage,
         compaction,
     ] = flags;
@@ -120,6 +124,7 @@ pub(crate) fn section_visibility(data: &InfoWidgetData, rect: Rect) -> SectionVi
         swarm,
         background,
         memory_counts,
+        mcp,
         usage,
         compaction,
         changes: fits(front, changes_h),
@@ -201,6 +206,16 @@ pub(super) fn compact_memory_counts_height(data: &InfoWidgetData) -> u16 {
     )
 }
 
+/// Overview rows used by the MCP servers section, mirroring
+/// [`render_mcp_servers_line`]: one row when a compact form fits, else a
+/// header plus one row per server.
+fn compact_mcp_height(data: &InfoWidgetData, width: u16) -> u16 {
+    if data.mcp_servers.is_empty() {
+        return 0;
+    }
+    super::info_widget::render_mcp_servers_line(&data.mcp_servers, width).len() as u16
+}
+
 fn compact_background_height(data: &InfoWidgetData) -> u16 {
     if let Some(info) = &data.background_info
         && info.has_content()
@@ -273,12 +288,10 @@ fn compact_compaction_height(data: &InfoWidgetData) -> u16 {
     u16::from(data.compaction_info.is_some())
 }
 
-/// Overview rows used by the Commits section, mirroring [`render_sections`].
-/// Must mirror `render_commits_compact_at` exactly: header + shown commits +
-/// overflow row. Callers that also render the section in the same frame must
-/// pass the same `now` they render with, so freshness (`COMMITS_FRESH_SECS`)
-/// cannot flip between measurement and draw. Wrapped commit rows count their
-/// continuation lines.
+/// Overview rows used by the Commits section, mirroring the render exactly.
+/// The section is one counts row, so the height is width-independent; callers
+/// that also render in the same frame still pass their `now` so freshness
+/// (`COMMITS_FRESH_SECS`) cannot flip between measurement and draw.
 fn compact_commits_height_at(data: &InfoWidgetData, width: u16, now: i64) -> u16 {
     let Some(info) = data.git_info.as_ref() else {
         return 0;
@@ -286,14 +299,7 @@ fn compact_commits_height_at(data: &InfoWidgetData, width: u16, now: i64) -> u16
     if !commits_has_data_at(info, now) || info.recent_commits.is_empty() {
         return 0;
     }
-    let w = width.saturating_sub(2) as usize;
-    let rows = OVERVIEW_COMMITS_MAX_ROWS.min(info.recent_commits.len());
-    let wrapped: u16 = info.recent_commits[..rows]
-        .iter()
-        .map(|commit| commit_row_lines(commit, w, now) as u16)
-        .sum();
-    let overflow = u16::from(info.recent_commits.len() > rows);
-    1 + wrapped + overflow
+    u16::from(!super::info_widget::render_commits_counts_at(info, width as usize, now).is_empty())
 }
 
 fn compact_commits_height(data: &InfoWidgetData, width: u16) -> u16 {
@@ -309,6 +315,7 @@ fn compact_overview_height(data: &InfoWidgetData, width: u16) -> u16 {
         + compact_swarm_summary_height(data)
         + compact_background_height(data)
         + compact_memory_counts_height(data)
+        + compact_mcp_height(data, width)
         + compact_usage_height(data)
         + compact_compaction_height(data)
         + changes_section_height(data, width)
@@ -362,15 +369,24 @@ mod tests {
         };
 
         let now = 1_700_000_000;
-        // Fresh commit: height counts the section, render draws it.
+        // Fresh commit: height counts the counts row, render draws it.
         let fresh = data(23 * 3600);
-        assert_eq!(super::compact_commits_height_at(&fresh, 40, now), 2);
+        assert_eq!(super::compact_commits_height_at(&fresh, 40, now), 1);
         let rendered = crate::tui::info_widget::render_commits_compact_at(
             fresh.git_info.as_ref().expect("git info"),
             40,
             now,
         );
-        assert_eq!(rendered.len(), 2, "header + one commit row");
+        assert_eq!(rendered.len(), 1, "counts row only");
+        let text: String = rendered[0]
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert!(
+            text.starts_with("Commits 1 commit"),
+            "counts row carries the commit count: {text}"
+        );
 
         // Stale pushed commit: height 0, render empty, same `now`.
         let stale = data(25 * 3600);

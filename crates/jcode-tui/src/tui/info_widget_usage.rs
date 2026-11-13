@@ -189,7 +189,26 @@ pub(super) fn render_usage_compact(
     usage_display_used: bool,
 ) -> Vec<Line<'static>> {
     if info.limit_reached {
-        return vec![usage_limit_reached_line()];
+        // The standalone widget carries the reset time on its footer; keep
+        // the fact here too, on the same row the chrome never wraps.
+        let mut spans = vec![Span::<'static>::styled(
+            "Usage limit reached",
+            Style::default().fg(rgb(255, 190, 80)).bold(),
+        )];
+        if let Some(reset) = info
+            .five_hour_resets_at
+            .as_deref()
+            .or(info.seven_day_resets_at.as_deref())
+        {
+            spans.push(Span::raw(" · "));
+            spans.push(Span::styled(
+                format!("Reset {}", crate::usage::format_reset_time(reset)),
+                Style::default().fg(rgb(140, 140, 150)),
+            ));
+        }
+        return vec![frame::fit(&Line::from(spans), usize::from(width)).unwrap_or_else(
+            || usage_limit_reached_line(),
+        )];
     }
     if !info.available {
         return if matches!(info.provider, UsageProvider::Anthropic) {
@@ -200,30 +219,40 @@ pub(super) fn render_usage_compact(
     }
 
     if matches!(info.provider, UsageProvider::CostBased) {
-        return vec![Line::from(vec![Span::styled(
+        let row = Line::from(vec![Span::styled(
             format!(
-                "${:.4} · {} in + {} out",
+                "${:.4} · {} in + {} out · {}",
                 info.total_cost,
                 format_tokens(info.input_tokens),
-                format_tokens(info.output_tokens)
+                format_tokens(info.output_tokens),
+                cost_rate(info)
             ),
             Style::default().fg(rgb(140, 140, 150)),
-        )])];
+        )]);
+        return vec![frame::fit(&row, usize::from(width)).unwrap_or(row)];
     }
 
     // Copilot has no quota bars; the token counts are the whole fact, and
-    // folding UsageLimits into the overview must not hide them.
+    // folding UsageLimits into the overview must not hide them. The output
+    // share rides the same row when it fits, mirroring the widget footer.
     if matches!(info.provider, UsageProvider::Copilot) {
+        let counts = format!(
+            "{} in + {} out",
+            format_tokens(info.input_tokens),
+            format_tokens(info.output_tokens)
+        );
+        let share = token_output_share(info);
+        let with_share = format!("{counts} · {share}");
+        let text = if UnicodeWidthStr::width(with_share.as_str()) + "Copilot: ".len()
+            <= usize::from(width)
+        {
+            with_share
+        } else {
+            counts
+        };
         let line = Line::from(vec![
             Span::styled("Copilot: ", Style::default().fg(rgb(180, 180, 190)).bold()),
-            Span::styled(
-                format!(
-                    "{} in + {} out",
-                    format_tokens(info.input_tokens),
-                    format_tokens(info.output_tokens)
-                ),
-                Style::default().fg(rgb(140, 140, 150)),
-            ),
+            Span::styled(text, Style::default().fg(rgb(140, 140, 150))),
         ]);
         let fitted = frame::fit(&line, usize::from(width))
             .unwrap_or_else(|| Line::from(Span::styled("", Style::default())));
@@ -664,13 +693,18 @@ mod tests {
             ..Default::default()
         };
 
-        let lines = render_usage_compact(&info, 40, false);
+        // The full row with the share is 42 cells, so it needs a pocket that
+        // wide to keep it; the share is the first fact to go below that.
+        let lines = render_usage_compact(&info, 44, false);
         assert_eq!(lines.len(), 1);
         let text = line_text(&lines[0]);
         assert!(text.contains("Copilot: 12.0K in + 3.4K out"), "{text}");
-        assert!(UnicodeWidthStr::width(text.as_str()) <= 40);
+        // The output share rides the same row, mirroring the widget footer.
+        assert!(text.contains("22% output"), "{text}");
+        assert!(UnicodeWidthStr::width(text.as_str()) <= 44);
 
-        // The row truncates instead of wrapping at pocket widths.
+        // The row truncates instead of wrapping at pocket widths; the share
+        // is the first fact to go.
         let narrow = render_usage_compact(&info, 20, false);
         assert_eq!(narrow.len(), 1);
         let narrow_text = line_text(&narrow[0]);
@@ -678,6 +712,49 @@ mod tests {
             UnicodeWidthStr::width(narrow_text.as_str()) <= 20,
             "{narrow_text}"
         );
+        assert!(!narrow_text.contains("output"), "{narrow_text}");
+    }
+
+    #[test]
+    fn limit_reached_compact_keeps_the_reset_time() {
+        let info = UsageInfo {
+            provider: UsageProvider::Anthropic,
+            limit_reached: true,
+            five_hour_resets_at: Some("in 12 minutes".to_string()),
+            ..Default::default()
+        };
+
+        let lines = render_usage_compact(&info, 40, false);
+        assert_eq!(lines.len(), 1);
+        let text = line_text(&lines[0]);
+        assert!(text.contains("Usage limit reached"), "{text}");
+        assert!(text.contains("Reset"), "reset time must survive folding: {text}");
+        assert!(UnicodeWidthStr::width(text.as_str()) <= 40);
+    }
+
+    #[test]
+    fn cost_based_compact_keeps_the_rate() {
+        let info = UsageInfo {
+            provider: UsageProvider::CostBased,
+            available: true,
+            total_cost: 0.1234,
+            input_tokens: 1_000,
+            output_tokens: 500,
+            ..Default::default()
+        };
+
+        // The row with the rate is 42 cells; the rate is the last fact, so
+        // it is the first to truncate below that.
+        let lines = render_usage_compact(&info, 44, false);
+        assert_eq!(lines.len(), 1);
+        let text = line_text(&lines[0]);
+        assert!(text.contains("$0.1234"), "{text}");
+        assert!(text.contains("$0.0823/1K avg"), "{text}");
+
+        // Below the row's full width the rate drops off the tail.
+        let narrow = render_usage_compact(&info, 40, false);
+        assert_eq!(narrow.len(), 1);
+        assert!(UnicodeWidthStr::width(line_text(&narrow[0]).as_str()) <= 40);
     }
 
     #[test]

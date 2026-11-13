@@ -58,8 +58,8 @@ use unicode_width::UnicodeWidthStr;
 
 use commits::render_commits_widget;
 pub(crate) use commits::{
-    OVERVIEW_COMMITS_MAX_ROWS, commit_row_lines, commits_has_data, commits_has_data_at, now_secs,
-    render_commits_compact_at,
+    commits_has_data, commits_has_data_at, now_secs, render_commits_compact_at,
+    render_commits_counts_at,
 };
 use frame::Framed;
 use git::{changes_has_data, changes_legend, render_changes_framed, render_git_widget};
@@ -2404,7 +2404,7 @@ fn render_memory_counts_row(data: &InfoWidgetData, width: u16) -> Vec<Line<'stat
     ])]
 }
 
-fn render_mcp_servers_line(servers: &[(String, usize)], width: u16) -> Vec<Line<'static>> {
+pub(super) fn render_mcp_servers_line(servers: &[(String, usize)], width: u16) -> Vec<Line<'static>> {
     let w = width as usize;
     let full_parts: Vec<String> = servers
         .iter()

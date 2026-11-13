@@ -133,7 +133,8 @@ pub(super) fn changes_height(data: &InfoWidgetData, info: &GitInfo, width: u16) 
     }
     // Overview section: up to CHANGES_MAX_FILES rows, the last of which
     // becomes `+N more` when files overflow, mirroring [`render_git_widget`],
-    // which reserves that row out of the file budget.
+    // which reserves that row out of the file budget. When every file fits,
+    // the all-file totals row takes the slot the overflow row would use.
     let total = info.dirty_total.max(info.dirty_files.len());
     let mut max_files = CHANGES_MAX_FILES;
     if total > max_files && max_files > 0 {
@@ -141,6 +142,9 @@ pub(super) fn changes_height(data: &InfoWidgetData, info: &GitInfo, width: u16) 
     }
     let shown = info.dirty_files.len().min(max_files);
     let overflow = u16::from(total > shown);
+    let totals_row = u16::from(
+        overflow == 0 && info.added_total + info.removed_total > 0,
+    );
     // One shared counts column, exactly like the render.
     let count_w = info
         .dirty_files
@@ -160,7 +164,7 @@ pub(super) fn changes_height(data: &InfoWidgetData, info: &GitInfo, width: u16) 
             changes_file_row_lines(file, agent, count_w, w) as u16
         })
         .sum();
-    rows + overflow
+    rows + overflow + totals_row
 }
 
 /// Standalone Changes widget. Border layout: `Changes` top-left, all-file
@@ -322,6 +326,25 @@ pub(super) fn render_git_widget(data: &InfoWidgetData, inner: Rect) -> Vec<Line<
             }
         }
         lines.push(Line::from(spans));
+    } else if info.added_total + info.removed_total > 0 {
+        // No overflow row to ride, so the all-file totals get their own row;
+        // the standalone widget carries them on its top border. Chrome must
+        // not wrap: the row truncates at the pocket edge like every other one.
+        let totals = Line::from(vec![
+            Span::styled(
+                format!("+{}", info.added_total),
+                Style::default().fg(rgb(90, 170, 100)),
+            ),
+            Span::styled(
+                format!(" −{}", info.removed_total),
+                Style::default().fg(rgb(200, 100, 95)),
+            ),
+            Span::styled(
+                " all files",
+                Style::default().fg(rgb(100, 100, 115)),
+            ),
+        ]);
+        lines.push(frame::fit(&totals, w).unwrap_or_default());
     }
     lines
 }
@@ -674,6 +697,24 @@ mod tests {
         let lines = render_git_widget(&data, Rect::new(0, 0, 30, 10));
         assert_eq!(lines.len() as u16, changes_height(&data, &git, 30));
         assert!(text(&lines).contains("+19 more"), "{}", text(&lines));
+    }
+
+    #[test]
+    fn changes_without_overflow_list_all_file_totals() {
+        let mut git = info(&[('M', "src/a.rs"), ('M', "src/b.rs")], 2);
+        git.added_total = 12;
+        git.removed_total = 3;
+        let data = InfoWidgetData {
+            git_info: Some(git.clone()),
+            ..Default::default()
+        };
+        let lines = render_git_widget(&data, Rect::new(0, 0, 30, 5));
+        assert_eq!(lines.len() as u16, changes_height(&data, &git, 30));
+        let out = text(&lines);
+        assert!(
+            out.contains(" all files"),
+            "totals row appears when files fit: {out}"
+        );
     }
 
     #[test]
