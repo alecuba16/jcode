@@ -19,10 +19,10 @@ mod preview;
 #[path = "inline_interactive/preview_request.rs"]
 mod preview_request;
 use helpers::{
-    agent_model_chord_target, agent_model_default_summary, agent_model_target_label,
-    agent_model_target_slug, catchup_candidates, catchup_queue_position, model_entry_base_name,
-    model_entry_saved_spec, openrouter_route_model_id, picker_route_model_spec,
-    picker_route_selection, save_agent_model_override,
+    agent_model_default_summary, agent_model_target_label, agent_model_target_slug,
+    catchup_candidates, catchup_queue_position, model_entry_base_name, model_entry_saved_spec,
+    openrouter_route_model_id, picker_route_model_spec, picker_route_selection,
+    save_agent_model_override,
 };
 
 pub(super) fn subagent_picker_model_spec(entry: &PickerEntry) -> String {
@@ -2581,10 +2581,6 @@ impl App {
             self.handle_inline_interactive_key(code, modifiers)?;
             return Ok(true);
         }
-        if let Some(target) = agent_model_chord_target(code, modifiers) {
-            self.open_agent_model_picker(target);
-            return Ok(true);
-        }
         Ok(false)
     }
 
@@ -3813,19 +3809,11 @@ impl App {
             });
             return Ok(());
         }
-        // `/model` picker and its preview: Alt+S / Alt+M open the swarm /
-        // memory model sub-pickers so users can choose which model spawned
-        // swarm agents or memory extraction use, without leaving the /model
-        // flow. Ctrl+S keeps its global input-stash meaning.
-        if let Some(target) = agent_model_chord_target(code, modifiers)
-            && self
-                .inline_interactive_state
-                .as_ref()
-                .is_some_and(picker_is_runtime_model_picker)
-        {
-            self.open_agent_model_picker(target);
-            return Ok(());
-        }
+        // `/model` picker and its preview: Alt+M marks the highlighted model
+        // as the memory model directly (memory-sidecar semantics, the newer
+        // intent) and Alt+S sets the config-persisted memory sidecar; both
+        // match arms below own those chords. The /agents sub-picker stays
+        // reachable through the /agents command and its Ctrl+G scope toggle.
         match code {
             KeyCode::Esc => {
                 if let Some(ref mut picker) = self.inline_interactive_state

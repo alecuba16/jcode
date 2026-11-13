@@ -118,15 +118,14 @@ fn test_swarm_picker_from_model_preview_stays_searchable() {
 }
 
 #[test]
-fn test_model_picker_alt_m_opens_memory_model_picker_with_routed_models() {
+fn test_model_picker_alt_m_marks_memory_sidecar_with_routed_models() {
     with_temp_jcode_home(|| {
         let mut app = create_test_app();
         app.is_remote = true;
-        // A routed custom-provider model (slash form) plus a plain OpenAI one:
-        // the memory sub-picker used to filter entries down to openai/claude
-        // only, hiding the routed model and making the picker look broken.
-        // The sidecar's Provider backend routes extraction through any live
-        // provider, so both models must be selectable.
+        // A routed custom-provider model (slash form) plus a plain OpenAI one.
+        // Alt+M marks the highlighted entry as the memory sidecar directly,
+        // so routed custom-provider models must be selectable for the sidecar
+        // without a separate memory sub-picker.
         app.remote_available_entries = vec![
             "gpt-5.5".to_string(),
             "together_ai/revolut-ltd/glm-5-3-responses".to_string(),
@@ -158,33 +157,30 @@ fn test_model_picker_alt_m_opens_memory_model_picker_with_routed_models() {
             "model picker should be open"
         );
 
+        // Filter down to the routed custom-provider model, then Alt+M.
+        for c in "glm".chars() {
+            app.handle_key(KeyCode::Char(c), KeyModifiers::empty())
+                .unwrap();
+        }
         app.handle_key(KeyCode::Char('m'), KeyModifiers::ALT)
             .unwrap();
 
         let picker = app
             .inline_interactive_state
             .as_ref()
-            .expect("memory picker should be open after Alt+M");
+            .expect("model picker must stay open after Alt+M");
         assert!(
-            picker.entries.iter().any(|e| matches!(
-                e.action,
-                crate::tui::PickerAction::AgentModelChoice {
-                    target: crate::tui::AgentModelTarget::Memory,
-                    ..
-                }
+            picker.entries.iter().any(|e| e.name.contains(
+                "together_ai/revolut-ltd/glm-5-3-responses"
             )),
-            "Alt+M should open the memory model picker"
+            "routed custom-provider models must stay selectable for the sidecar"
         );
         assert!(
-            picker
-                .entries
-                .iter()
-                .any(|e| { e.name.contains("together_ai/revolut-ltd/glm-5-3-responses") }),
-            "routed custom-provider models must appear in the memory picker"
-        );
-        assert!(
-            picker.entries.iter().any(|e| e.name.contains("gpt-5.5")),
-            "plain OpenAI models must still appear in the memory picker"
+            app.status_notice()
+                .is_some_and(|notice| notice.contains("Marked as memory model")
+                    && notice.contains("together_ai/revolut-ltd/glm-5-3-responses")),
+            "Alt+M must mark the highlighted routed model as the memory model, got: {:?}",
+            app.status_notice()
         );
     });
 }

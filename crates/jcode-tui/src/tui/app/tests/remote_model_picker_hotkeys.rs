@@ -154,7 +154,9 @@ fn test_model_picker_chords_do_not_pollute_filter() {
             "Ctrl+S must not open the swarm sub-picker"
         );
 
-        // Alt+S still opens the swarm sub-picker from the preview.
+        // Alt+S sets the config-persisted memory sidecar for the
+        // highlighted model; the picker stays open and no character
+        // reaches the filter.
         app.handle_key(KeyCode::Char('s'), KeyModifiers::ALT)
             .unwrap();
         let picker = app
@@ -162,14 +164,13 @@ fn test_model_picker_chords_do_not_pollute_filter() {
             .as_ref()
             .expect("picker must stay open after Alt+S");
         assert!(
-            picker.entries.iter().any(|e| matches!(
-                e.action,
-                crate::tui::PickerAction::AgentModelChoice {
-                    target: crate::tui::AgentModelTarget::Swarm,
-                    ..
-                }
-            )),
-            "Alt+S must open the swarm sub-picker"
+            picker.filter.is_empty(),
+            "Alt+S must not type into the filter"
+        );
+        assert!(
+            app.status_notice()
+                .is_some_and(|notice| notice.contains("Sidecar →")),
+            "Alt+S must set the memory sidecar for the highlighted model"
         );
     });
 }
@@ -230,7 +231,7 @@ fn test_model_picker_preview_keeps_ctrl_s_as_input_stash() {
 }
 
 #[test]
-fn test_remote_model_picker_alt_chords_open_sub_pickers() {
+fn test_remote_model_picker_alt_chords_reach_the_picker() {
     with_temp_jcode_home(|| {
         let mut app = create_test_app();
         let rt = tokio::runtime::Runtime::new().unwrap();
@@ -265,45 +266,35 @@ fn test_remote_model_picker_alt_chords_open_sub_pickers() {
         );
 
         // The remote event loop must route the preview chords to the picker,
-        // not drop them into the global ctrl/alt handling.
+        // not drop them into the global ctrl/alt handling. Alt+S sets the
+        // config-persisted memory sidecar for the highlighted model.
         rt.block_on(app.handle_remote_key(KeyCode::Char('s'), KeyModifiers::ALT, &mut remote))
             .expect("Alt+S should be handled in the remote path");
-        let picker = app
-            .inline_interactive_state
-            .as_ref()
-            .expect("swarm sub-picker should be open after Alt+S");
-        assert!(picker.entries.iter().any(|e| matches!(
-            e.action,
-            crate::tui::PickerAction::AgentModelChoice {
-                target: crate::tui::AgentModelTarget::Swarm,
-                ..
-            }
-        )));
+        assert!(
+            app.inline_interactive_state.is_some(),
+            "picker must stay open after Alt+S"
+        );
+        assert!(
+            app.status_notice()
+                .is_some_and(|notice| notice.contains("Sidecar →")),
+            "Alt+S must set the memory sidecar, got: {:?}",
+            app.status_notice()
+        );
 
-        // Back out, reopen the /model preview, then Alt+M for memory.
-        rt.block_on(app.handle_remote_key(KeyCode::Esc, KeyModifiers::empty(), &mut remote))
-            .unwrap();
-        for c in "/model".chars() {
-            rt.block_on(app.handle_remote_key(
-                KeyCode::Char(c),
-                KeyModifiers::empty(),
-                &mut remote,
-            ))
-            .unwrap();
-        }
+        // Alt+M marks the highlighted model as the memory model directly;
+        // the picker stays open instead of swapping to a sub-picker.
         rt.block_on(app.handle_remote_key(KeyCode::Char('m'), KeyModifiers::ALT, &mut remote))
             .expect("Alt+M should be handled in the remote path");
-        let picker = app
-            .inline_interactive_state
-            .as_ref()
-            .expect("memory sub-picker should be open after Alt+M");
-        assert!(picker.entries.iter().any(|e| matches!(
-            e.action,
-            crate::tui::PickerAction::AgentModelChoice {
-                target: crate::tui::AgentModelTarget::Memory,
-                ..
-            }
-        )));
+        assert!(
+            app.inline_interactive_state.is_some(),
+            "picker must stay open after Alt+M"
+        );
+        assert!(
+            app.status_notice()
+                .is_some_and(|notice| notice.contains("Marked as memory model")),
+            "Alt+M must mark the highlighted model as the memory model, got: {:?}",
+            app.status_notice()
+        );
     });
 }
 
@@ -343,21 +334,20 @@ fn test_agent_model_chord_shadows_user_remap_only_inside_model_picker() {
     }];
     app.open_model_picker();
 
-    // Inside the picker the hardcoded chord wins even though the user
-    // remapped model_switch_next to the same chord.
+    // Inside the picker Alt+S sets the memory sidecar even though the user
+    // remapped model_switch_next to the same chord: the picker dispatches
+    // before the config bindings, so the chords never mix contexts.
     app.handle_key(KeyCode::Char('s'), KeyModifiers::ALT)
         .unwrap();
     assert!(
-        app.inline_interactive_state
-            .as_ref()
-            .is_some_and(|p| p.entries.iter().any(|e| matches!(
-                e.action,
-                crate::tui::PickerAction::AgentModelChoice {
-                    target: crate::tui::AgentModelTarget::Swarm,
-                    ..
-                }
-            ))),
-        "the agent-model chord must win inside the model picker even when a user remap collides"
+        app.inline_interactive_state.is_some(),
+        "Alt+S inside the model picker must keep the picker open and set the sidecar"
+    );
+    assert!(
+        app.status_notice()
+            .is_some_and(|notice| notice.contains("Sidecar →")),
+        "Alt+S inside the picker must set the memory sidecar even when a user remap collides, got: {:?}",
+        app.status_notice()
     );
 
     // Close the picker; outside the picker the remap must still fire as
