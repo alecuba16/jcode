@@ -1,5 +1,5 @@
 #[test]
-fn test_model_picker_alt_s_opens_swarm_model_picker() {
+fn test_model_picker_alt_s_sets_memory_sidecar() {
     with_temp_jcode_home(|| {
         let mut app = create_test_app();
         app.is_remote = true;
@@ -22,8 +22,9 @@ fn test_model_picker_alt_s_opens_swarm_model_picker() {
             "model picker should be open"
         );
 
-        // Alt+S should open the swarm model sub-picker (Ctrl+S stays the
-        // global input-stash chord)
+        // Alt+S sets the config-persisted memory sidecar for the highlighted
+        // model (Ctrl+S stays the global input-stash chord); the picker
+        // stays open on the same entry list.
         app.handle_key(KeyCode::Char('s'), KeyModifiers::ALT)
             .unwrap();
 
@@ -31,23 +32,24 @@ fn test_model_picker_alt_s_opens_swarm_model_picker() {
             .inline_interactive_state
             .as_ref()
             .expect("picker should still be open after Alt+S");
-
-        // After Alt+S, entries should be tagged as AgentModelChoice for Swarm target
         assert!(
-            picker.entries.iter().any(|e| matches!(
-                e.action,
-                crate::tui::PickerAction::AgentModelChoice {
-                    target: crate::tui::AgentModelTarget::Swarm,
-                    ..
-                }
-            )),
-            "Alt+S should open swarm model picker with AgentModelChoice entries"
+            picker
+                .entries
+                .iter()
+                .any(|e| matches!(e.action, crate::tui::PickerAction::Model)),
+            "picker must stay on the model entry list after Alt+S"
+        );
+        assert!(
+            app.status_notice()
+                .is_some_and(|notice| notice.contains("Sidecar →")),
+            "Alt+S must set the memory sidecar for the highlighted model, got: {:?}",
+            app.status_notice()
         );
     });
 }
 
 #[test]
-fn test_swarm_picker_from_model_preview_stays_searchable() {
+fn test_model_preview_picker_stays_searchable_after_sidecar_act() {
     with_temp_jcode_home(|| {
         let mut app = create_test_app();
         app.is_remote = true;
@@ -73,29 +75,26 @@ fn test_swarm_picker_from_model_preview_stays_searchable() {
             .expect("model picker preview should be open");
         assert!(picker.preview);
 
-        // Alt+S opens the swarm sub-picker from the preview.
+        // Alt+S sets the memory sidecar; the picker stays on the model list.
         app.handle_key(KeyCode::Char('s'), KeyModifiers::ALT)
             .unwrap();
         let picker = app
             .inline_interactive_state
             .as_ref()
-            .expect("swarm picker should be open after Alt+S");
+            .expect("model picker should stay open after Alt+S");
         assert!(
-            picker.entries.iter().any(|e| matches!(
-                e.action,
-                crate::tui::PickerAction::AgentModelChoice {
-                    target: crate::tui::AgentModelTarget::Swarm,
-                    ..
-                }
-            )),
-            "Alt+S from preview should open swarm model picker"
+            picker
+                .entries
+                .iter()
+                .any(|e| matches!(e.action, crate::tui::PickerAction::Model)),
+            "Alt+S from preview must keep the model picker open"
         );
         assert!(
-            !picker.preview,
-            "swarm sub-picker must be a standalone picker, not a composer-glued preview"
+            app.status_notice()
+                .is_some_and(|notice| notice.contains("Sidecar →")),
+            "Alt+S from preview must set the memory sidecar"
         );
-
-        // Typing must filter the sub-picker. With preview=true restored the
+        // Typing must filter the model picker. With preview=true restored the
         // character fell through to the composer and the preview sync closed
         // the picker.
         app.handle_key(KeyCode::Char('g'), KeyModifiers::empty())
@@ -103,16 +102,23 @@ fn test_swarm_picker_from_model_preview_stays_searchable() {
         let picker = app
             .inline_interactive_state
             .as_ref()
-            .expect("swarm picker must stay open while searching");
-        assert_eq!(picker.filter, "g");
-        assert!(
-            !picker.filtered.is_empty(),
-            "typed search must keep matching rows in the swarm picker"
+            .expect("model picker must stay open while searching");
+        assert_eq!(
+            picker.filter, "g",
+            "typed search must reach the picker filter, got {:?}",
+            picker.filter
         );
+        assert!(!
+            picker.filtered.is_empty(),
+            "typed search must keep matching rows in the picker"
+        );
+        // Preview mode keeps the composer as the input source: the character
+        // extends the "/model" draft and the preview sync mirrors it into
+        // the filter, so no character is lost from either surface.
         assert_eq!(
             app.input(),
-            "",
-            "search characters must not land in the composer"
+            "/model g",
+            "preview search must extend the composer draft"
         );
     });
 }
@@ -266,8 +272,11 @@ fn test_memory_model_selection_persists_routed_override_end_to_end() {
         let mut app = App::new_for_test_harness(provider.clone(), registry);
 
         app.open_model_picker();
-        app.handle_key(KeyCode::Char('m'), KeyModifiers::ALT)
-            .unwrap();
+        // The /agents memory sub-picker used to be reachable through an
+        // Alt+M chord; the newer memory-sidecar semantics repurpose Alt+M to
+        // mark the highlighted model directly, so open the sub-picker
+        // through the /agents path it lives behind now.
+        app.open_agent_model_picker(crate::tui::AgentModelTarget::Memory);
 
         // Narrow to the routed model so the selection is unambiguous.
         for ch in "together_ai".chars() {
