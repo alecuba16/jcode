@@ -238,30 +238,7 @@ pub(super) fn apply_auth_provider_runtime(provider_id: Option<&str>) -> Option<S
 
 pub(super) fn direct_provider_activation(provider_id: &str) -> Option<ProviderActivation> {
     let (runtime_id, active) = direct_provider_runtime_ids(provider_id)?;
-    // A login must not override an explicit configured default for every
-    // future session. Selecting the initial provider writes process-global env
-    // (JCODE_ACTIVE_PROVIDER + JCODE_INITIAL_PROVIDER_EXPLICIT), and in the
-    // shared daemon that env outranks `[provider] default_model`, so logging
-    // into OpenAI once made every new session start on GPT instead of the
-    // configured Claude default. The session that performed the login still
-    // switches models through the session-local auth-change path.
-    if config_has_explicit_default_provider() {
-        return Some(ProviderActivation::new(
-            runtime_id,
-            crate::provider::activation::RuntimeSelection::Unchanged,
-        ));
-    }
-    Some(ProviderActivation::initial(runtime_id, active))
-}
-
-pub(super) fn config_has_explicit_default_provider() -> bool {
-    let provider_config = &crate::config::config().provider;
-    let non_empty = |value: &Option<String>| {
-        value
-            .as_deref()
-            .is_some_and(|value| !value.trim().is_empty())
-    };
-    non_empty(&provider_config.default_provider) || non_empty(&provider_config.default_model)
+    Some(ProviderActivation::for_login(runtime_id, active))
 }
 
 pub(super) fn direct_provider_runtime_ids(

@@ -129,12 +129,31 @@ impl ProviderActivation {
         Self::new(runtime_id, RuntimeSelection::Initial(active_provider))
     }
 
+    /// Login-time initial selection.
+    ///
+    /// A login must not override an explicit configured default for every
+    /// future session. Selecting the initial provider writes process-global
+    /// env (`JCODE_ACTIVE_PROVIDER` + `JCODE_INITIAL_PROVIDER_EXPLICIT`), and
+    /// in the shared daemon that env outranks `[provider] default_model`, so
+    /// logging into a provider once made every new session start on it
+    /// instead of the configured default. The session that performed the
+    /// login still switches models through the session-local auth-change
+    /// path, so the model hint and activated-model reporting stay intact.
+    pub fn for_login(runtime_id: RuntimeProviderId, active_provider: ActiveProvider) -> Self {
+        if config_has_explicit_default_provider() {
+            Self::new(runtime_id, RuntimeSelection::Unchanged)
+        } else {
+            Self::initial(runtime_id, active_provider)
+        }
+    }
+
     pub fn unlocked(runtime_id: RuntimeProviderId, active_hint: Option<ActiveProvider>) -> Self {
         Self::new(runtime_id, RuntimeSelection::Unlocked { active_hint })
     }
 
     pub fn azure_openai(model: Option<String>) -> Self {
-        let activation = Self::initial(RuntimeProviderId::AzureOpenAi, ActiveProvider::OpenRouter);
+        let activation =
+            Self::for_login(RuntimeProviderId::AzureOpenAi, ActiveProvider::OpenRouter);
         if let Some(model) = model.filter(|value| !value.trim().is_empty()) {
             activation.with_model_hint("JCODE_OPENROUTER_MODEL", model)
         } else {
@@ -143,10 +162,8 @@ impl ProviderActivation {
     }
 
     pub fn openai_compatible(model: Option<String>) -> Self {
-        let activation = Self::initial(
-            RuntimeProviderId::OpenAiCompatible,
-            ActiveProvider::OpenRouter,
-        );
+        let activation =
+            Self::for_login(RuntimeProviderId::OpenAiCompatible, ActiveProvider::OpenRouter);
         if let Some(model) = model.filter(|value| !value.trim().is_empty()) {
             activation.with_model_hint("JCODE_OPENROUTER_MODEL", model)
         } else {
@@ -246,6 +263,20 @@ pub fn clear_initial_runtime_provider() {
     );
 }
 
+/// Whether the user's config pins an explicit default provider or model.
+///
+/// Logins must not retarget the process-global initial provider when the
+/// user has expressed a startup preference in `config.toml`.
+pub fn config_has_explicit_default_provider() -> bool {
+    let provider_config = &crate::config::config().provider;
+    let non_empty = |value: &Option<String>| {
+        value
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty())
+    };
+    non_empty(&provider_config.default_provider) || non_empty(&provider_config.default_model)
+}
+
 pub fn apply_azure_openai_runtime() -> Result<Option<String>> {
     crate::auth::azure::apply_runtime_env()?;
     let model = crate::auth::azure::load_model();
@@ -314,15 +345,11 @@ mod tests {
     #[test]
     fn azure_activation_preserves_identity_while_using_openrouter_slot() {
         // Serialize with every other test that mutates provider env vars
-        // (e.g. anthropic_tests sets JCODE_RUNTIME_PROVIDER=claude); without
-        // this lock the assertions below race parallel tests.
-        let _lock = crate::storage::lock_test_env();
-        let _guard = EnvGuard::new(&[
-            "JCODE_RUNTIME_PROVIDER",
-            "JCODE_ACTIVE_PROVIDER",
-            "JCODE_INITIAL_PROVIDER_EXPLICIT",
-            "JCODE_OPENROUTER_MODEL",
-        ]);
+        // (e.g. anthropic_tests sets JCODE_RUNTIME_PROVIDER=claude) and
+        // isolate JCODE_HOME so the login guard reads an empty config
+        // instead of the developer's real default_model/default_provider.
+        let _sandbox = crate::auth::test_sandbox::AuthTestSandbox::new().expect("sandbox");
+        crate::config::invalidate_config_cache();
 
         ProviderActivation::azure_openai(Some("gpt-4.1-mini".to_string()))
             .apply_env()
@@ -344,5 +371,61 @@ mod tests {
             std::env::var("JCODE_OPENROUTER_MODEL").as_deref(),
             Ok("gpt-4.1-mini")
         );
+
+        crate::config::invalidate_config_cache();
+    }
+
+    #[test]
+    fn login_activation_keeps_initial_pin_without_configured_default() {
+        let _sandbox = crate::auth::test_sandbox::AuthTestSandbox::new().expect("sandbox");
+        crate::config::invalidate_config_cache();
+
+        ProviderActivation::for_login(
+            RuntimeProviderId::OpenAiCompatible,
+            ActiveProvider::OpenRouter,
+        )
+        .apply_env()
+        .unwrap();
+
+        assert_eq!(
+            std::env::var("JCODE_ACTIVE_PROVIDER").as_deref(),
+            Ok("openrouter")
+        );
+        assert_eq!(
+            std::env::var("JCODE_INITIAL_PROVIDER_EXPLICIT").as_deref(),
+            Ok("1")
+        );
+
+        crate::config::invalidate_config_cache();
+    }
+
+    #[test]
+    fn login_activation_defers_to_configured_default() {
+        let sandbox = crate::auth::test_sandbox::AuthTestSandbox::new().expect("sandbox");
+        std::fs::write(
+            sandbox.root().join("config.toml"),
+            "[provider]\ndefault_model = \"claude-oauth:claude-opus-5-5\"\n",
+        )
+        .expect("write config");
+        crate::config::invalidate_config_cache();
+        crate::env::set_var("JCODE_ACTIVE_PROVIDER", "claude");
+        crate::env::remove_var("JCODE_INITIAL_PROVIDER_EXPLICIT");
+
+        ProviderActivation::for_login(
+            RuntimeProviderId::OpenAiCompatible,
+            ActiveProvider::OpenRouter,
+        )
+        .apply_env()
+        .unwrap();
+
+        assert_eq!(
+            std::env::var("JCODE_ACTIVE_PROVIDER").as_deref(),
+            Ok("claude"),
+            "the pre-existing daemon pin must stay untouched"
+        );
+        assert!(std::env::var("JCODE_INITIAL_PROVIDER_EXPLICIT").is_err());
+
+        std::fs::remove_file(sandbox.root().join("config.toml")).ok();
+        crate::config::invalidate_config_cache();
     }
 }
