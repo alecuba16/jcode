@@ -1530,7 +1530,7 @@ mod tests {
             "compat-profile login must not retarget the daemon-wide initial provider"
         );
         assert!(std::env::var("JCODE_INITIAL_PROVIDER_EXPLICIT").is_err());
-        // Credential plumbing and the local model hint still apply.
+        // Credential and model-hint env still apply to the login session.
         assert_eq!(
             std::env::var("JCODE_OPENROUTER_API_BASE").as_deref(),
             Ok("https://api.cerebras.ai/v1")
@@ -1549,6 +1549,7 @@ mod tests {
         let sandbox = crate::auth::test_sandbox::AuthTestSandbox::new().expect("sandbox");
         std::fs::write(
             sandbox.env_file_path(crate::auth::azure::ENV_FILE),
+            // Azure env file: endpoint, API key, deployment model.
             format!(
                 "{}=https://example.openai.azure.com\n{}=test-azure-key\n{}=gpt-5.5-test\n",
                 crate::auth::azure::ENDPOINT_ENV,
@@ -1584,7 +1585,6 @@ mod tests {
             "Azure login must not retarget the daemon-wide initial provider"
         );
         assert!(std::env::var("JCODE_INITIAL_PROVIDER_EXPLICIT").is_err());
-        // Azure transport env and the local model hint still apply.
         assert_eq!(
             std::env::var("JCODE_OPENROUTER_API_BASE").as_deref(),
             Ok("https://example.openai.azure.com/openai/v1")
