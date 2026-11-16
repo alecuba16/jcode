@@ -1495,6 +1495,110 @@ mod tests {
     }
 
     #[test]
+    fn openai_compatible_profile_login_does_not_override_configured_default_provider_for_new_sessions() {
+        let sandbox = crate::auth::test_sandbox::AuthTestSandbox::new().expect("sandbox");
+        sandbox
+            .write_openai_compatible_api_key(
+                crate::provider_catalog::CEREBRAS_PROFILE,
+                "test-cerebras-key",
+            )
+            .expect("write cerebras key");
+        std::fs::write(
+            sandbox.root().join("config.toml"),
+            "[provider]\ndefault_model = \"claude-oauth:claude-opus-5-5\"\ndefault_provider = \"claude-oauth\"\n",
+        )
+        .expect("write config");
+        crate::config::invalidate_config_cache();
+        crate::env::set_var("JCODE_RUNTIME_PROVIDER", "claude");
+        crate::env::set_var("JCODE_ACTIVE_PROVIDER", "claude");
+        crate::env::remove_var("JCODE_INITIAL_PROVIDER_EXPLICIT");
+
+        let activation = activate_auth_change(&AuthActivationRequest::new(
+            None,
+            Some(AuthChanged::new("cerebras")),
+        ));
+
+        assert_eq!(activation.provider_id.as_deref(), Some("cerebras"));
+        assert_eq!(
+            activation.activated_model.as_deref(),
+            Some("gpt-oss-120b"),
+            "the login session still reports the profile default for its local model switch"
+        );
+        assert_eq!(
+            std::env::var("JCODE_ACTIVE_PROVIDER").as_deref(),
+            Ok("claude"),
+            "compat-profile login must not retarget the daemon-wide initial provider"
+        );
+        assert!(std::env::var("JCODE_INITIAL_PROVIDER_EXPLICIT").is_err());
+        // Credential plumbing and the local model hint still apply.
+        assert_eq!(
+            std::env::var("JCODE_OPENROUTER_API_BASE").as_deref(),
+            Ok("https://api.cerebras.ai/v1")
+        );
+        assert_eq!(
+            std::env::var("JCODE_OPENROUTER_MODEL").as_deref(),
+            Ok("gpt-oss-120b")
+        );
+
+        std::fs::remove_file(sandbox.root().join("config.toml")).ok();
+        crate::config::invalidate_config_cache();
+    }
+
+    #[test]
+    fn azure_openai_login_does_not_override_configured_default_provider_for_new_sessions() {
+        let sandbox = crate::auth::test_sandbox::AuthTestSandbox::new().expect("sandbox");
+        std::fs::write(
+            sandbox.env_file_path(crate::auth::azure::ENV_FILE),
+            format!(
+                "{}=https://example.openai.azure.com\n{}=test-azure-key\n{}=gpt-5.5-test\n",
+                crate::auth::azure::ENDPOINT_ENV,
+                crate::auth::azure::API_KEY_ENV,
+                crate::auth::azure::MODEL_ENV,
+            ),
+        )
+        .expect("write azure env");
+        std::fs::write(
+            sandbox.root().join("config.toml"),
+            "[provider]\ndefault_model = \"claude-oauth:claude-opus-5-5\"\ndefault_provider = \"claude-oauth\"\n",
+        )
+        .expect("write config");
+        crate::config::invalidate_config_cache();
+        crate::env::set_var("JCODE_RUNTIME_PROVIDER", "claude");
+        crate::env::set_var("JCODE_ACTIVE_PROVIDER", "claude");
+        crate::env::remove_var("JCODE_INITIAL_PROVIDER_EXPLICIT");
+
+        let activation = activate_auth_change(&AuthActivationRequest::new(
+            None,
+            Some(AuthChanged::new("azure-openai")),
+        ));
+
+        assert_eq!(activation.provider_id.as_deref(), Some("azure-openai"));
+        assert_eq!(
+            activation.activated_model.as_deref(),
+            Some("gpt-5.5-test"),
+            "the login session still reports the Azure deployment for its local model switch"
+        );
+        assert_eq!(
+            std::env::var("JCODE_ACTIVE_PROVIDER").as_deref(),
+            Ok("claude"),
+            "Azure login must not retarget the daemon-wide initial provider"
+        );
+        assert!(std::env::var("JCODE_INITIAL_PROVIDER_EXPLICIT").is_err());
+        // Azure transport env and the local model hint still apply.
+        assert_eq!(
+            std::env::var("JCODE_OPENROUTER_API_BASE").as_deref(),
+            Ok("https://example.openai.azure.com/openai/v1")
+        );
+        assert_eq!(
+            std::env::var("JCODE_OPENROUTER_MODEL").as_deref(),
+            Ok("gpt-5.5-test")
+        );
+
+        std::fs::remove_file(sandbox.root().join("config.toml")).ok();
+        crate::config::invalidate_config_cache();
+    }
+
+    #[test]
     fn direct_login_provider_activation_sets_runtime_identity_and_active_provider() {
         // Sandbox JCODE_HOME so activation's env-file credential sync (#453)
         // cannot read the developer's real ~/.config/jcode/*.env files and
