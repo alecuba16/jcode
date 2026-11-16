@@ -131,14 +131,12 @@ impl ProviderActivation {
 
     /// Login-time initial selection.
     ///
-    /// A login must not override an explicit configured default for every
-    /// future session. Selecting the initial provider writes process-global
-    /// env (`JCODE_ACTIVE_PROVIDER` + `JCODE_INITIAL_PROVIDER_EXPLICIT`), and
-    /// in the shared daemon that env outranks `[provider] default_model`, so
-    /// logging into a provider once made every new session start on it
-    /// instead of the configured default. The session that performed the
-    /// login still switches models through the session-local auth-change
-    /// path, so the model hint and activated-model reporting stay intact.
+    /// Selecting the initial provider writes process-global env
+    /// (`JCODE_ACTIVE_PROVIDER` + `JCODE_INITIAL_PROVIDER_EXPLICIT`), which
+    /// in the shared daemon outranks `[provider] default_model`, so a login
+    /// must not pin it when the config sets an explicit default. The login
+    /// session still switches models through the session-local auth-change
+    /// path.
     pub fn for_login(runtime_id: RuntimeProviderId, active_provider: ActiveProvider) -> Self {
         if config_has_explicit_default_provider() {
             Self::new(runtime_id, RuntimeSelection::Unchanged)
@@ -264,9 +262,6 @@ pub fn clear_initial_runtime_provider() {
 }
 
 /// Whether the user's config pins an explicit default provider or model.
-///
-/// Logins must not retarget the process-global initial provider when the
-/// user has expressed a startup preference in `config.toml`.
 pub fn config_has_explicit_default_provider() -> bool {
     let provider_config = &crate::config::config().provider;
     let non_empty = |value: &Option<String>| {
