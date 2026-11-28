@@ -173,6 +173,7 @@ pub(super) fn ssh_unsupported_command(input: &str) -> bool {
             | "/btw"
             | "/transfer"
             | "/desktop"
+            | "/memory_optimize"
             | "/workspace"
     )
 }

@@ -8,12 +8,12 @@ pub use jcode_config_types::{
     CompactionMode, CrossProviderFailoverMode, CustomWebSearchConfig, CustomWebSearchMethod,
     DiagramDisplayMode, DiagramPanePosition, DiffDisplayMode, DisplayConfig, FeatureConfig,
     GatewayConfig, HookCommands, HooksConfig, KeybindingsConfig, LatexRenderingMode,
-    LaunchHotkeyEntry, LaunchHotkeysConfig, MarkdownSpacingMode, MenubarConfig, NamedProviderAuth,
-    NamedProviderConfig, NamedProviderModelConfig, NamedProviderType, NativeScrollbarConfig,
-    NotificationsConfig, PowerConfig, ProviderCompactionConfig, ProviderConfig,
-    ReasoningDisplayMode, ResumeOpenElsewhere, ResumeTimeMode, SafetyConfig, SessionConfig,
-    SessionPickerResumeAction, SponsorsConfig, SwarmSpawnMode, TerminalConfig, UpdateChannel,
-    WebSearchConfig, WebSearchEngine,
+    LaunchHotkeyEntry, LaunchHotkeysConfig, MarkdownSpacingMode, MemoryOptimizeConfig,
+    MenubarConfig, NamedProviderAuth, NamedProviderConfig, NamedProviderModelConfig,
+    NamedProviderType, NativeScrollbarConfig, NotificationsConfig, PowerConfig,
+    ProviderCompactionConfig, ProviderConfig, ReasoningDisplayMode, ResumeOpenElsewhere,
+    ResumeTimeMode, SafetyConfig, SessionConfig, SessionPickerResumeAction, SponsorsConfig,
+    SwarmSpawnMode, TerminalConfig, UpdateChannel, WebSearchConfig, WebSearchEngine,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
@@ -654,6 +654,10 @@ pub struct Config {
     pub cloud: CloudConfig,
     /// Idle session memory hibernation policy.
     pub session: SessionConfig,
+
+    /// Memory store optimization policy: automatic passes that compress, merge,
+    /// and prune long-term memory entries. Default off.
+    pub memory_optimize: MemoryOptimizeConfig,
 
     /// Daemon behavior for autonomous wake requests.
     pub server: ServerConfig,

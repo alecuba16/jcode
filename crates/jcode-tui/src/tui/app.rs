@@ -92,6 +92,7 @@ mod jarvis;
 mod jarvis_listen;
 mod jarvis_status;
 mod local;
+mod memory_optimize;
 mod misc_ui;
 mod model_context;
 mod navigation;
@@ -1506,6 +1507,8 @@ pub struct App {
     requested_exit_code: Option<i32>,
     // Memory feature toggle for this session
     memory_enabled: bool,
+    // Session override for [memory_optimize]: None follows config, Some flips it.
+    memory_optimize_enabled: Option<bool>,
     // Automatic end-of-turn review toggle for this session
     autoreview_enabled: bool,
     // Automatic end-of-turn judge toggle for this session
@@ -1851,6 +1854,8 @@ pub struct App {
     // Once-per-idle-period retained-heap trim state (see idle_heap_release.rs).
     idle_heap_release: idle_heap_release::IdleHeapRelease,
     idle_hibernation: idle_hibernation::IdleHibernation,
+    // Cooldown + in-flight tracking for automatic memory optimize passes.
+    memory_optimize: memory_optimize::MemoryOptimizeRuntime,
     // Binary modification time when client started (for smart reload detection)
     client_binary_mtime: Option<std::time::SystemTime>,
     // Rate limit state: when rate limit resets (if rate limited)

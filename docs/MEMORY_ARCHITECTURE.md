@@ -130,6 +130,38 @@ controlled by `memory_sidecar_enabled` and `memory_model`. It is not needed to
 recall existing memories and can be disabled entirely. The old
 `memory_rerank_*` and `memory_embedding_*` settings do not affect Jev recall.
 
+## Store optimization
+
+Long-term memory grows without a built-in cleanup pass: verbose entries,
+near-duplicates, and stale facts accumulate until the user prunes by hand.
+`/memory_optimize` runs one model turn that does that maintenance using the
+normal memory tools.
+
+- `/memory_optimize run` (or bare `/memory_optimize`) queues the optimization
+  turn now, interrupting any in-flight turn like other slash commands.
+- `/memory_optimize on` / `off` toggle automatic passes for the session;
+  `/memory_optimize status` shows effective state and the last automatic pass.
+
+Automatic passes are configured under `[memory_optimize]` in the config file
+and default to off:
+
+```toml
+[memory_optimize]
+enabled = true           # queue automatic passes
+idle_secs = 1800         # idle window that may trigger a pass; 0 disables
+trigger_on_bg_wait = true # also treat a running background task as a window
+min_interval_secs = 86400 # minimum spacing between automatic passes
+```
+
+When enabled, the TUI checks once per minute while idle and queues a single
+optimization turn. A pass never fires while the session is processing, has
+pending turns or queued work, or when the memory feature itself is off for the
+session. Cooldown state lives in `~/.jcode/memory/optimize_state.json` and is
+shared across sessions, so the cooldown is global. Remote/SSH clients cannot
+queue passes. The optimization prompt is conservative: entries are compressed
+and merged only after a replacement is remembered, preferences and corrections
+are never dropped, and every identifier is copied verbatim.
+
 ## Privacy
 
 Storage remains local, but Jev recall is remote inference: the focused query and

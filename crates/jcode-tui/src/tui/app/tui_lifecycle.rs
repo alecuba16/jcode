@@ -513,6 +513,7 @@ impl App {
             resume_session_id: None,
             requested_exit_code: None,
             memory_enabled: features.memory,
+            memory_optimize_enabled: None,
             autoreview_enabled,
             autojudge_enabled,
             improve_mode,
@@ -675,6 +676,7 @@ impl App {
             runtime_memory_log,
             idle_heap_release: Default::default(),
             idle_hibernation: Default::default(),
+            memory_optimize: Default::default(),
             client_binary_mtime: std::env::current_exe()
                 .ok()
                 .filter(|p| !crate::build::is_dynamic_loader_path(p))
@@ -1045,6 +1047,7 @@ impl App {
             resume_session_id: None,
             requested_exit_code: None,
             memory_enabled: features.memory,
+            memory_optimize_enabled: None,
             autoreview_enabled,
             autojudge_enabled,
             improve_mode,
@@ -1207,6 +1210,7 @@ impl App {
             runtime_memory_log,
             idle_heap_release: Default::default(),
             idle_hibernation: Default::default(),
+            memory_optimize: Default::default(),
             client_binary_mtime: std::env::current_exe()
                 .ok()
                 .filter(|p| !crate::build::is_dynamic_loader_path(p))

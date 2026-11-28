@@ -5,6 +5,7 @@ include!("tests/provider_env.rs");
 include!("tests/cache_diagnostics.rs");
 include!("tests/support_failover/part_01.rs");
 include!("tests/support_failover/part_02.rs");
+include!("tests/memory_optimize.rs");
 include!("tests/commands_accounts_01/part_01.rs");
 include!("tests/commands_accounts_01/part_02.rs");
 include!("tests/commands_accounts_02/part_01.rs");

@@ -87,6 +87,80 @@ pub(super) fn is_poke_message(message: &str) -> bool {
     crate::todo::is_auto_poke_message(message)
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum MemoryOptimizeCommand {
+    Run,
+    On,
+    Off,
+    Status,
+}
+
+pub(super) fn parse_memory_optimize_command(
+    trimmed: &str,
+) -> Option<Result<MemoryOptimizeCommand, String>> {
+    match trimmed {
+        "/memory_optimize" | "/memory_optimize run" => Some(Ok(MemoryOptimizeCommand::Run)),
+        "/memory_optimize on" => Some(Ok(MemoryOptimizeCommand::On)),
+        "/memory_optimize off" => Some(Ok(MemoryOptimizeCommand::Off)),
+        "/memory_optimize status" => Some(Ok(MemoryOptimizeCommand::Status)),
+        _ if trimmed.starts_with("/memory_optimize") => Some(Err(
+            "Usage: /memory_optimize [run|on|off|status]".to_string(),
+        )),
+        _ => None,
+    }
+}
+
+pub(super) fn memory_optimize_effective_enabled(app: &App) -> bool {
+    let cfg = crate::config::config().memory_optimize.clone();
+    app.memory_optimize_enabled.unwrap_or(cfg.enabled)
+}
+
+pub(super) fn memory_optimize_status(app: &App) -> String {
+    let cfg = crate::config::config().memory_optimize.clone();
+    let session_state = match app.memory_optimize_enabled {
+        Some(true) => "enabled (session override)",
+        Some(false) => "disabled (session override)",
+        None => "following config",
+    };
+    let state = crate::memory_optimize::MemoryOptimizeState::load();
+    let last_run = state
+        .last_run_at
+        .map(|t| t.format("%Y-%m-%d %H:%M UTC").to_string())
+        .unwrap_or_else(|| "never".to_string());
+    format!(
+        "Memory optimize: automatic passes {} ({}). Idle trigger: {}s (0 = disabled). Background-wait trigger: {}. Cooldown: {}s. Last automatic pass: {}.",
+        if memory_optimize_effective_enabled(app) {
+            "enabled"
+        } else {
+            "disabled"
+        },
+        session_state,
+        cfg.idle_secs,
+        if cfg.trigger_on_bg_wait { "on" } else { "off" },
+        cfg.min_interval_secs,
+        last_run,
+    )
+}
+
+pub(super) fn queue_memory_optimize_turn(
+    app: &mut App,
+    status_notice: String,
+    display_notice: String,
+) {
+    let prompt = crate::memory_optimize::optimize_prompt();
+    if app.is_processing {
+        super::commands_improve::interrupt_and_queue_synthetic_message(
+            app,
+            prompt,
+            &status_notice,
+            display_notice,
+        );
+    } else {
+        app.push_display_message(DisplayMessage::system(display_notice));
+        super::commands_improve::start_synthetic_user_turn(app, prompt);
+    }
+}
+
 pub(super) fn is_todo_confidence_summary_message(message: &str) -> bool {
     message.starts_with(TODO_COMPLETION_CONTINUATION_MESSAGE)
         || message.starts_with(TODO_CONFIDENCE_SPIKE_CONTINUATION_MESSAGE)
@@ -1825,6 +1899,37 @@ pub(super) fn handle_session_command(app: &mut App, trimmed: &str) -> bool {
         app.push_display_message(DisplayMessage::system(
             "Memory feature disabled for this session.".to_string(),
         ));
+        return true;
+    }
+
+    if let Some(command) = parse_memory_optimize_command(trimmed) {
+        match command {
+            Err(error) => app.push_display_message(DisplayMessage::error(error)),
+            Ok(MemoryOptimizeCommand::Status) => {
+                app.push_display_message(DisplayMessage::system(memory_optimize_status(app)));
+            }
+            Ok(MemoryOptimizeCommand::On) => {
+                app.memory_optimize_enabled = Some(true);
+                app.set_status_notice("Memory optimize: ON");
+                app.push_display_message(DisplayMessage::system(
+                    "Automatic memory optimization enabled for this session.".to_string(),
+                ));
+            }
+            Ok(MemoryOptimizeCommand::Off) => {
+                app.memory_optimize_enabled = Some(false);
+                app.set_status_notice("Memory optimize: OFF");
+                app.push_display_message(DisplayMessage::system(
+                    "Automatic memory optimization disabled for this session.".to_string(),
+                ));
+            }
+            Ok(MemoryOptimizeCommand::Run) => {
+                queue_memory_optimize_turn(
+                    app,
+                    "Running memory optimization now...".to_string(),
+                    "Starting memory optimization pass.".to_string(),
+                );
+            }
+        }
         return true;
     }
 

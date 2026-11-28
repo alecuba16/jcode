@@ -102,6 +102,8 @@ pub(super) fn handle_tick(app: &mut App) -> bool {
     app.maybe_capture_runtime_memory_heartbeat();
     app.maybe_release_idle_heap();
     needs_redraw |= app.poll_idle_hibernation();
+    // Queue an automatic memory optimization pass when idle/bg-waiting.
+    app.poll_memory_optimize();
     // Surface the cold-cache transcript warning the moment the TTL expires
     // while idle, not only when the next request starts.
     needs_redraw |= app.maybe_push_idle_cold_cache_warning();

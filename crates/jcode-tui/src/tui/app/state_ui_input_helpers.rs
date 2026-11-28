@@ -145,6 +145,10 @@ const REGISTERED_COMMANDS: &[RegisteredCommand] = &[
     RegisteredCommand::public("/dictate", "Run configured external dictation command"),
     RegisteredCommand::public("/dictation", "Alias for /dictate"),
     RegisteredCommand::public("/memory", "Toggle memory feature"),
+    RegisteredCommand::public(
+        "/memory_optimize",
+        "Run memory optimization now or toggle automatic passes (run|on|off|status)",
+    ),
     RegisteredCommand::public("/test", "Verify a claim/current changes with layered tests"),
     RegisteredCommand::public(
         "/initiatives",
@@ -997,6 +1001,30 @@ impl App {
             return self.rank_suggestions(input, suggestions);
         }
 
+        if prefix.starts_with("/memory_optimize ") {
+            return self.rank_suggestions(
+                input,
+                vec![
+                    (
+                        "/memory_optimize run".into(),
+                        "Queue a memory optimization pass now",
+                    ),
+                    (
+                        "/memory_optimize on".into(),
+                        "Enable automatic passes for this session",
+                    ),
+                    (
+                        "/memory_optimize off".into(),
+                        "Disable automatic passes for this session",
+                    ),
+                    (
+                        "/memory_optimize status".into(),
+                        "Show effective state and last automatic pass",
+                    ),
+                ],
+            );
+        }
+
         if prefix.starts_with("/memory ") {
             return self.rank_suggestions(
                 input,
@@ -1696,6 +1724,7 @@ impl App {
                 | "/subscription"
                 | "/poke"
                 | "/memory"
+                | "/memory_optimize"
                 | "/test"
                 | "/initiatives"
                 | "/initiatives show"

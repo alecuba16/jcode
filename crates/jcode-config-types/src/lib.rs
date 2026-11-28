@@ -8,6 +8,8 @@ mod menubar;
 mod power;
 mod session;
 pub use session::{HibernationMode, SessionConfig};
+mod memory_optimize;
+pub use memory_optimize::MemoryOptimizeConfig;
 pub use {
     display::{DisplayConfig, ResumeOpenElsewhere, ResumeTimeMode},
     menubar::MenubarConfig,

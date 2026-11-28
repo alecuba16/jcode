@@ -66,6 +66,7 @@ pub mod memory_graph;
 pub mod memory_jev;
 pub mod memory_judge_metrics;
 pub mod memory_log;
+pub mod memory_optimize;
 pub mod memory_rerank;
 pub mod memory_types;
 pub mod message;
