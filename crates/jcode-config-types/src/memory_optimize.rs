@@ -49,7 +49,7 @@ mod tests {
 
     #[test]
     fn section_roundtrips_through_json() {
-        let mut root = serde_json::json!({
+        let root = serde_json::json!({
             "memory_optimize": {
                 "enabled": true,
                 "idle_secs": 60,

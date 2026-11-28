@@ -111,12 +111,12 @@ pub(super) fn parse_memory_optimize_command(
 }
 
 pub(super) fn memory_optimize_effective_enabled(app: &App) -> bool {
-    let cfg = crate::config::config().memory_optimize.clone();
-    app.memory_optimize_enabled.unwrap_or(cfg.enabled)
+    app.memory_optimize_enabled
+        .unwrap_or(crate::config::config().memory_optimize.enabled)
 }
 
 pub(super) fn memory_optimize_status(app: &App) -> String {
-    let cfg = crate::config::config().memory_optimize.clone();
+    let cfg = &crate::config::config().memory_optimize;
     let session_state = match app.memory_optimize_enabled {
         Some(true) => "enabled (session override)",
         Some(false) => "disabled (session override)",

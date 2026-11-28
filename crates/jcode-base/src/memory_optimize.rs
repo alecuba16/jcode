@@ -58,7 +58,10 @@ pub fn should_auto_run(
     }) {
         return false;
     }
-    let idle_ok = cfg.idle_secs > 0 && idle_secs >= cfg.idle_secs;
+    // While background tasks run, a disabled bg-wait trigger also suppresses
+    // the idle path: the session is busy waiting on real work, not idle.
+    let idle_ok =
+        cfg.idle_secs > 0 && idle_secs >= cfg.idle_secs && !(bg_running && !cfg.trigger_on_bg_wait);
     let bg_ok = bg_running && cfg.trigger_on_bg_wait;
     idle_ok || bg_ok
 }
@@ -163,6 +166,28 @@ mod tests {
             &cfg(true, 600, false, 0),
             &state,
             0,
+            true,
+            at(0)
+        ));
+    }
+
+    #[test]
+    fn bg_running_suppresses_idle_when_bg_trigger_off() {
+        let state = MemoryOptimizeState::default();
+        // Idle window satisfied, but a background task runs and the bg-wait
+        // trigger is off: no fire at all.
+        assert!(!should_auto_run(
+            &cfg(true, 600, false, 0),
+            &state,
+            600,
+            true,
+            at(0)
+        ));
+        // Same setup with the trigger on: fires via the bg path.
+        assert!(should_auto_run(
+            &cfg(true, 600, true, 0),
+            &state,
+            600,
             true,
             at(0)
         ));
